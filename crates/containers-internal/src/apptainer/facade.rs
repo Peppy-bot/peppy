@@ -1,8 +1,6 @@
 use super::super::error::{Error, Result};
 use super::absent_bind_paths::{AbsentBindPaths, NO_MOUNT_FLAG};
 #[cfg(target_os = "linux")]
-use super::flag_paths;
-#[cfg(target_os = "linux")]
 use super::image_files::{ImageFiles, UnpackedImages};
 use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
@@ -1252,31 +1250,28 @@ impl Apptainer {
         else {
             return Ok(Vec::new());
         };
-        let flag_paths =
-            flag_paths::host_paths_of_flags(&command.flags, command.working_dir.as_deref());
-        let image_command = self.image_command(image, command, &flag_paths);
+        let image_command = self.image_command(image, command);
         let user_namespace_flag = user_namespace.flag_for(&image_command)?;
         let unpack_flag = unpacked_images.flag_for(&image_command);
         Ok(user_namespace_flag.into_iter().chain(unpack_flag).collect())
     }
 
     /// The paths of the host that `command`, which runs `image`, hands to
-    /// apptainer. `flag_paths` holds the paths that its raw flags name (see
-    /// [`flag_paths::host_paths_of_flags`]).
+    /// apptainer.
     #[cfg(target_os = "linux")]
     fn image_command<'a>(
         &'a self,
         image: &'a str,
         command: &'a ApptainerCommand<'_>,
-        flag_paths: &'a [PathBuf],
     ) -> ImageCommand<'a> {
-        let bind_sources = command.bind_mounts.iter().map(|bind| Path::new(&bind.src));
         ImageCommand {
             image: Path::new(image),
             apptainer_dir: &self.apptainer_dir,
             working_dir: command.working_dir.as_deref(),
-            bind_sources: bind_sources
-                .chain(flag_paths.iter().map(PathBuf::as_path))
+            bind_sources: command
+                .bind_mounts
+                .iter()
+                .map(|bind| Path::new(&bind.src))
                 .collect(),
         }
     }
@@ -2343,7 +2338,13 @@ impl<'a> ApptainerCommand<'a> {
     /// Add a raw flag not covered by the named methods.
     ///
     /// For flags that take a value, call this twice:
-    /// `.raw_flag("--overlay").raw_flag("/path/to/overlay")`.
+    /// `.raw_flag("--hostname").raw_flag("robot")`.
+    ///
+    /// A raw flag of a `run` or an `exec` names no path of the host: the
+    /// command gives each path of the host to the container with
+    /// [`Self::bind`], whose sources the choice of how apptainer gives the
+    /// container the files of its image reads. A node cannot give such a
+    /// flag (see `config::node::ApptainerRunArgs`).
     #[must_use]
     pub fn raw_flag(mut self, flag: &str) -> Self {
         self.flags.push(flag.to_string());
@@ -2449,9 +2450,7 @@ impl<'a> ApptainerCommand<'a> {
                 },
             ) = (self.kind.image_to_run(), &self.facade.backend)
             {
-                let flag_paths =
-                    flag_paths::host_paths_of_flags(&self.flags, self.working_dir.as_deref());
-                let image_command = self.facade.image_command(image, self, &flag_paths);
+                let image_command = self.facade.image_command(image, self);
                 return unpacked_images.flag_for(&image_command).is_some();
             }
         }

@@ -2104,6 +2104,8 @@ impl<'a> DocumentReference<'a> {
 // `config::node::is_blocked_mount_source`, part of this crate's public API.
 pub use super::mount_policy::is_blocked_mount_source;
 
+use super::apptainer_run_args::ApptainerRunArgs;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerConfig {
@@ -2113,7 +2115,7 @@ pub struct ContainerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apptainer_build_extra_args: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub apptainer_run_extra_args: Option<Vec<String>>,
+    pub apptainer_run_extra_args: Option<ApptainerRunArgs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lima_shell_extra_args: Option<Vec<String>>,
 }

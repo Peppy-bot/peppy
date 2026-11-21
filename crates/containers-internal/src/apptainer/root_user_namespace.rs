@@ -161,8 +161,7 @@ pub(crate) struct ImageCommand<'a> {
     /// runs in the working directory of the daemon.
     pub(crate) working_dir: Option<&'a Path>,
     /// Each path of the host that the command puts into the container: the
-    /// source of each bind mount, and each path that a raw flag of the
-    /// command names (see [`flag_paths`](super::flag_paths)).
+    /// source of each bind mount.
     pub(crate) bind_sources: Vec<&'a Path>,
 }
 

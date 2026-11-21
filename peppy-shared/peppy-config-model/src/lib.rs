@@ -128,8 +128,8 @@ pub mod fingerprint {
 // -- node --
 pub mod node {
     pub use crate::internal::node::{
-        ActionInterfaces, ActionRefinement, ActionTopicEndpoint, ArrayKind, ArraySchema,
-        Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
+        ActionInterfaces, ActionRefinement, ActionTopicEndpoint, ApptainerRunArgs, ArrayKind,
+        ArraySchema, Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
         ContractImplementationEdge, DaemonTargetDependency, DependencySpec, DependsOn,
         DocumentKind, DocumentReference, EmittedTopic, EndpointDeclaration, EndpointDeclarations,
         EndpointKind, EndpointLabel, Execution, ExposedAction, ExposedService, FieldRefinement,

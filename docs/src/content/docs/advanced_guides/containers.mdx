@@ -93,7 +93,7 @@ Apptainer binds `/etc/localtime` and `/etc/hosts` of the host into each containe
 Apptainer gives a node the files of its image in one of two ways: it mounts the image, or it unpacks the image and starts the node from the copy. Peppy asks for the copy (`--unsquash`) when these two conditions apply together:
 
 - The daemon is not root.
-- A directory that the node can write to is on overlayfs: `/tmp`, `/var/tmp`, the home directory of the user of the daemon, the working directory of the node (which is in the data root), the source of one of its mounts, or a path of the host that a flag of its `apptainer_run_extra_args` names (`--bind`, `--mount`, `--home`, `--workdir`, `--overlay`).
+- A directory that the node can write to is on overlayfs: `/tmp`, `/var/tmp`, the home directory of the user of the daemon, the working directory of the node (which is in the data root), or the source of one of its mounts.
 
 The root file system of a Docker or Podman container is on overlayfs. So a daemon of a user that is not root starts each node from a copy of its image there, unless a volume or a tmpfs holds each of these directories.
 
@@ -810,9 +810,9 @@ Peppy packs every image it builds with zstd at level 3 (`--mksquashfs-args "-com
 
 A node that renders or computes on the host's NVIDIA GPU passes `apptainer_run_extra_args: ["--nv"]`: Apptainer then binds the host's driver libraries (CUDA, EGL, GLX, NVML) into the container at start. Apptainer's own list of these libraries covers NVIDIA's desktop driver. The L4T driver of a Jetson board loads more libraries, and the set changes from one L4T release to the next. Each L4T release lists them in its container manifest, the `*.csv` files in `/etc/nvidia-container-runtime/host-files-for-container.d`. Before it starts a `--nv` node, peppy adds every shared library of that manifest to the list of the bundled Apptainer. So the same node configuration renders and computes through the GPU on a desktop and on a Jetson.
 
-:::note
-These arguments are passed verbatim; no validation is performed beyond basic string checks. Incorrect flags will cause Apptainer or Lima to fail at build or start time.
-:::
+`apptainer_run_extra_args` cannot hold a flag that gives the container a path of the host or changes its mounts: `--bind` (`-B`), `--mount`, `--home` (`-H`), `--workdir` (`-W`), `--overlay` (`-o`), `--fusemount`, `--env-file` and `--no-mount`. A manifest that holds one of them does not parse, also when the flag is in a group of one-letter flags (`-cB/data`). A container node gets the paths of the host through `mount_paths` alone, whose sources the daemon checks: a container node does not see the data root of Peppy, which holds the keys of the clients of the daemon and the certificate of the machine. Give the value of another flag after an equals sign when it starts with a dash (`--hostname=-robot`): an argument that starts with a dash is read as a flag.
+
+Peppy passes the other arguments as they are. An incorrect flag makes Apptainer or Lima fail at build or start time.
 
 ## macOS support
 
