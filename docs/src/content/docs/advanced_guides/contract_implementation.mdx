@@ -84,9 +84,6 @@ A contract can add domain-specific kinds in a top-level `failure_kinds` map (nam
       { name: "move_arm", /* ... */ failure_kinds: ["unreachable", "leader_streaming"] },
       { name: "move_gripper", /* ... */ failure_kinds: ["leader_streaming"] },
     ],
-    services: [
-      { name: "stop", /* ... */ },
-    ],
   },
 }
 ```
@@ -98,7 +95,7 @@ Rules:
 
 #### Marks
 
-A contract can attach semantic tags to any topic, service, or action using a `marks` list. Peppy assigns special behavior to one built-in mark: **`moves_robot`**, for any member that can move a robot (including grippers) or change physical device state. Members that only stop motion (like `stop`) omit it:
+A contract can attach semantic tags to any topic, service, or action using a `marks` list. Peppy assigns special behavior to one built-in mark: **`moves_robot`**, for any member that can move a robot (including grippers) or change physical device state. Members that only stop motion (like robot_stop's `stop`) omit it, and so do members that only check a move (like `check_arm_move`):
 
 ```json5
 {
@@ -109,7 +106,7 @@ A contract can attach semantic tags to any topic, service, or action using a `ma
       { name: "move_arm", marks: ["moves_robot"], /* ... */ },
     ],
     services: [
-      { name: "stop", /* ... */ },
+      { name: "check_arm_move", /* ... */ },
     ],
   },
 }
