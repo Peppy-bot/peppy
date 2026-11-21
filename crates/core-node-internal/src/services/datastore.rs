@@ -31,10 +31,44 @@ pub(super) struct StoredValue {
     pub last_modified_by: String,
 }
 
-/// One key: its stored value and, for a key `store_exclusive` wrote, the
-/// incarnation of the process of its owner, which is the key's last writer.
+/// The sender of a datastore request: the core node of its machine and its
+/// instance id. In a federation, an instance of another machine may have
+/// the instance id of an instance of this one: it is another writer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Writer {
+    core_node: String,
+    instance_id: String,
+}
+
+impl Writer {
+    pub(super) fn new(core_node: impl Into<String>, instance_id: impl Into<String>) -> Self {
+        Self {
+            core_node: core_node.into(),
+            instance_id: instance_id.into(),
+        }
+    }
+
+    /// The sender of the request of `context`: the caller that the check of
+    /// the session of the daemon verified. A session with no check (the
+    /// daemon has one on each endpoint) gives the sender that the call
+    /// names.
+    fn of(context: &ServiceRequestContext) -> Self {
+        match context.verified_caller() {
+            Some(caller) => Self::new(caller.core_node(), caller.instance_id()),
+            None => Self::new(
+                context.message().core_node(),
+                context.message().instance_id(),
+            ),
+        }
+    }
+}
+
+/// One key: its stored value, the core node of its last writer and, for a
+/// key `store_exclusive` wrote, the incarnation of the process of its owner,
+/// which is the key's last writer.
 struct Entry {
     stored: StoredValue,
+    writer_core_node: String,
     owner_incarnation: Option<u64>,
 }
 
@@ -42,15 +76,16 @@ impl Entry {
     fn new(
         value: Vec<u8>,
         encoding: String,
-        writer: String,
+        writer: Writer,
         owner_incarnation: Option<u64>,
     ) -> Self {
         Self {
             stored: StoredValue {
                 value,
                 encoding,
-                last_modified_by: writer,
+                last_modified_by: writer.instance_id,
             },
+            writer_core_node: writer.core_node,
             owner_incarnation,
         }
     }
@@ -66,10 +101,13 @@ impl Entry {
             .map(|incarnation| (self.stored.last_modified_by.clone(), incarnation))
     }
 
-    /// The owner of this key when it is an instance other than `writer`.
-    fn owner_other_than(&self, writer: &str) -> Option<&str> {
+    /// The owner of this key when it is an instance other than `writer`:
+    /// another instance id, or the same one on another machine.
+    fn owner_other_than(&self, writer: &Writer) -> Option<&str> {
         let owner = self.stored.last_modified_by.as_str();
-        (self.owner_incarnation.is_some() && owner != writer).then_some(owner)
+        let is_the_writer =
+            owner == writer.instance_id && self.writer_core_node == writer.core_node;
+        (self.owner_incarnation.is_some() && !is_the_writer).then_some(owner)
     }
 }
 
@@ -131,7 +169,7 @@ impl Datastore {
         key: &str,
         value: Vec<u8>,
         encoding: String,
-        writer: String,
+        writer: Writer,
     ) -> Result<()> {
         self.with_live_key(key, |entries| {
             let owner_incarnation = match entries.get(key) {
@@ -153,19 +191,25 @@ impl Datastore {
     /// to the process `writer` runs, when the key is absent or already
     /// `writer`'s; when another instance owns the key, answers with the key as
     /// its owner wrote it. Fails when the key exists with no owner, and when
-    /// the core node runs no process under `writer`.
+    /// this core node runs no process under `writer`: an instance of another
+    /// machine owns no key here.
     pub(super) fn store_exclusive(
         &self,
         key: &str,
         value: Vec<u8>,
         encoding: String,
-        writer: String,
+        writer: Writer,
     ) -> Result<DatastoreStoreExclusiveResponse> {
-        let incarnation = self.liveness.live_incarnation(&writer).ok_or_else(|| {
-            Error::DatastoreOwnerNotRunning {
-                instance_id: writer.clone(),
-            }
-        })?;
+        let not_running = || Error::DatastoreOwnerNotRunning {
+            instance_id: writer.instance_id.clone(),
+        };
+        if writer.core_node != self.core_node_name {
+            return Err(not_running());
+        }
+        let incarnation = self
+            .liveness
+            .live_incarnation(&writer.instance_id)
+            .ok_or_else(not_running)?;
         self.with_live_key(key, |entries| {
             if let Some(current) = entries.get(key) {
                 if current.owner_incarnation.is_none() {
@@ -229,7 +273,7 @@ impl Datastore {
 
     /// Removes `key` for `remover`. Returns `true` if it existed, `false` if
     /// already absent. Fails on a key another instance owns.
-    pub(super) fn remove(&self, key: &str, remover: &str) -> Result<bool> {
+    pub(super) fn remove(&self, key: &str, remover: &Writer) -> Result<bool> {
         self.with_live_key(key, |entries| {
             let Some(entry) = entries.get(key) else {
                 return Ok(false);
@@ -242,7 +286,7 @@ impl Datastore {
 
     /// Refuses `writer`'s store or remove of `key` when another instance owns
     /// it, naming the owner and the command that stops it.
-    fn refuse_other_writer(&self, entry: &Entry, key: &str, writer: &str) -> Result<()> {
+    fn refuse_other_writer(&self, entry: &Entry, key: &str, writer: &Writer) -> Result<()> {
         let Some(owner) = entry.owner_other_than(writer) else {
             return Ok(());
         };
@@ -346,10 +390,10 @@ datastore_endpoint!(
 
 fn handle_store_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
     let request = DatastoreStoreRequest::decode(context.message().payload_bytes().as_ref())?;
-    let last_modified_by = context.message().instance_id().to_owned();
+    let last_modified_by = Writer::of(context);
 
     debug!(
-        "Received datastore store request from {} for key {:?} ({} bytes, encoding {:?})",
+        "Received datastore store request from {:?} for key {:?} ({} bytes, encoding {:?})",
         last_modified_by,
         request.key.as_str(),
         request.value.len(),
@@ -405,7 +449,7 @@ fn handle_list_request(store: &Datastore, context: &ServiceRequestContext) -> Re
 fn handle_remove_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
     let request = DatastoreRemoveRequest::decode(context.message().payload_bytes().as_ref())?;
 
-    let removed = store.remove(request.key.as_str(), context.message().instance_id())?;
+    let removed = store.remove(request.key.as_str(), &Writer::of(context))?;
 
     debug!(
         "Received datastore remove request from {} for key {:?} (removed: {})",
@@ -426,10 +470,10 @@ fn handle_store_exclusive_request(
     let request =
         DatastoreStoreExclusiveRequest::decode(context.message().payload_bytes().as_ref())?
             .into_store();
-    let writer = context.message().instance_id().to_owned();
+    let writer = Writer::of(context);
 
     debug!(
-        "Received datastore exclusive store request from {} for key {:?} ({} bytes, encoding {:?})",
+        "Received datastore exclusive store request from {:?} for key {:?} ({} bytes, encoding {:?})",
         writer,
         request.key.as_str(),
         request.value.len(),
@@ -540,7 +584,7 @@ mod tests {
                 Entry::new(
                     b"gripper".to_vec(),
                     "text/plain".to_owned(),
-                    "gripper".to_owned(),
+                    local("gripper"),
                     Some(2),
                 ),
             );
@@ -587,6 +631,11 @@ mod tests {
         );
     }
 
+    /// The writer `instance_id` of the core node of the test datastores.
+    fn local(instance_id: &str) -> Writer {
+        Writer::new(CORE_NODE, instance_id)
+    }
+
     fn datastore() -> (Datastore, Arc<FakeLiveness>) {
         let liveness = Arc::new(FakeLiveness::default());
         let shared_liveness = Arc::clone(&liveness);
@@ -596,7 +645,7 @@ mod tests {
     /// `store` of a key no other instance owns.
     fn store(datastore: &Datastore, key: &str, value: &[u8], encoding: &str, writer: &str) {
         datastore
-            .store(key, value.to_vec(), encoding.to_owned(), writer.to_owned())
+            .store(key, value.to_vec(), encoding.to_owned(), local(writer))
             .expect("no other instance owns the key");
     }
 
@@ -608,12 +657,7 @@ mod tests {
         writer: &str,
     ) -> DatastoreStoreExclusiveResponse {
         datastore
-            .store_exclusive(
-                key,
-                value.to_vec(),
-                "text/plain".to_owned(),
-                writer.to_owned(),
-            )
+            .store_exclusive(key, value.to_vec(), "text/plain".to_owned(), local(writer))
             .expect("the writer runs")
     }
 
@@ -724,10 +768,16 @@ mod tests {
         let (datastore, _liveness) = datastore();
         store(&datastore, "k", b"v", "text/plain", "w");
 
-        assert!(datastore.remove("k", "other").expect("a key with no owner"));
+        assert!(
+            datastore
+                .remove("k", &local("other"))
+                .expect("a key with no owner")
+        );
         assert!(datastore.get("k").is_none(), "key is gone after remove");
         assert!(
-            !datastore.remove("k", "other").expect("an absent key"),
+            !datastore
+                .remove("k", &local("other"))
+                .expect("an absent key"),
             "removing an already-absent key returns false"
         );
     }
@@ -788,12 +838,7 @@ mod tests {
 
         for key in ["bus", "own"] {
             let err = datastore
-                .store_exclusive(
-                    key,
-                    b"arm".to_vec(),
-                    "text/plain".to_owned(),
-                    "arm".to_owned(),
-                )
+                .store_exclusive(key, b"arm".to_vec(), "text/plain".to_owned(), local("arm"))
                 .expect_err("the key exists with no owner");
             assert_matches!(&err, Error::DatastoreKeyUnowned { key: k } if k == key,
                 "{err:?}"
@@ -814,7 +859,7 @@ mod tests {
                 "bus",
                 b"v".to_vec(),
                 "text/plain".to_owned(),
-                "unrun_inst".to_owned(),
+                local("unrun_inst"),
             )
             .expect_err("no process runs under the id");
         assert_matches!(&err, Error::DatastoreOwnerNotRunning { instance_id } if instance_id == "unrun_inst",
@@ -834,13 +879,60 @@ mod tests {
                 "bus",
                 b"other".to_vec(),
                 "text/plain".to_owned(),
-                "other".to_owned(),
+                local("other"),
             ),
             "bus",
             "arm",
         );
-        assert_owned_by(datastore.remove("bus", "other"), "bus", "arm");
+        assert_owned_by(datastore.remove("bus", &local("other")), "bus", "arm");
         assert_eq!(datastore.get("bus").expect("still owned").value, b"arm");
+    }
+
+    /// In a federation, an instance of another machine may have the instance
+    /// id of the owner: it is another writer, which neither changes nor
+    /// removes the key.
+    #[test]
+    fn an_instance_of_another_machine_with_the_owners_id_is_another_writer() {
+        let (datastore, liveness) = datastore();
+        liveness.run("arm", 1);
+        store_exclusive(&datastore, "bus", b"arm", "arm");
+        let remote_arm = Writer::new("cn-remote", "arm");
+
+        assert_owned_by(
+            datastore.store(
+                "bus",
+                b"remote".to_vec(),
+                "text/plain".to_owned(),
+                remote_arm.clone(),
+            ),
+            "bus",
+            "arm",
+        );
+        assert_owned_by(datastore.remove("bus", &remote_arm), "bus", "arm");
+        assert_eq!(datastore.get("bus").expect("still owned").value, b"arm");
+    }
+
+    /// The datastore binds an owned key to a process of its own core node,
+    /// so an instance of another machine owns no key here, also when an
+    /// instance of this machine runs under its instance id.
+    #[test]
+    fn an_instance_of_another_machine_owns_no_key() {
+        let (datastore, liveness) = datastore();
+        liveness.run("arm", 1);
+
+        let err = datastore
+            .store_exclusive(
+                "bus",
+                b"remote".to_vec(),
+                "text/plain".to_owned(),
+                Writer::new("cn-remote", "arm"),
+            )
+            .expect_err("the writer runs on another machine");
+
+        assert_matches!(&err, Error::DatastoreOwnerNotRunning { instance_id } if instance_id == "arm",
+            "{err:?}"
+        );
+        assert!(datastore.get("bus").is_none(), "nothing was written");
     }
 
     #[test]
@@ -850,7 +942,7 @@ mod tests {
         store_exclusive(&datastore, "bus", b"one", "arm");
         store(&datastore, "bus", b"two", "text/plain", "arm");
 
-        assert_owned_by(datastore.remove("bus", "other"), "bus", "arm");
+        assert_owned_by(datastore.remove("bus", &local("other")), "bus", "arm");
         liveness.end("arm");
         assert!(
             datastore.get("bus").is_none(),
@@ -865,7 +957,11 @@ mod tests {
         liveness.run("other", 2);
         store_exclusive(&datastore, "bus", b"arm", "arm");
 
-        assert!(datastore.remove("bus", "arm").expect("the owner removes"));
+        assert!(
+            datastore
+                .remove("bus", &local("arm"))
+                .expect("the owner removes")
+        );
         assert_eq!(
             store_exclusive(&datastore, "bus", b"other", "other"),
             DatastoreStoreExclusiveResponse::Stored
@@ -903,7 +999,9 @@ mod tests {
             }),
             ("remove", |datastore| {
                 assert!(
-                    !datastore.remove("bus", "other").expect("nothing owns it"),
+                    !datastore
+                        .remove("bus", &local("other"))
+                        .expect("nothing owns it"),
                     "the dead owner's key is already gone"
                 );
             }),
