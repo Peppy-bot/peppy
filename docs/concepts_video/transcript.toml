@@ -341,7 +341,7 @@ sha256 = "b6ef75b8712c7bec2a9b77a8d02bc811b2c7affe4809dc29f81da8f4742ed78e"
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "A new message between two nodes"
-sha256 = "f48a9fa21a670977e8805a7fb843ccdf858f4e1fedf247639fcb4b27486da02f"
+sha256 = "047283783c5e8c9bdcebac22dcec1c113f742ea0b1ed195b1e7edc765c2001a3"
 
 [[segment.voice]]
 id = "problem"
@@ -425,7 +425,7 @@ ros2 = [
   "Add `rosidl_generate_interfaces` to its `CMakeLists.txt`.",
   "Add three lines to its `package.xml`.",
   "`colcon build`",
-  "source `install/setup.bash`",
+  "`source install/setup.bash`",
 ]
 peppy = [
   "Add the topic to `peppy.json5`.",
@@ -473,7 +473,7 @@ sha256 = "eeedf0d04312ec1c443e8fbdf8ed032c590f7f68bfb58649e9591e348c8b08b7"
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "Build tools"
-sha256 = "3a03df8234240a60635cf471efe0e3b474a2bb2e1128a96c0c2445d9316f9cd5"
+sha256 = "024764e7e83e4c104c9caa7dbb850802c1ac962b8a8bdf5541af561fba2bfb6e"
 
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
@@ -483,7 +483,7 @@ sha256 = "1636ce01146ea7ce6be0e935dcf225061b143e123a75d9798eabc4f4dfe428a1"
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "The tools that build, run and test one node in Python"
-sha256 = "afa7e681b9bcdfde34267b9b10a2bfc0704908fbea5232057116a99673990665"
+sha256 = "0d68aeb117962f03b7e27493dd1f5cfc7aecdcb91ddb187caba4ab7f88551622"
 
 [[segment.voice]]
 id = "problem"
@@ -540,7 +540,7 @@ ros2_summary = "A build system of its own, `ament`, and its build tool, `colcon`
 ros2 = [
   "A `package.xml`, a `setup.py`, a `setup.cfg` and a `resource` marker file",
   "`colcon build`",
-  "source `install/local_setup.bash`, then `ros2 run <package> <node>`",
+  "`source install/local_setup.bash`, then `ros2 run <package> <node>`",
   "`colcon test`",
 ]
 peppy_summary = "The usual tools of Python"
@@ -918,7 +918,7 @@ sha256 = "712fd870c676a8c02aa9cbcc5ceadf549cdc8d0c5466f9c8dfae3b77fb347bf0"
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "The first run of a robot stack that another team made"
-sha256 = "225fdb37319df1a78ef1f35bd9c69794444ab250aa83365b5b5c7a63aedf9875"
+sha256 = "dcbc5ced4d91eb7ad6b02ce2ca28ec6a24f87ea1d8df5ea0ca2658b1ef16db46"
 
 [[segment.voice]]
 id = "problem"
@@ -989,7 +989,7 @@ ros2 = [
   "`mkdir -p ~/ros2_ws/src`, then `git clone <repository>` in it",
   "`rosdep install -i --from-path src --rosdistro <distro> -y`",
   "`colcon build`",
-  "source `install/local_setup.bash`, in a new terminal",
+  "`source install/local_setup.bash`, in a new terminal",
   "`ros2 launch <package> <launch file>`",
 ]
 peppy_summary = "2 steps with 1 tool: `peppy`"
