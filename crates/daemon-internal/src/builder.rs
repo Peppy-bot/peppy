@@ -27,6 +27,18 @@ use tracing::{info, warn};
 
 const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_mins(10);
 
+/// The address that the managed zenoh router listens on: the loopback
+/// interface. Each client of the router is on this machine: the command
+/// line, the processes of the nodes, the containers of Linux (which share the
+/// network of the host), and the containers of macOS (whose Lima VM reaches
+/// the loopback of the Mac as `host.lima.internal`). The nodes of another
+/// machine reach this machine through the link that this router dials to the
+/// cloud router of the project. The transport of this listener has no
+/// authentication, so no host of the network can connect to it. An operator
+/// who wants a router that the network reaches runs one (`zenoh.external`)
+/// or pins its config (`ZENOH_CONFIG`).
+const MANAGED_ROUTER_LISTEN_HOST: &str = config::consts::DEFAULT_MESSAGING_HOST;
+
 pub(crate) struct ServeCommandBuilder {
     composite_command: CompositeCommand,
     /// Set by [`with_messaging_router`](Self::with_messaging_router) and
@@ -260,7 +272,7 @@ impl ServeCommandBuilder {
         };
         let adapter = ZenohAdapter::with_router(
             ZenohNetProtocol::Tcp,
-            "0.0.0.0",
+            MANAGED_ROUTER_LISTEN_HOST,
             extract_messaging_port(),
             gossip,
             subscriber_buffers,

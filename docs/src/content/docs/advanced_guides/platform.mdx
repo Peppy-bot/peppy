@@ -282,12 +282,12 @@ reason. Two refusals come with a remedy:
 
 ### The local listener
 
-The managed router listens on all interfaces in plain TCP, so that container
-nodes and the other machines of a LAN stack can reach it. On an enrolled
-machine this also means that a machine on the same network can open a session
-to this router and, through it, reach the project under this peer's
-certificate. Where that is not acceptable, close the messaging port to other
-machines with the firewall of the host.
+The managed router listens in plain TCP on the loopback interface alone (see
+[`zenoh`: managed or external router](/advanced_guides/daemon_config/#zenoh-managed-or-external-router)).
+The other machines of the project reach this machine through the link that the
+router dials to the cloud router. So no machine of the network can open a
+session to this router and, through it, reach the project under this peer's
+certificate.
 
 ### The certificate
 

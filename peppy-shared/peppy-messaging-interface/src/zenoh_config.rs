@@ -570,12 +570,10 @@ pub fn render_router_config(
 /// every routable interface address instead, which co-located peers can dial
 /// (a host can always reach its own interface addresses) and remote peers
 /// could too, should a mesh ever span hosts. The trade is that the listener
-/// leaves loopback: it is reachable from the network. That widens an existing
-/// exposure class rather than opening a new one (the zenoh transport is
-/// unauthenticated, and the router's own listener is already bound to
-/// `0.0.0.0`), but a deployment that must not accept inbound peer links can
-/// set `gossip: false` in its discovery config to keep every session a
-/// relay-only client with no listener at all.
+/// leaves loopback: it is reachable from the network, and the zenoh transport
+/// is unauthenticated. A deployment that must not accept inbound peer links
+/// sets `gossip: false` in its discovery config (the `router` topology of the
+/// daemon) to keep every session a relay-only client with no listener at all.
 pub(crate) fn peer_listen_endpoint(protocol: ZenohNetProtocol) -> String {
     format!("{protocol}/0.0.0.0:0")
 }

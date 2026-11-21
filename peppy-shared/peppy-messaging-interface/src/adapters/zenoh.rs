@@ -243,7 +243,7 @@ impl ZenohAdapter {
         tls: Option<TlsConfig>,
         router_id: RouterId,
     ) -> Result<Self> {
-        let zenohd_config_path = zenohd::router_config_path(
+        let zenohd_config = zenohd::router_config_file(
             protocol,
             host,
             port,
@@ -251,7 +251,7 @@ impl ZenohAdapter {
             tls.clone(),
             &router_id,
         )?;
-        let facade = zenohd::ZenohdFacade::managed(zenohd_config_path)?;
+        let facade = zenohd::ZenohdFacade::managed(zenohd_config)?;
         let client_config =
             Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls);
 
