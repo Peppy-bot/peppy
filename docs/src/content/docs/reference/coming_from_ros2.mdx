@@ -56,7 +56,7 @@ For automated tests, `peppy node sync` generates typed mocks for every dependenc
 
 ## Build tools
 
-**ROS 2.** Uses its own build system (`ament`) and workspace tool (`colcon`) across CMake and setuptools packages ([Creating a package](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Creating-Your-First-ROS2-Package.html#what-is-a-ros-2-package), [Colcon tutorial](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Colcon-Tutorial.html#build-the-workspace)). You build the workspace with `colcon build`, source `install/local_setup.bash`, and run with `ros2 run`.
+**ROS 2.** Uses its own build system (`ament`) and workspace tool (`colcon`) across CMake and setuptools packages ([Creating a package](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Creating-Your-First-ROS2-Package.html#what-is-a-ros-2-package), [Colcon tutorial](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Colcon-Tutorial.html#build-the-workspace)). You build the workspace with `colcon build`, run `source install/local_setup.bash`, and start a node with `ros2 run`.
 
 **Peppy.** Has no custom build system. Nodes are standard language projects (`cargo` for Rust, `uv` for Python, or any tool such as `pip`, `poetry`, or `pixi` by adding the generated `.peppy/libs/peppygen` and `peppylib` paths). `peppy.json5` specifies `build_cmd` and `run_cmd` ([Execution](/reference/concepts/#execution)). `peppy node build` runs `build_cmd` and caches the artifact; `peppy node run` executes `run_cmd`. [Container nodes](/advanced_guides/containers/) build through an Apptainer definition file instead of `build_cmd`.
 
@@ -102,7 +102,7 @@ Pass `--local` to run the same multi-machine launcher on one workstation with no
 3. Create a workspace and clone the source: `mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src && git clone <repository>`.
 4. Install package dependencies: `rosdep install -i --from-path src --rosdistro <distro> -y`.
 5. Build the workspace: `colcon build`.
-6. Open a new terminal, source ROS 2 again, and source `install/local_setup.bash`.
+6. Open a new terminal, source ROS 2 again, and run `source install/local_setup.bash`.
 7. Start the stack: `ros2 launch <package> <launch file>`.
 </Steps>
 
@@ -124,7 +124,7 @@ For a third-party Git repository (containing a committed `peppy_repository.json5
 2. Add `find_package(rosidl_default_generators REQUIRED)` and `rosidl_generate_interfaces(...)` to `CMakeLists.txt`.
 3. Add `rosidl_default_generators`, `rosidl_default_runtime`, and `rosidl_interface_packages` entries to `package.xml`.
 4. Build with `colcon build --packages-select <interface_pkg>`.
-5. Source `install/setup.bash` in a new terminal.
+5. Run `source install/setup.bash` in a new terminal.
 </Steps>
 
 Then add the interface package to each consumer's `package.xml` and rebuild ([Test the new interfaces](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Custom-ROS2-Interfaces.html#test-the-new-interfaces)).
@@ -144,7 +144,7 @@ On the consumer side, add the producer to `depends_on.nodes` and the topic to `i
 
 <Steps>
 1. **Build**: `colcon build` from the workspace root.
-2. **Run**: source ROS 2 and `install/local_setup.bash`, then `ros2 run <package> <node>`.
+2. **Run**: source ROS 2, run `source install/local_setup.bash`, then `ros2 run <package> <node>`.
 3. **Test**: `colcon test` ([Python testing](https://docs.ros.org/en/lyrical/Developer-Tools/Debugging/Testing/Python.html)).
 </Steps>
 

@@ -95,3 +95,18 @@ def test_an_environment_with_no_ffmpeg_is_refused(tmp_path: Path, monkeypatch: p
 
     with pytest.raises(hyperframes.MissingProgram, match="has no `ffmpeg`"):
         hyperframes.environment()
+
+
+def test_the_headless_environment_omits_display_and_vulkan_driver_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in hyperframes.HEADLESS_OMITTED_VARIABLES:
+        monkeypatch.setenv(name, "set-by-host")
+    monkeypatch.setenv("CONCEPTS_VIDEO_TEST_KEEP", "kept")
+
+    headless = hyperframes.headless_environment()
+    run_env = hyperframes.environment()
+
+    for name in hyperframes.HEADLESS_OMITTED_VARIABLES:
+        assert name not in headless
+        assert name not in run_env
+    assert headless["CONCEPTS_VIDEO_TEST_KEEP"] == "kept"
+    assert run_env["CONCEPTS_VIDEO_TEST_KEEP"] == "kept"

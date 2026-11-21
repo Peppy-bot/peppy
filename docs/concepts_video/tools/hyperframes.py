@@ -21,6 +21,19 @@ ABSENT_MEDIA_CODE_SUFFIX = "_src_not_found"
 # it, so its number of lines does not say how large the template is that a
 # person reads and changes.
 COMPILED_FILE_SIZE_CODE = "composition_file_too_large"
+# Variables of a desktop session or of a Vulkan driver that can stop headless
+# Chrome from starting SwiftShader or route WebGL to a graphics card of the
+# host. When DISPLAY names an X server that Chrome cannot reach, ANGLE tries
+# to open an XCB Vulkan display and fails before SwiftShader starts.
+HEADLESS_OMITTED_VARIABLES = (
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "VK_ICD_FILENAMES",
+    "VK_DRIVER_FILES",
+    "VK_LOADER_DRIVERS_SELECT",
+    "VK_LOADER_DRIVERS_DISABLE",
+)
 
 
 class LintFailed(Exception):
@@ -31,16 +44,30 @@ class MissingProgram(Exception):
     """The pixi environment does not have a program that HyperFrames runs."""
 
 
+def available_processors() -> int:
+    """The count of processors that this process can run on."""
+    if hasattr(os, "sched_getaffinity"):
+        return max(1, len(os.sched_getaffinity(0)))
+    return max(1, os.cpu_count() or 1)
+
+
+def headless_environment() -> dict[str, str]:
+    """The environment of the process without display and Vulkan driver variables."""
+    return {name: value for name, value in os.environ.items() if name not in HEADLESS_OMITTED_VARIABLES}
+
+
 def environment() -> dict[str, str]:
     """The environment of a run.
 
     HyperFrames finds a program by its name only in a folder outside the
     project, and the pixi environment is inside the project. Thus each program
     that HyperFrames runs has its path here. Without the path, HyperFrames
-    runs the FFmpeg of the machine, which is not the pinned one.
+    runs the FFmpeg of the machine, which is not the pinned one. Display and
+    Vulkan driver variables are omitted so headless Chrome initializes
+    SwiftShader off-screen.
     """
     return {
-        **os.environ,
+        **headless_environment(),
         "HYPERFRAMES_CACHE_DIR": str(paths.HYPERFRAMES_CACHE),
         "HYPERFRAMES_PYTHON": sys.executable,
         "HYPERFRAMES_FFMPEG_PATH": str(pinned_program("ffmpeg")),

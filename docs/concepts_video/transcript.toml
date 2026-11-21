@@ -80,7 +80,7 @@ sha256 = "b756cf9e5949afa5e7e4612f81b6e3e08ff02dc567f3c4d91d3a9d125d5c6235"
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "The Core Node"
-sha256 = "88b810728e8d5015d0235356da7004f26b8bb586a67f900f902666d404d9abf9"
+sha256 = "baba823c8af5a1fbf6686b882211034be00545109c6300c014d6b6415a45ff78"
 
 [[segment.source]]
 page = "quickstart.mdx"
@@ -191,17 +191,17 @@ sha256 = "df47061215b90d376b00ed88c7ce237abae9b0995795b77413268d7afdd43fc9"
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "Execution"
-sha256 = "0c4128d265dc2e347fa000c416117e8bd232331a0f33425e20c97404c93a9df9"
+sha256 = "6dff2cd2a6d2e8459da8ed44508c2e40255ab0768cf252d0e2576872e1f134a3"
 
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "Interfaces"
-sha256 = "ebc9026501d87010c99b732aef5cfa906138d2b1d1b21cb968509ad401333b06"
+sha256 = "c68ee69e8b8d4bf7e07d2deb3eedd03cb97d210e7755d1412ec46f7a1bb87a86"
 
 [[segment.source]]
 page = "advanced_guides/node_or_library.mdx"
 section = "Make it a node"
-sha256 = "7837f84b9cb5619aac7f91f3e477ed9f1c44b8ce68407007596ed6ee0094735a"
+sha256 = "9162e76465da177dc6c8c0a1ae276cb5b2d7beb3d8ad4977251e9ab3af5215bf"
 
 [[segment.voice]]
 id = "act"
@@ -321,12 +321,12 @@ sha256 = "df47061215b90d376b00ed88c7ce237abae9b0995795b77413268d7afdd43fc9"
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "Execution"
-sha256 = "0c4128d265dc2e347fa000c416117e8bd232331a0f33425e20c97404c93a9df9"
+sha256 = "6dff2cd2a6d2e8459da8ed44508c2e40255ab0768cf252d0e2576872e1f134a3"
 
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "Interfaces"
-sha256 = "ebc9026501d87010c99b732aef5cfa906138d2b1d1b21cb968509ad401333b06"
+sha256 = "c68ee69e8b8d4bf7e07d2deb3eedd03cb97d210e7755d1412ec46f7a1bb87a86"
 
 [[segment.source]]
 page = "guides/first_node.mdx"
@@ -341,7 +341,7 @@ sha256 = "b6ef75b8712c7bec2a9b77a8d02bc811b2c7affe4809dc29f81da8f4742ed78e"
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "A new message between two nodes"
-sha256 = "94a87b1985639336ebc5472d4c400afce19d7e51ee37ebd8cf3fbfa23f5cd1ea"
+sha256 = "047283783c5e8c9bdcebac22dcec1c113f742ea0b1ed195b1e7edc765c2001a3"
 
 [[segment.voice]]
 id = "problem"
@@ -473,17 +473,17 @@ sha256 = "eeedf0d04312ec1c443e8fbdf8ed032c590f7f68bfb58649e9591e348c8b08b7"
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "Build tools"
-sha256 = "6691d7f8fb3049d6a4f89062bd91f6c175bffd8143da5ab1b70f4b6b20dab23f"
+sha256 = "024764e7e83e4c104c9caa7dbb850802c1ac962b8a8bdf5541af561fba2bfb6e"
 
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "Running and testing one node alone"
-sha256 = "834cbc9603b61c2abdb46276d64ee2e389953c7895058f1d7bc72d3a6d58c00c"
+sha256 = "1636ce01146ea7ce6be0e935dcf225061b143e123a75d9798eabc4f4dfe428a1"
 
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "The tools that build, run and test one node in Python"
-sha256 = "2dcdc027b7d3c961801554107ff293e025b00c5f9f67bce100ec2f9d733a992b"
+sha256 = "0d68aeb117962f03b7e27493dd1f5cfc7aecdcb91ddb187caba4ab7f88551622"
 
 [[segment.voice]]
 id = "problem"
@@ -620,42 +620,42 @@ chapter = "The node stack"
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "Node Instance"
-sha256 = "a5c13d5e8e42c20324b02a5365c1ff4dd72a36ca3d3c1f8d7e160b9ff72007c6"
+sha256 = "1bc229c7d0c90d59b44666a39bed19b207b56f14fac844174f90760afa1874fe"
 
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "Node Stack"
-sha256 = "8023d90259b867515af7c7b692afc077877dd07f7e6ae792a748083bf5d9bb6a"
+sha256 = "e4c403932b464c085b28cd64b86346533abe476fda218c9cb392db357802186e"
 
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "How dependencies work"
-sha256 = "e39c80c971444d25143f20ecf34091b0d0e29693c1894d5ba4e98dd1557af8be"
+sha256 = "d36d1d774c930e9e8d2eb89fc3002b288f0a03483aa7d3faa86c63c6386e9d9e"
 
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "Stack inspection"
-sha256 = "8dab06a035c4bb0785075892cdee75f7249966931da0473c2ea022d8e6c97609"
+sha256 = "278e14be3f3b749def507e275e01480fa0f9a689f4ec42ba94a7f7d8afff84bc"
 
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "The Core Node"
-sha256 = "88b810728e8d5015d0235356da7004f26b8bb586a67f900f902666d404d9abf9"
+sha256 = "baba823c8af5a1fbf6686b882211034be00545109c6300c014d6b6415a45ff78"
 
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "Framework"
-sha256 = "eaef06c8ad4715f252d44f4d70eea1b0910166f7857cd3b84d92ed3bb2dbf5bc"
+sha256 = "cd461678208ca1b003d469c16412c2cdccb6dbc2381001cac7b12de72a896c3c"
 
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "The graph"
-sha256 = "e32b2f3b908d3eaf87d00e3ab2364056e5000ae5697d856fb6aa5b7390f642ec"
+sha256 = "da9f664e4204ed5a015f67587410f8d9f8d5a1037a9e68f004b29501e75e10ef"
 
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "Interfaces and errors before the start"
-sha256 = "5e9ea01e50594fa6fa4d45f60acf8626bffe0f346cf32987c5911dbc8fa67f6e"
+sha256 = "aac8c15bc4d70d760262650a2a6fd3eb7ba3d7546ec2807dfa07fb94457ba9b2"
 
 [[segment.voice]]
 id = "act"
@@ -753,12 +753,12 @@ sha256 = "2e61701a2aa0b580df802b8c2d12a1cab247849fb5a362ce67cf169610dd6f37"
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "Interfaces"
-sha256 = "ebc9026501d87010c99b732aef5cfa906138d2b1d1b21cb968509ad401333b06"
+sha256 = "c68ee69e8b8d4bf7e07d2deb3eedd03cb97d210e7755d1412ec46f7a1bb87a86"
 
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "Contracts"
-sha256 = "42b71d58831cd89aff0b3836abc979f0e34ae6b5cd92382d5682b89049b22012"
+sha256 = "1e500238d7b6f19da9a411226ec8c8902be0977941e8fef29029c51140e35407"
 
 [[segment.voice]]
 id = "problem"
@@ -883,7 +883,7 @@ sha256 = "baa26f5d8c718d0d1d366c29e343482d47c6bf5556df536c2ff8553d56b8a92f"
 [[segment.source]]
 page = "guides/launch_files.mdx"
 section = "Launching from a repository"
-sha256 = "84c4016c28f5f2c1e1b7794ca2983054c50a9a2c835303bf53d7620143a2db73"
+sha256 = "280d016fda67ee3e36f17839fe538db22fc24c84fe1ca751d6f749fadee097b6"
 
 [[segment.source]]
 page = "quickstart.mdx"
@@ -893,12 +893,12 @@ sha256 = "87b82925179df3e73dee40c4d8580cf10cca287b1cf2ad5182bd4e2031668e91"
 [[segment.source]]
 page = "quickstart.mdx"
 section = "Step 2: Launch the simulated robot"
-sha256 = "8df1056c30abe4248e727c5828dae796255ba7887a5f2162484ea8272f5d574a"
+sha256 = "9152b77911997d0f69b2f9ec9d26a114c992c4d00b84f97126a32143fdc1f584"
 
 [[segment.source]]
 page = "guides/installation.mdx"
 section = "Installation"
-sha256 = "7c3a1b3bdea37e0671d9aeec8708785a08e9d1afa3b00947bddf03392b2344af"
+sha256 = "f7dc7c42f60dc7e0c05afae296a08e5151b91a808b4806713ff1082a61bbfdb7"
 
 [[segment.source]]
 page = "advanced_guides/repositories.mdx"
@@ -918,7 +918,7 @@ sha256 = "712fd870c676a8c02aa9cbcc5ceadf549cdc8d0c5466f9c8dfae3b77fb347bf0"
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "The first run of a robot stack that another team made"
-sha256 = "506377fadadebb4d05dff24c0dbd7bf8db9df8490002044e6ae087af1449ff6a"
+sha256 = "dcbc5ced4d91eb7ad6b02ce2ca28ec6a24f87ea1d8df5ea0ca2658b1ef16db46"
 
 [[segment.voice]]
 id = "problem"
@@ -1009,12 +1009,12 @@ chapter = "From simulation to the real robot"
 [[segment.source]]
 page = "guides/launch_files.mdx"
 section = "Swapping parts at launch time"
-sha256 = "ca289d30a3310fd70b0c3774c622074d79f8f155b12164731828f5934b4a7bd2"
+sha256 = "da805ef74b834b192239025b181d0c688534b061d48bcf251aa41860fa2fce4c"
 
 [[segment.source]]
 page = "quickstart.mdx"
 section = "Step 2: Launch the simulated robot"
-sha256 = "8df1056c30abe4248e727c5828dae796255ba7887a5f2162484ea8272f5d574a"
+sha256 = "9152b77911997d0f69b2f9ec9d26a114c992c4d00b84f97126a32143fdc1f584"
 
 [[segment.voice]]
 id = "act"
@@ -1135,12 +1135,12 @@ sha256 = "c533ea585556b3d7f1f484af28c83feb56a0b7f07349a0cf87ffd1eb72121f51"
 [[segment.source]]
 page = "reference/concepts.mdx"
 section = "The Core Node"
-sha256 = "88b810728e8d5015d0235356da7004f26b8bb586a67f900f902666d404d9abf9"
+sha256 = "baba823c8af5a1fbf6686b882211034be00545109c6300c014d6b6415a45ff78"
 
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "Several machines"
-sha256 = "b35bf8b51abb0ef84e84631383429f0a8882743b104f528b94c109d9edaef541"
+sha256 = "33477ad1ff11905fc5885c746a45d52f9b70bfe26244304a73a199bf4e0ec4d8"
 
 [[segment.voice]]
 id = "problem"
@@ -1248,17 +1248,17 @@ chapter = "Access for an LLM"
 [[segment.source]]
 page = "advanced_guides/mcp.mdx"
 section = "MCP exposure"
-sha256 = "bde1ed90a43c016a4f54ff4ea6127e650407f03601d1fbe9cfb01e65677ac79c"
+sha256 = "c385e506a8b423e8404d53a17d0391cecaa54016d9b0a840b5375dbd8eba323a"
 
 [[segment.source]]
 page = "advanced_guides/mcp.mdx"
 section = "What an exposure publishes"
-sha256 = "4d5844aa87a407d5ad805a7ff30eb34e38f3ddb15f01b2e92a2b9ee884505622"
+sha256 = "e81f447902ba8857308732773befea73af29df35f478ed4cdd97cc916f21bf9d"
 
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "MCP"
-sha256 = "01e4d4d135e6a39fc24c9dc5ff0e0bd81fe9fa79ccc916b89430003ab8e4da21"
+sha256 = "ae0d349d4b76ee02d2a43692bb2ca5e3cf86584ce385eb77047d5633a4fdeef8"
 
 [[segment.voice]]
 id = "problem"
@@ -1340,7 +1340,7 @@ sha256 = "87b82925179df3e73dee40c4d8580cf10cca287b1cf2ad5182bd4e2031668e91"
 [[segment.source]]
 page = "guides/installation.mdx"
 section = "Installation"
-sha256 = "7c3a1b3bdea37e0671d9aeec8708785a08e9d1afa3b00947bddf03392b2344af"
+sha256 = "f7dc7c42f60dc7e0c05afae296a08e5151b91a808b4806713ff1082a61bbfdb7"
 
 [[segment.voice]]
 id = "concepts"

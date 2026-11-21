@@ -13,6 +13,9 @@
     "puppeteer-core": "25.17.0",
     "three": "0.187.0"
   },
+  "overrides": {
+    "undici": "7.30.2"
+  },
   "allowScripts": {
     "esbuild": false
   }

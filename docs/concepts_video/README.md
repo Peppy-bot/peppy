@@ -27,7 +27,7 @@ It writes these files into `build/`:
 | `concepts_video.en.srt` | The captions. Upload them with the video |
 | `concepts_video.chapters.txt` | One chapter for each segment. Paste it into the description of the video on YouTube, which makes the chapters from it |
 
-Two builds of the same commit on the same machine give the same MP4 file, byte for byte. The build renders with the software renderer of Chrome and with a fixed count of render workers, so the graphics card and the count of processors of a machine do not change the settings of the render.
+When a machine has a working GPU, the build uses it for Chrome rendering and hardware H.264 encoding; on a machine with no GPU, it falls back automatically to the software renderer of Chrome and `libx264`. Pass `--cpu` to force software rendering and CPU encoding. It scales the count of render workers to the processors and memory of the machine so the render uses all available processors.
 
 Upload the video to the channel of Peppy, in [YouTube Studio](https://studio.youtube.com/channel/UCQzSqGbMBfHIKmuYo1KMAKw). Upload the captions with it: YouTube also makes captions from the voice with speech recognition, and these captions spell some names wrongly, for example Peppy. In the step "Video elements" of the upload, select "Add subtitles", then "Upload file" and "With timing", and select `build/concepts_video.en.srt`. The text of each caption comes from the transcript, and its time comes from the voice of its sentence, so the captions need no speech recognition.
 
