@@ -1,5 +1,10 @@
 """The format and the file of what the build renders."""
 
+from pathlib import Path
+import subprocess
+
+import pytest
+
 from tools import build, paths
 from tools.timing import FRAMES_PER_SECOND
 
@@ -28,6 +33,7 @@ def test_the_command_builds_the_full_video_in_its_format_when_it_gets_no_argumen
 
     assert arguments.part is None
     assert arguments.preview is False
+    assert arguments.cpu is False
 
 
 def test_the_command_takes_a_part_and_the_preview_option_in_each_order() -> None:
@@ -36,6 +42,65 @@ def test_the_command_takes_a_part_and_the_preview_option_in_each_order() -> None
 
         assert arguments.part == "splash"
         assert arguments.preview is True
+        assert arguments.cpu is False
+
+
+def test_the_command_accepts_the_cpu_flag() -> None:
+    arguments = build.parse_arguments(["--cpu", "opening"])
+
+    assert arguments.part == "opening"
+    assert arguments.cpu is True
+
+
+def test_gpu_render_options_enables_hardware_encoding_only_when_detected_and_not_forced_to_cpu() -> None:
+    assert build.gpu_render_options(force_cpu=False, has_gpu_encoder=True) == ["--gpu"]
+    assert build.gpu_render_options(force_cpu=False, has_gpu_encoder=False) == []
+    assert build.gpu_render_options(force_cpu=True, has_gpu_encoder=True) == ["--no-browser-gpu"]
+    assert build.gpu_render_options(force_cpu=True, has_gpu_encoder=False) == ["--no-browser-gpu"]
+
+
+def test_hardware_encoder_probe_returns_true_when_a_listed_encoder_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if "-encoders" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=" V....D h264_nvenc\n V....D h264_vaapi\n", stderr="")
+        if "h264_nvenc" in command:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="no nvidia")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(build.subprocess, "run", fake_run)
+
+    assert build.has_hardware_video_encoder(tmp_path / "ffmpeg") is True
+    assert len(calls) == 3
+    assert "h264_vaapi" in calls[2]
+
+
+def test_hardware_encoder_probe_returns_false_when_no_gpu_encoder_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "-encoders" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=" V....D h264_nvenc\n", stderr="")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="no gpu")
+
+    monkeypatch.setattr(build.subprocess, "run", fake_run)
+
+    assert build.has_hardware_video_encoder(tmp_path / "ffmpeg") is False
+
+
+def test_hardware_encoder_probe_returns_false_when_ffmpeg_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(command, 10)
+
+    monkeypatch.setattr(build.subprocess, "run", fake_run)
+
+    assert build.has_hardware_video_encoder(tmp_path / "ffmpeg") is False
 
 
 def test_render_workers_scales_with_processors_and_memory() -> None:
