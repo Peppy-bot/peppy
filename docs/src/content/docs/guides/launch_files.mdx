@@ -288,14 +288,14 @@ Lists environment variable names that this instance inherits from the launching 
   ] } }
 ```
 
-With both sets in the shell of the launch, the brain gets `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, and not `GEMINI_API_KEY`. With no set complete, the launch is refused, and the message names every set. An instance writes a list or an `any_of`, not both: a variable that every set needs is written in each set.
+With both sets in the shell of the launch, the brain gets `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, and not `GEMINI_API_KEY`. With no set complete, the launch is refused, and the message names every set. A set held in part, some of its variables and not all, is refused too, also beside a complete set: with `OPENAI_COMPATIBLE_API_BASE` and `GEMINI_API_KEY` in the shell and no `OPENAI_COMPATIBLE_API_KEY`, the launch is refused, and the message names `OPENAI_COMPATIBLE_API_KEY`. So a shell that names an OpenAI-compatible API in part never gives the brain `GEMINI_API_KEY` in its place. An instance writes a list or an `any_of`, not both, and each variable is in one set only.
 
 How launch variables work:
 
 - **Isolated to named instances**: Any variable listed in `env_from_launch` (or added via [`set_env_from_launch`](#adjustments)) is delivered *only* to the runtime process of instances that take it: each variable of a list, and the variables of the chosen set of an `any_of`. Other instances, the other sets of an `any_of`, and add/build steps never receive it, even on the coordinator.
 - **Kept in daemon memory for later joins**: The daemon holds the launch variables in memory for the lifetime of the stack so later joins (including `stack.join` from MCP or an external client) can pass the same keys to newly joined instances without writing secrets to disk. `peppy stack reset`, a new launch, or a daemon stop clears them.
 - **Coordinator only**: Launch variables never leave the machine where you ran `peppy stack launch`. Placing an instance with `env_from_launch` on a remote peer is refused.
-- **A join chooses a set as it reads a value**: A join through `robot_membership:v1` forwards no shell environment, so an `any_of` takes the set that the kept values complete, the set of the launch. A `peppy stack join` reads its own shell first, then the kept values, for the set of an `any_of` as for each value: a join shell that completes an earlier set gives that set to the instances the join starts.
+- **A join chooses a set as it reads a value**: A join through `robot_membership:v1` forwards no shell environment, so an `any_of` takes the set that the kept values complete, the set of the launch. A `peppy stack join` reads its own shell first, then the kept values, for the set of an `any_of` as for each value: a join shell that completes an earlier set gives that set to the instances the join starts. A set that the join shell and the kept values hold in part refuses the join, as it refuses a launch.
 - **Never logged**: Values never appear in logs, feedback lines, errors, `peppy stack list`, fleet listings, MCP responses, data root files, or process command lines (on macOS, container env vars are passed over stdin to Apptainer inside Lima).
 
 To add launch variables to an instance defined in a shared fragment, use a [`set_env_from_launch`](#adjustments) adjustment:
@@ -315,7 +315,7 @@ Effective environment per start mode:
 
 | How the instance starts | Environment it receives |
 |---|---|
-| `peppy stack launch` (coordinator) | Forwarded shell env (minus all launch variables) + requested `env_from_launch` values + `env_vars`. Missing any requested variable of a list, or an `any_of` with no complete set, aborts the launch. |
+| `peppy stack launch` (coordinator) | Forwarded shell env (minus all launch variables) + requested `env_from_launch` values + `env_vars`. Missing any requested variable of a list, an `any_of` with no complete set, or a set of an `any_of` held in part aborts the launch. |
 | `peppy stack join` (coordinator) | Forwarded join shell env (minus launch variables) + requested `env_from_launch` values (join shell overrides kept launch values, for a value and for the set of an `any_of`) + `env_vars`. |
 | Join via `robot_membership:v1` (MCP / API) | Kept launch values for requested `env_from_launch`, the set of an `any_of` that they complete + `env_vars` (no shell env is forwarded). |
 | Any remote peer | `env_vars` only (instances with `env_from_launch` cannot run on peers). |
@@ -323,18 +323,24 @@ Effective environment per start mode:
 Validation rules:
 
 - **Allowed names**: Must follow `env_vars` naming rules and cannot be stripped shell vars (`PWD`, `OLDPWD`, `TMPDIR`, `TEMP`, `TMP`, `PYTHONPATH`, `PYTHONHOME`). Names form an unordered set (duplicates are refused; empty list equals omitted; `peppy stack resolve` sorts names).
-- **An `any_of`**: names two sets or more, in order. Each set names at least one variable, and each variable once. A set that holds every variable of an earlier set is refused, because the earlier set is complete first and the later set is never chosen. A name can be in several sets. Each set writes back in name order, and the sets in the order written.
+- **An `any_of`**: names two sets or more, in order. Each set names at least one variable, and each variable once. Each variable is in one set only: two equal sets, a set that holds another, and two sets that share a variable are refused, because the later set is never taken (when it is complete, the earlier set is complete too, or held in part). Each set writes back in name order, and the sets in the order written.
 - **No overlap with `env_vars`**: Declaring the same variable in both `env_vars` and `env_from_launch` on one instance (after adjustments), a name of any set of an `any_of` included, is refused.
-- **Checked before touching the running stack**: `peppy stack launch` verifies that every variable of a list, and one complete set of each `any_of`, needed by its instances *and* by any copy a `robot_membership` scope can join (across all feature combinations, even with `--no-prebuild`) is present, non-empty, and free of forbidden characters. If any is missing, the existing stack stays untouched:
+- **Checked before touching the running stack**: `peppy stack launch` verifies that every variable of a list, and one complete set and no set held in part of each `any_of`, needed by its instances *and* by any copy a `robot_membership` scope can join (across all feature combinations, even with `--no-prebuild`) is present, non-empty, and free of forbidden characters. If any is missing, the existing stack stays untouched:
 
 ```
 the launch needs `GEMINI_API_KEY`, and the launch environment does not hold it, or holds it empty or with characters that a node cannot receive: `brain_inst` of option `demo_arm` takes it from the launch, and stack.join through `framework_controls_inst` can add a copy of `demo_arm`. Export `GEMINI_API_KEY` in the shell that launches. A value must not be empty, and must hold letters, digits and `_ - . / : , = @ + %` only
 ```
 
-For an `any_of`, the refusal names every set:
+For an `any_of` with no complete set, the refusal names every set:
 
 ```
 the launch needs one set of `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, or of `GEMINI_API_KEY`, and the launch environment holds no set complete, or holds a variable of it empty or with characters that a node cannot receive: `brain_inst` of option `demo_arm` takes the first complete set from the launch, and stack.join through `framework_controls_inst` can add a copy of `demo_arm`. Export every variable of one set in the shell that launches. A value must not be empty, and must hold letters, digits and `_ - . / : , = @ + %` only
+```
+
+For a set held in part, the refusal names the set and the variables that it lacks:
+
+```
+the launch needs one set of `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, or of `GEMINI_API_KEY`, and the launch environment holds the set of `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY` in part, as it does not hold `OPENAI_COMPATIBLE_API_KEY`, or holds it empty or with characters that a node cannot receive: `brain_inst` of option `demo_arm` takes the first complete set from the launch, and stack.join through `framework_controls_inst` can add a copy of `demo_arm`. A launch and a join refuse a set held in part, also when another set is complete, so that an instance never takes another set in its place: export every variable of such a set, or none of them, in the shell that launches. A value must not be empty, and must hold letters, digits and `_ - . / : , = @ + %` only
 ```
 
 Instances reachable only via manual CLI flags (not offered by any `robot_membership` scope) are checked when `peppy stack join` runs instead of at launch. `peppy stack build` starts no instances, so it neither checks nor stores launch variables. Use [`peppy stack resolve`](#auditing-a-composed-launch) to see which variables a launch requires before running it.
