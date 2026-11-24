@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use config::consts::NODE_CONFIG_FILE;
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::NodeStage;
-use daemon_config::launcher::LaunchVariable;
+use daemon_config::launcher::{LaunchVariable, hosted_brain};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{
@@ -3795,18 +3795,18 @@ fn stack_resolve_reports_the_sets_of_an_any_of() {
     let launcher = dir.path().join("arm.json5");
     fs::write(
         &launcher,
-        r#"{
+        format!(
+            r#"{{
             peppy_schema: "launcher/v1",
             description: ["A test launcher."],
             deployments: [
-                { source: { name: "vlm_router_brain", tag: "v1" }, instances: [
-                    { instance_id: "brain_inst", env_from_launch: { any_of: [
-                        ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_API_BASE"],
-                        ["GEMINI_API_KEY"],
-                    ] } },
-                ] },
+                {{ source: {{ name: "vlm_router_brain", tag: "v1" }}, instances: [
+                    {{ instance_id: "brain_inst", env_from_launch: {} }},
+                ] }},
             ],
-        }"#,
+        }}"#,
+            hosted_brain::ANY_OF
+        ),
     )
     .expect("launcher");
 
@@ -3841,7 +3841,7 @@ fn stack_resolve_reports_the_sets_of_an_any_of() {
         !report
             .iter()
             .any(|line| line.starts_with("launch variables: the launch needs `")),
-        "a any_of is no list of required variables: {report:?}"
+        "an any_of is no list of required variables: {report:?}"
     );
 }
 

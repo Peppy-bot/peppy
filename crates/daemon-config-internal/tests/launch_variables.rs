@@ -4,10 +4,10 @@
 //! report of the instances that a join can start.
 
 use daemon_config::launcher::{
-    AppliedChange, CompositionError, CopyMembership, Deployment, DeploymentInstance,
-    DeploymentSource, DeploymentTargets, JoinRequest, Joinable, LaunchVariable, PeppyLauncher,
-    PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck, Starter, VariableChange,
-    VariableNeed, check_composition, check_daemon_scopes,
+    AppliedChange, ChangeValues, CompositionError, CopyMembership, Deployment, DeploymentInstance,
+    DeploymentSource, DeploymentTargets, JoinRequest, Joinable, LaunchValues, LaunchVariable,
+    PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck, Starter,
+    VariableNeed, check_composition, check_daemon_scopes, hosted_brain,
 };
 use std::assert_matches;
 use std::path::Path;
@@ -216,7 +216,7 @@ fn the_example_needs_the_key_of_the_brain_that_a_join_can_add() {
     );
     let refusal = joinable
         .variable_needs
-        .check(VariableChange::Launch, |_| false)
+        .check(ChangeValues::launch(&LaunchValues::default()))
         .expect_err("an empty launch environment holds no key")
         .to_string();
     assert_eq!(
@@ -264,7 +264,7 @@ fn a_need_under_a_feature_names_the_feature() {
     );
     let refusal = joinable
         .variable_needs
-        .check(VariableChange::Launch, |_| false)
+        .check(ChangeValues::launch(&LaunchValues::default()))
         .expect_err("no key")
         .to_string();
     assert!(
@@ -774,18 +774,11 @@ fn set_env_from_launch_refuses_a_name_the_launch_environment_cannot_give() {
 
 // -- any_of --------------------------------------------------------------
 
-/// The `any_of` of the hosted brain: the two variables of an
-/// OpenAI-compatible API, else the key of the provider.
-const BRAIN_ANY_OF: &str = r#"{ any_of: [
-    ["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"],
-    ["GEMINI_API_KEY"],
-] }"#;
-
 /// An `any_of` parses on an instance and in an adjustment, and a broken one
 /// is refused naming the instance or the adjustment, and the set.
 #[test]
 fn an_any_of_is_held_to_its_rules_on_an_instance_and_in_an_adjustment() {
-    let flat = PeppyLauncherParser::from_content(&flat_with(BRAIN_ANY_OF)).expect("parses");
+    let flat = PeppyLauncherParser::from_content(&flat_with(hosted_brain::ANY_OF)).expect("parses");
     assert_eq!(
         names(instance(&flat, "brain_inst")),
         [
@@ -841,7 +834,7 @@ fn an_any_of_is_held_to_its_rules_on_an_instance_and_in_an_adjustment() {
 /// values.
 #[test]
 fn a_name_of_an_any_of_that_env_vars_also_gives_is_refused() {
-    let document = flat_with(BRAIN_ANY_OF).replace(
+    let document = flat_with(hosted_brain::ANY_OF).replace(
         r#"instance_id: "brain_inst","#,
         r#"instance_id: "brain_inst", env_vars: { GEMINI_API_KEY: "a" },"#,
     );
@@ -862,7 +855,10 @@ fn a_name_of_an_any_of_that_env_vars_also_gives_is_refused() {
 /// file writes the `any_of` back.
 #[test]
 fn set_env_from_launch_with_an_any_of_replaces_the_list() {
-    let adjustment = format!(r#"{{ target: "brain_inst", set_env_from_launch: {BRAIN_ANY_OF} }},"#);
+    let adjustment = format!(
+        r#"{{ target: "brain_inst", set_env_from_launch: {} }},"#,
+        hosted_brain::ANY_OF
+    );
     let prepared = load(
         &Demo {
             adjustments: &adjustment,
@@ -898,7 +894,7 @@ fn set_env_from_launch_with_an_any_of_replaces_the_list() {
 fn every_name_of_every_set_is_a_launch_variable() {
     let prepared = load(
         &Demo {
-            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, BRAIN_ANY_OF),
+            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, hosted_brain::ANY_OF),
             ..Demo::default()
         }
         .document(),
@@ -956,7 +952,7 @@ fn an_any_of_adds_no_combination() {
         check_composition(&launcher, Path::new("fourteen.json5"))
     };
     let with_list = count(r#"["GEMINI_API_KEY"]"#);
-    let with_any_of = count(BRAIN_ANY_OF);
+    let with_any_of = count(hosted_brain::ANY_OF);
     assert_eq!(with_list, with_any_of);
     assert!(
         with_list
@@ -973,7 +969,7 @@ fn an_any_of_adds_no_combination() {
 fn the_example_needs_one_set_of_the_brain_that_a_join_can_add() {
     let prepared = load(
         &Demo {
-            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, BRAIN_ANY_OF),
+            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, hosted_brain::ANY_OF),
             ..Demo::default()
         }
         .document(),
@@ -994,7 +990,7 @@ fn the_example_needs_one_set_of_the_brain_that_a_join_can_add() {
     assert_eq!(
         joinable
             .variable_needs
-            .check(VariableChange::Launch, |_| false)
+            .check(ChangeValues::launch(&LaunchValues::default()))
             .expect_err("an empty launch environment holds no set")
             .to_string(),
         "the launch needs one set of `OPENAI_COMPATIBLE_API_BASE` and \
@@ -1007,6 +1003,57 @@ fn the_example_needs_one_set_of_the_brain_that_a_join_can_add() {
     );
     joinable
         .variable_needs
-        .check(VariableChange::Launch, |name| name == "GEMINI_API_KEY")
+        .check(ChangeValues::launch(&hosted_brain::values(&[(
+            hosted_brain::PROVIDER_KEY,
+            "value",
+        )])))
         .expect("the second set is complete");
+}
+
+/// A launcher whose adjustment gives an instance a list that names a
+/// variable of a set of two variables of the `any_of` of the brain is
+/// refused when it loads, also when no selection runs the two together: the
+/// launch keeps the values for every join. The refusal names the variable,
+/// the set and where each one is written.
+#[test]
+fn a_launcher_that_names_a_variable_of_a_set_outside_it_is_refused() {
+    let adjustment =
+        r#"{ target: "simulation_inst", set_env_from_launch: ["OPENAI_COMPATIBLE_API_KEY"] },"#;
+    let document = Demo {
+        brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, hosted_brain::ANY_OF),
+        adjustments: adjustment,
+        ..Demo::default()
+    }
+    .document();
+    let parsed = PeppyLauncherParser::from_content(&document).expect("the launcher parses");
+    let refusal = PreparedLauncher::load(&parsed, Path::new("demo.json5"))
+        .expect_err("a variable of the set of the API in a list");
+    assert_matches!(refusal, CompositionError::VariableOutsideItsSet(_));
+    let refusal = refusal.to_string();
+    assert!(
+        refusal.starts_with(
+            "`OPENAI_COMPATIBLE_API_KEY` is in the set of `OPENAI_COMPATIBLE_API_BASE` and \
+             `OPENAI_COMPATIBLE_API_KEY` of an `any_of` (the `env_from_launch` of `brain_inst` in "
+        ) && refusal.contains(
+            ") and in a list (the `set_env_from_launch` of `simulation_inst` in demo.json5): "
+        ),
+        "{refusal}"
+    );
+    assert!(
+        check_composition(&parsed, Path::new("demo.json5"))
+            .iter()
+            .any(|problem| problem.contains("`OPENAI_COMPATIBLE_API_KEY` is in the set of")),
+        "the index check of a repository refuses it too"
+    );
+
+    let shared_provider_key =
+        r#"{ target: "simulation_inst", set_env_from_launch: ["GEMINI_API_KEY"] },"#;
+    load(
+        &Demo {
+            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, hosted_brain::ANY_OF),
+            adjustments: shared_provider_key,
+            ..Demo::default()
+        }
+        .document(),
+    );
 }

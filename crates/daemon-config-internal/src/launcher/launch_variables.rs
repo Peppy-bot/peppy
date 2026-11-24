@@ -7,20 +7,29 @@
 //! A launch and a join parse the environment that the CLI forwarded with
 //! them against the launch variables of the launcher ([`ForwardedEnv`]): the
 //! value of a launch variable reaches the run of each instance that takes it,
-//! and no other node, add or build. An instance takes each variable of its
-//! list, or the variables of the first set of its `any_of` that the
-//! environment of the change holds complete. The daemon keeps, in memory,
-//! the values of the launch ([`LaunchValues`]), and a join gives each
-//! instance that it starts the kept value of each variable that the instance
-//! takes and the join does not forward: a join reads its own forwarded
-//! environment, then the kept values, for a set as for a value. The launch
-//! is refused when an instance that the launch or a join through a
-//! `robot_membership` scope can start takes a variable that the forwarded
-//! environment of the launch does not hold, or an `any_of` none of whose sets
-//! it holds complete or one of whose sets it holds in part, and a join when
-//! an instance that it starts takes a variable or an `any_of` that neither
-//! its own forwarded environment nor the kept values hold, or hold complete,
-//! or that they hold in part ([`VariableNeeds::check`]).
+//! and no other node, add or build. The daemon keeps, in memory, the values
+//! of the launch ([`LaunchValues`]). An instance takes the values of a
+//! change ([`ChangeValues`]) as [`LaunchVariables::values_taken`] tells:
+//! each variable of its list, from the forwarded environment of the change,
+//! else from the kept values; or the first set of its `any_of` that the
+//! forwarded environment of the change holds complete, else the first set
+//! that the kept values hold complete, every value of the set from that one
+//! source.
+//!
+//! The launch is refused when an instance that the launch or a join through
+//! a `robot_membership` scope can start takes a variable that the forwarded
+//! environment of the launch does not hold, or an `any_of` none of whose
+//! sets it holds complete; a join, when an instance that it starts takes a
+//! variable that neither its own forwarded environment nor the kept values
+//! hold, or an `any_of` none of whose sets one of them holds complete
+//! ([`VariableNeeds::check`]). A launch and a join also refuse a set that
+//! their own forwarded environment holds in part, so that an instance never
+//! takes another set in its place. The launch refuses a set held in part of
+//! each `any_of` of its launcher, also when no instance that it can start
+//! takes that `any_of` ([`refuse_kept_sets_held_in_part`]): it keeps the
+//! values for each later join, so the kept values never hold a set in part.
+//! A launcher names a variable of a set of two variables or more in no list
+//! and in no other set ([`refuse_variables_outside_their_set`]).
 //! An instance with launch variables runs on the coordinator's machine only
 //! ([`refuse_peer_placements`]).
 
@@ -176,9 +185,9 @@ fn first_shared_variable<'a>(
         })
 }
 
-/// Whether `holds` holds every variable of `set`.
-fn holds_complete(set: &BTreeSet<LaunchVariable>, holds: impl Fn(&str) -> bool) -> bool {
-    set.iter().all(|variable| holds(variable.as_str()))
+/// Whether `values` hold every variable of `set`.
+fn holds_complete(set: &BTreeSet<LaunchVariable>, values: &LaunchValues) -> bool {
+    set.iter().all(|variable| values.holds(variable.as_str()))
 }
 
 impl TryFrom<Vec<LaunchVariable>> for LaunchVariables {
@@ -253,43 +262,54 @@ impl LaunchVariables {
         }
     }
 
-    /// The variables that the instance takes, in name order, when `holds`
-    /// tells which variables the environment holds: each variable of a list,
-    /// or the variables of the first set of an `any_of` that `holds` holds
-    /// complete, and none when no set is complete.
-    pub fn taken(&self, holds: impl Fn(&str) -> bool) -> Vec<&LaunchVariable> {
-        match &self.0 {
-            Form::Each(variables) => variables.iter().collect(),
-            Form::AnyOf(sets) => sets
-                .iter()
-                .find(|set| holds_complete(set, &holds))
-                .map_or_default(|set| set.iter().collect()),
-        }
+    /// The first set of an `any_of` that `values` hold complete. A list has
+    /// no set.
+    fn first_set_complete_in(&self, values: &LaunchValues) -> Option<&BTreeSet<LaunchVariable>> {
+        self.sets().iter().find(|set| holds_complete(set, values))
     }
 
-    /// Whether `holds` holds a set of an `any_of` complete. A list has no
-    /// set.
-    fn holds_a_set_complete(&self, holds: impl Fn(&str) -> bool) -> bool {
-        self.sets().iter().any(|set| holds_complete(set, &holds))
+    /// The value of each variable that the instance takes, in name order,
+    /// from `own`, the values of the change that starts it, and `kept`, the
+    /// values that the launch kept. Each variable of a list takes its value
+    /// from `own`, else from `kept`, and a variable that neither holds is
+    /// left out. An `any_of` takes the first set that `own` holds complete,
+    /// with the values of `own`, else the first set that `kept` holds
+    /// complete, with the values of `kept`, and nothing when neither holds a
+    /// set complete: the values of a set come from one source, never from
+    /// the two.
+    pub fn values_taken<'a>(
+        &'a self,
+        own: &'a LaunchValues,
+        kept: &'a LaunchValues,
+    ) -> Vec<(&'a LaunchVariable, &'a str)> {
+        let Form::AnyOf(_) = &self.0 else {
+            return self
+                .required()
+                .filter_map(|variable| {
+                    let name = variable.as_str();
+                    let value = own.value_of(name).or_else(|| kept.value_of(name))?;
+                    Some((variable, value))
+                })
+                .collect();
+        };
+        let taken = self
+            .first_set_complete_in(own)
+            .map(|set| (set, own))
+            .or_else(|| self.first_set_complete_in(kept).map(|set| (set, kept)));
+        let Some((set, source)) = taken else {
+            return Vec::new();
+        };
+        set.iter()
+            .filter_map(|variable| Some((variable, source.value_of(variable.as_str())?)))
+            .collect()
     }
 
-    /// The sets of an `any_of` that `holds` holds in part, in order. A set of
+    /// The sets of an `any_of` that `values` hold in part, in order. A set of
     /// one variable is never held in part, and a list has no set.
-    fn sets_held_in_part(&self, holds: impl Fn(&str) -> bool) -> Vec<SetHeldInPart> {
+    fn sets_held_in_part(&self, values: &LaunchValues) -> Vec<SetHeldInPart> {
         self.sets()
             .iter()
-            .filter_map(|set| {
-                let missing: Vec<LaunchVariable> = set
-                    .iter()
-                    .filter(|variable| !holds(variable.as_str()))
-                    .cloned()
-                    .collect();
-                let held_in_part = !missing.is_empty() && missing.len() < set.len();
-                held_in_part.then(|| SetHeldInPart {
-                    set: set.clone(),
-                    missing,
-                })
-            })
+            .filter_map(|set| SetHeldInPart::of(set, values))
             .collect()
     }
 
@@ -779,31 +799,28 @@ impl VariableNeeds {
             .collect()
     }
 
-    /// The refusal of `change` when a variable of a list of these needs is
-    /// one that `holds` does not hold, or when `holds` holds no set of an
-    /// `any_of` complete, or a set of it in part: it names each such variable
-    /// and `any_of`, each instance that needs it and what can start that
-    /// instance.
-    pub fn check(
-        &self,
-        change: VariableChange,
-        holds: impl Fn(&str) -> bool,
-    ) -> Result<(), MissingLaunchVariables> {
+    /// The refusal of the change of `values` when a variable of a list of
+    /// these needs is one that `values` do not hold, when neither source of
+    /// `values` holds a set of an `any_of` complete, or when the own values
+    /// of the change hold a set of an `any_of` in part: it names each such
+    /// variable and `any_of`, each instance that needs it and what can start
+    /// that instance.
+    pub fn check(&self, values: ChangeValues<'_>) -> Result<(), MissingLaunchVariables> {
         let missing: BTreeMap<LaunchVariable, String> = self
             .reasons()
             .into_iter()
-            .filter(|(variable, _)| !holds(variable.as_str()))
+            .filter(|(variable, _)| !values.holds(variable.as_str()))
             .collect();
         let unmet: Vec<UnmetChoice> = self
             .choice_reasons()
             .into_iter()
-            .filter_map(|(variables, reasons)| UnmetChoice::of(variables, reasons, &holds))
+            .filter_map(|(variables, reasons)| UnmetChoice::of(variables, reasons, values))
             .collect();
         if missing.is_empty() && unmet.is_empty() {
             Ok(())
         } else {
             Err(MissingLaunchVariables {
-                change,
+                change: values.change,
                 missing,
                 unmet,
             })
@@ -819,12 +836,74 @@ pub enum VariableChange {
     Join,
 }
 
+impl VariableChange {
+    /// The forwarded environment of the change, as a refusal names it.
+    fn environment(self) -> &'static str {
+        match self {
+            Self::Launch => "the launch environment",
+            Self::Join => "the join environment",
+        }
+    }
+
+    /// The shell whose environment the CLI forwards with the change.
+    fn own_shell(self) -> &'static str {
+        match self {
+            Self::Launch => "the shell that launches",
+            Self::Join => "the shell that joins",
+        }
+    }
+}
+
 impl std::fmt::Display for VariableChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Launch => "the launch",
             Self::Join => "the join",
         })
+    }
+}
+
+/// The values of the launch variables that a change gives to the instances
+/// that it starts: its own, from its forwarded environment, and the values
+/// that the launch kept. A join reads its own values first, then the kept
+/// values; the values that a launch keeps are its own.
+#[derive(Debug, Clone, Copy)]
+pub struct ChangeValues<'a> {
+    change: VariableChange,
+    own: &'a LaunchValues,
+    kept: &'a LaunchValues,
+}
+
+impl<'a> ChangeValues<'a> {
+    /// The values of a launch: `own`, which the launch keeps.
+    pub fn launch(own: &'a LaunchValues) -> Self {
+        Self {
+            change: VariableChange::Launch,
+            own,
+            kept: own,
+        }
+    }
+
+    /// The values of a join: `own`, then `kept`, the values that the launch
+    /// kept.
+    pub fn join(own: &'a LaunchValues, kept: &'a LaunchValues) -> Self {
+        Self {
+            change: VariableChange::Join,
+            own,
+            kept,
+        }
+    }
+
+    /// Whether the own values or the kept values hold the variable `name`.
+    fn holds(&self, name: &str) -> bool {
+        self.own.holds(name) || self.kept.holds(name)
+    }
+
+    /// Whether the own values or the kept values hold a set of `variables`
+    /// complete, each source alone.
+    fn hold_a_set_complete(&self, variables: &LaunchVariables) -> bool {
+        variables.first_set_complete_in(self.own).is_some()
+            || variables.first_set_complete_in(self.kept).is_some()
     }
 }
 
@@ -837,6 +916,22 @@ struct SetHeldInPart {
     /// The variables of the set that the environment does not hold, in name
     /// order.
     missing: Vec<LaunchVariable>,
+}
+
+impl SetHeldInPart {
+    /// `set` when `values` hold some of its variables, and not all.
+    fn of(set: &BTreeSet<LaunchVariable>, values: &LaunchValues) -> Option<Self> {
+        let missing: Vec<LaunchVariable> = set
+            .iter()
+            .filter(|variable| !values.holds(variable.as_str()))
+            .cloned()
+            .collect();
+        let held_in_part = !missing.is_empty() && missing.len() < set.len();
+        held_in_part.then(|| Self {
+            set: set.clone(),
+            missing,
+        })
+    }
 }
 
 /// The variables of `held_in_part` that the environment does not hold, as
@@ -858,20 +953,41 @@ fn sets_of(held_in_part: &[SetHeldInPart]) -> String {
         .join(" and ")
 }
 
-/// Why a launch and a join refuse a set held in part.
-const SET_HELD_IN_PART_RULE: &str = "A launch and a join refuse a set held in part, also when \
-                                     another set is complete, so that an instance never takes \
-                                     another set in its place";
+/// What `environment` holds of the sets of `held_in_part`: "the launch
+/// environment holds the set of `A` and `B` in part, as it does not hold
+/// `B`, or holds it empty or with characters that a node cannot receive".
+fn holds_in_part(environment: &str, held_in_part: &[SetHeldInPart]) -> String {
+    let sets = sets_of(held_in_part);
+    let (missing, them) = missing_of(held_in_part);
+    format!(
+        "{environment} holds {sets} in part, as it does not hold {missing}, or holds {them} \
+         empty or with characters that a node cannot receive"
+    )
+}
 
-/// An `any_of` that a change refuses: the environment of the change holds
-/// no set of it complete, or holds a set of it in part.
+/// Why a launch and a join refuse a set held in part.
+const SET_HELD_IN_PART_RULE: &str = "A launch and a join refuse a set that their own environment \
+                                     holds in part, also when another set is complete, so that \
+                                     an instance never takes another set in its place";
+
+/// What to do about a set held in part in the environment of `change`.
+fn complete_or_empty(change: VariableChange) -> String {
+    format!(
+        "export every variable of such a set, or none of them, in {}",
+        change.own_shell()
+    )
+}
+
+/// An `any_of` that a change refuses: neither source of the values of the
+/// change holds a set of it complete, or the own values of the change hold
+/// a set of it in part.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UnmetChoice {
     variables: LaunchVariables,
-    /// Whether the environment holds a set of the `any_of` complete.
+    /// Whether a source of the values holds a set of the `any_of` complete.
     holds_a_set_complete: bool,
-    /// The sets of the `any_of` that the environment holds in part, in
-    /// order.
+    /// The sets of the `any_of` that the own values of the change hold in
+    /// part, in order.
     held_in_part: Vec<SetHeldInPart>,
     /// What needs the `any_of` ([`VariableNeeds::choice_reasons`]).
     reasons: String,
@@ -879,15 +995,12 @@ struct UnmetChoice {
 
 impl UnmetChoice {
     /// The refusal of `variables`, an `any_of` that `reasons` needs, when
-    /// `holds` holds no set of it complete or a set of it in part; none when
-    /// `holds` holds a set complete and no set in part.
-    fn of(
-        variables: LaunchVariables,
-        reasons: String,
-        holds: impl Fn(&str) -> bool,
-    ) -> Option<Self> {
-        let holds_a_set_complete = variables.holds_a_set_complete(&holds);
-        let held_in_part = variables.sets_held_in_part(&holds);
+    /// neither source of `values` holds a set of it complete, or when the
+    /// own values hold a set of it in part; none when a source holds a set
+    /// complete and the own values hold no set in part.
+    fn of(variables: LaunchVariables, reasons: String, values: ChangeValues<'_>) -> Option<Self> {
+        let holds_a_set_complete = values.hold_a_set_complete(&variables);
+        let held_in_part = variables.sets_held_in_part(values.own);
         if holds_a_set_complete && held_in_part.is_empty() {
             return None;
         }
@@ -931,31 +1044,10 @@ impl MissingLaunchVariables {
         }
     }
 
-    /// What the environment of the change holds of the sets of
-    /// `held_in_part`: "the launch environment holds the set of `A` and `B`
-    /// in part, as it does not hold `B`, or holds it empty or with
-    /// characters that a node cannot receive".
-    fn holds_in_part(&self, held_in_part: &[SetHeldInPart]) -> String {
-        let sets = sets_of(held_in_part);
-        let (missing, them) = missing_of(held_in_part);
-        match self.change {
-            VariableChange::Launch => format!(
-                "the launch environment holds {sets} in part, as it does not hold {missing}, or \
-                 holds {them} empty or with characters that a node cannot receive"
-            ),
-            VariableChange::Join => format!(
-                "the join environment and the launch environment hold {sets} in part, as \
-                 neither holds {missing}, or they hold {them} empty or with characters that a \
-                 node cannot receive"
-            ),
-        }
-    }
-
     /// What to export for the `any_of`s and the missing variables of lists
     /// of the refusal: each missing variable, every variable of one set of
     /// each `any_of` with no complete set, and for a set held in part, every
-    /// variable of it or, at a launch, none of them. A join cannot take out
-    /// a value that the launch kept, so its text says to launch again.
+    /// variable of it or none of them, in the shell of the change.
     fn remedy(&self) -> String {
         let with_no_complete_set = self
             .unmet
@@ -981,17 +1073,10 @@ impl MissingLaunchVariables {
         if !holds_a_set_in_part {
             return export;
         }
-        let complete_or_empty = match self.change {
-            VariableChange::Launch => {
-                "export every variable of such a set, or none of them, in the shell that launches"
-            }
-            VariableChange::Join => {
-                "export every variable of such a set in the shell that joins. The values that the \
-                 launch kept stay for the life of the stack: to take out a variable that the \
-                 launch kept, launch the stack again without it"
-            }
-        };
-        format!("{export}{SET_HELD_IN_PART_RULE}: {complete_or_empty}. ")
+        format!(
+            "{export}{SET_HELD_IN_PART_RULE}: {}. ",
+            complete_or_empty(self.change)
+        )
     }
 
     /// The refusal of one `any_of` and no missing variable of a list.
@@ -1015,7 +1100,7 @@ impl MissingLaunchVariables {
                 }
             }
         } else {
-            self.holds_in_part(&unmet.held_in_part)
+            holds_in_part(self.change.environment(), &unmet.held_in_part)
         };
         write!(
             f,
@@ -1051,8 +1136,9 @@ impl MissingLaunchVariables {
                 } else {
                     let (missing, _) = missing_of(&unmet.held_in_part);
                     format!(
-                        ", with {} held in part, without {missing}",
-                        sets_of(&unmet.held_in_part)
+                        ", with {} held in part in {}, without {missing}",
+                        sets_of(&unmet.held_in_part),
+                        self.change.environment()
                     )
                 };
                 format!("{}{in_part}: {}", unmet.variables.describe(), unmet.reasons)
@@ -1158,6 +1244,222 @@ pub fn refuse_peer_placements<'a>(
     ))
 }
 
+/// The key of a launcher that names launch variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchVariablesKey {
+    /// The `env_from_launch` of an instance entry.
+    EnvFromLaunch,
+    /// The `set_env_from_launch` of an adjustment.
+    SetEnvFromLaunch,
+}
+
+/// One `env_from_launch` or `set_env_from_launch` of a launcher or of one of
+/// its fragments, selected or not: its variables, the instance that they are
+/// for, and where they are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WrittenLaunchVariables<'a> {
+    pub variables: &'a LaunchVariables,
+    /// The id of the instance entry, or the target of the adjustment.
+    pub instance: &'a str,
+    pub key: LaunchVariablesKey,
+    /// The label of the launcher or of the fragment that writes them.
+    pub document: &'a str,
+}
+
+/// Where the variables are written: "the `env_from_launch` of `tool_inst`
+/// in fleet.json5".
+impl std::fmt::Display for WrittenLaunchVariables<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let key = match self.key {
+            LaunchVariablesKey::EnvFromLaunch => "env_from_launch",
+            LaunchVariablesKey::SetEnvFromLaunch => "set_env_from_launch",
+        };
+        write!(f, "the `{key}` of `{}` in {}", self.instance, self.document)
+    }
+}
+
+/// A variable of a set of two variables or more of an `any_of` that another
+/// `env_from_launch` or `set_env_from_launch` of the launcher names in a
+/// list, or in a set that is not the same set. One forwarded environment
+/// serves every instance of a launch, and the kept values serve each join:
+/// an environment that holds the variable for the other one holds the set in
+/// part, which a launch and a join refuse, or complete, and then the
+/// instance of the set takes the value meant for the other one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariableOutsideItsSet {
+    pub variable: LaunchVariable,
+    /// The set of two variables or more.
+    pub set: BTreeSet<LaunchVariable>,
+    /// Where the `any_of` of the set is written.
+    pub set_written_by: String,
+    /// The other one that names the variable: "a list", or "the set of `A`
+    /// of an `any_of`".
+    pub other: String,
+    /// Where the other one is written.
+    pub other_written_by: String,
+}
+
+impl std::fmt::Display for VariableOutsideItsSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            variable,
+            set,
+            set_written_by,
+            other,
+            other_written_by,
+        } = self;
+        write!(
+            f,
+            "`{variable}` is in the set of {} of an `any_of` ({set_written_by}) and in {other} \
+             ({other_written_by}): an environment that holds `{variable}` for the second holds \
+             the set in part, which a launch and a join refuse, or complete, and then the \
+             instance of the set takes the value of the second; write a variable of a set of \
+             two variables or more in that set only, or in the same set of another `any_of`",
+            quoted_set(set)
+        )
+    }
+}
+
+impl std::error::Error for VariableOutsideItsSet {}
+
+/// The other one of `written` that names a variable of `set`, a set of two
+/// variables or more, outside a set equal to it: a list, or another set.
+fn named_outside(
+    set: &BTreeSet<LaunchVariable>,
+    written: &WrittenLaunchVariables<'_>,
+) -> Option<(LaunchVariable, String)> {
+    let shared = |other: &BTreeSet<LaunchVariable>| other.intersection(set).next().cloned();
+    let Form::AnyOf(sets) = &written.variables.0 else {
+        let list: BTreeSet<LaunchVariable> = written.variables.required().cloned().collect();
+        return shared(&list).map(|variable| (variable, "a list".to_owned()));
+    };
+    sets.iter().filter(|other| *other != set).find_map(|other| {
+        shared(other).map(|variable| {
+            (
+                variable,
+                format!("the set of {} of an `any_of`", quoted_set(other)),
+            )
+        })
+    })
+}
+
+/// The refusal of a launcher, `written` its every `env_from_launch` and
+/// `set_env_from_launch`, when one of them names a variable of a set of two
+/// variables or more of an `any_of` of another one in a list, or in a set
+/// that is not the same set. Two `any_of`s can share a whole set. The first
+/// such variable in the order of `written` is named.
+pub fn refuse_variables_outside_their_set(
+    written: &[WrittenLaunchVariables<'_>],
+) -> Result<(), VariableOutsideItsSet> {
+    for (index, holder) in written.iter().enumerate() {
+        for set in holder.variables.sets().iter().filter(|set| set.len() >= 2) {
+            let outside = written
+                .iter()
+                .enumerate()
+                .filter(|(other_index, _)| *other_index != index)
+                .find_map(|(_, other)| named_outside(set, other).map(|found| (found, other)));
+            let Some(((variable, other), other_written)) = outside else {
+                continue;
+            };
+            return Err(VariableOutsideItsSet {
+                variable,
+                set: set.clone(),
+                set_written_by: holder.to_string(),
+                other,
+                other_written_by: other_written.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// One set of an `any_of` of a launcher that the launch environment holds in
+/// part, with the first `env_from_launch` or `set_env_from_launch` that names
+/// its `any_of`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeptSetHeldInPart {
+    held: SetHeldInPart,
+    any_of: String,
+    written_by: String,
+}
+
+/// The refusal of a launch whose environment holds in part a set of an
+/// `any_of` of its launcher. The launch keeps the value of each launch
+/// variable of its launcher for each later join, so it refuses the set also
+/// when no instance that it can start takes that `any_of`: the kept values
+/// never hold a set in part.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptSetsHeldInPart(Vec<KeptSetHeldInPart>);
+
+/// The refusal of a launch whose values are `launch`, `written` every
+/// `env_from_launch` and `set_env_from_launch` of its launcher, when
+/// `launch` holds a set of one of their `any_of`s in part. Each set is named
+/// once, with the first one of `written` that names it.
+pub fn refuse_kept_sets_held_in_part(
+    written: &[WrittenLaunchVariables<'_>],
+    launch: &LaunchValues,
+) -> Result<(), KeptSetsHeldInPart> {
+    let mut found: Vec<KeptSetHeldInPart> = Vec::new();
+    for holder in written {
+        for held in holder.variables.sets_held_in_part(launch) {
+            if found.iter().any(|kept| kept.held.set == held.set) {
+                continue;
+            }
+            found.push(KeptSetHeldInPart {
+                held,
+                any_of: holder.variables.describe(),
+                written_by: holder.to_string(),
+            });
+        }
+    }
+    if found.is_empty() {
+        Ok(())
+    } else {
+        Err(KeptSetsHeldInPart(found))
+    }
+}
+
+impl std::fmt::Display for KeptSetsHeldInPart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names =
+            |kept: &KeptSetHeldInPart| format!("{} names it in {}", kept.written_by, kept.any_of);
+        match self.0.as_slice() {
+            [one] => write!(
+                f,
+                "{}: {}, and the launch keeps the value of each launch variable of its launcher \
+                 for the joins. ",
+                holds_in_part(
+                    VariableChange::Launch.environment(),
+                    std::slice::from_ref(&one.held)
+                ),
+                names(one)
+            )?,
+            several => write!(
+                f,
+                "the launch environment holds these sets in part, or holds a variable of them \
+                 empty or with characters that a node cannot receive:{}.\nThe launch keeps the \
+                 value of each launch variable of its launcher for the joins. ",
+                crate::error::format_bulleted(several.iter().map(|kept| {
+                    let (missing, _) = missing_of(std::slice::from_ref(&kept.held));
+                    format!(
+                        "the set of {}, without {missing}: {}",
+                        quoted_set(&kept.held.set),
+                        names(kept)
+                    )
+                }))
+            )?,
+        }
+        write!(
+            f,
+            "{SET_HELD_IN_PART_RULE}: {}. A value must not be empty, and must hold \
+             {SAFE_ENV_VALUE_CHARACTERS} only",
+            complete_or_empty(VariableChange::Launch)
+        )
+    }
+}
+
+impl std::error::Error for KeptSetsHeldInPart {}
+
 /// The value of each launch variable that a forwarded environment holds, not
 /// empty. The daemon keeps those of the launch, in memory, for the life of
 /// the stack. The debug output names the variables only.
@@ -1260,6 +1562,57 @@ impl std::fmt::Debug for ForwardedEnv {
     }
 }
 
+/// The `any_of` of a hosted brain, which the tests of this crate and of the
+/// crates that use it share: the base address and the key of an
+/// OpenAI-compatible API, else the key of the provider.
+#[cfg(any(test, feature = "test-support"))]
+pub mod hosted_brain {
+    use super::{DeploymentInstance, ForwardedEnv, LaunchValues, LaunchVariables};
+    use config::runtime::Name;
+
+    /// The base address of the API, in the first set.
+    pub const BASE: &str = "OPENAI_COMPATIBLE_API_BASE";
+    /// The key of the API, in the first set.
+    pub const API_KEY: &str = "OPENAI_COMPATIBLE_API_KEY";
+    /// The key of the provider, the second set.
+    pub const PROVIDER_KEY: &str = "GEMINI_API_KEY";
+    /// The `any_of` as a launcher writes it, the variables of the first set
+    /// out of name order.
+    pub const ANY_OF: &str = r#"{ any_of: [
+        ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_API_BASE"],
+        ["GEMINI_API_KEY"],
+    ] }"#;
+
+    /// The `any_of`, parsed.
+    pub fn any_of() -> LaunchVariables {
+        serde_json5::from_str(ANY_OF).expect("the any_of of the hosted brain parses")
+    }
+
+    /// The instance `id`, which takes the `any_of`.
+    pub fn brain(id: &str) -> DeploymentInstance {
+        let mut brain = DeploymentInstance::empty(Name::new(id).expect("an instance id"));
+        brain.env_from_launch = any_of();
+        brain
+    }
+
+    /// `entries` as the forwarded environment of a launcher whose launch
+    /// variables are the names of the `any_of`.
+    pub fn forwarded(entries: &[(&str, &str)]) -> ForwardedEnv {
+        ForwardedEnv::parse(
+            entries
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect(),
+            &any_of().iter().cloned().collect(),
+        )
+    }
+
+    /// The launch values of `entries`, as [`forwarded`] parses them.
+    pub fn values(entries: &[(&str, &str)]) -> LaunchValues {
+        forwarded(entries).launch_values().clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1271,6 +1624,16 @@ mod tests {
 
     fn name(value: &str) -> Name {
         Name::new(value).expect("a name")
+    }
+
+    /// Launch values that hold each variable of `names`.
+    fn values(names: &[&str]) -> LaunchValues {
+        LaunchValues(
+            names
+                .iter()
+                .map(|name| (variable(name), "value".to_owned()))
+                .collect(),
+        )
     }
 
     fn entries(entries: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -1456,7 +1819,7 @@ mod tests {
         });
 
         let refusal = needs
-            .check(VariableChange::Launch, |_| false)
+            .check(ChangeValues::launch(&values(&[])))
             .expect_err("nothing holds the key")
             .to_string();
         assert_eq!(
@@ -1469,7 +1832,9 @@ mod tests {
              that launches. A value must not be empty, and must hold letters, digits and \
              `_ - . / : , = @ + %` only"
         );
-        needs.check(VariableChange::Launch, |_| true).unwrap();
+        needs
+            .check(ChangeValues::launch(&values(&["GEMINI_API_KEY"])))
+            .unwrap();
     }
 
     /// The refusal of several variables lists each one, with its own
@@ -1496,7 +1861,7 @@ mod tests {
         });
 
         let refusal = needs
-            .check(VariableChange::Join, |name| name == "C_KEY")
+            .check(ChangeValues::join(&values(&["C_KEY"]), &values(&[])))
             .expect_err("two keys are missing");
         assert_eq!(
             refusal
@@ -1656,13 +2021,6 @@ mod tests {
         );
     }
 
-    /// The `any_of` of the hosted brain: the API's two variables, else the
-    /// key of the provider.
-    const BRAIN_ANY_OF: &str = r#"{ any_of: [
-        ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_API_BASE"],
-        ["GEMINI_API_KEY"],
-    ] }"#;
-
     fn any_of(written: &str) -> LaunchVariables {
         serde_json5::from_str(written).expect(written)
     }
@@ -1677,7 +2035,7 @@ mod tests {
     /// is one that it takes each time.
     #[test]
     fn an_any_of_keeps_its_sets_in_order_and_writes_back_as_an_object() {
-        let parsed = any_of(BRAIN_ANY_OF);
+        let parsed = hosted_brain::any_of();
         assert_eq!(
             parsed.sets().iter().map(names).collect::<Vec<_>>(),
             [
@@ -1817,12 +2175,27 @@ mod tests {
         }
     }
 
-    /// The variables taken: each one of a list whatever the environment
+    /// The names of the variables that `variables` take from `own`, then
+    /// `kept`.
+    fn taken<'a>(
+        variables: &'a LaunchVariables,
+        own: &'a LaunchValues,
+        kept: &'a LaunchValues,
+    ) -> Vec<&'a str> {
+        names(
+            variables
+                .values_taken(own, kept)
+                .into_iter()
+                .map(|(variable, _)| variable),
+        )
+    }
+
+    /// The variables taken from one source: each one of a list that it
     /// holds, and of an `any_of` the first complete set alone, or none.
     #[test]
     fn the_first_complete_set_is_taken() {
-        let brain = any_of(BRAIN_ANY_OF);
-        let holding = |held: &'static [&'static str]| move |name: &str| held.contains(&name);
+        let brain = hosted_brain::any_of();
+        let none = values(&[]);
         let api = ["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"];
         for (held, expected) in [
             (
@@ -1845,19 +2218,85 @@ mod tests {
             (&["OPENAI_COMPATIBLE_API_BASE"][..], &[][..]),
             (&[][..], &[][..]),
         ] {
-            assert_eq!(names(brain.taken(holding(held))), expected, "{held:?}");
+            assert_eq!(taken(&brain, &values(held), &none), expected, "{held:?}");
+            assert_eq!(taken(&brain, &none, &values(held)), expected, "{held:?}");
         }
         let list: LaunchVariables = serde_json5::from_str(r#"["B_KEY", "A_KEY"]"#).unwrap();
-        assert_eq!(names(list.taken(|_| false)), ["A_KEY", "B_KEY"]);
+        assert_eq!(
+            taken(&list, &values(&["A_KEY", "B_KEY", "C_KEY"]), &none),
+            ["A_KEY", "B_KEY"]
+        );
+        assert_eq!(taken(&list, &values(&["B_KEY"]), &none), ["B_KEY"]);
     }
 
-    /// A message names a list as today, and an `any_of` set by set.
+    /// Launch values that hold `entries`, each variable with its value.
+    fn with_values(entries: &[(&str, &str)]) -> LaunchValues {
+        LaunchValues(
+            entries
+                .iter()
+                .map(|(name, value)| (variable(name), (*value).to_owned()))
+                .collect(),
+        )
+    }
+
+    /// A variable of a list takes the own value of the change, else the kept
+    /// one. An `any_of` takes the first set that the own values hold
+    /// complete, also before an earlier set of the kept values, else the
+    /// first set that the kept values hold complete, and every value of the
+    /// set comes from that one source.
+    #[test]
+    fn the_own_values_come_first_and_a_set_takes_its_values_from_one_source() {
+        let list: LaunchVariables = serde_json5::from_str(r#"["A_KEY", "B_KEY"]"#).unwrap();
+        assert_eq!(
+            list.values_taken(
+                &with_values(&[("A_KEY", "own")]),
+                &with_values(&[("A_KEY", "kept"), ("B_KEY", "kept")])
+            ),
+            [(&variable("A_KEY"), "own"), (&variable("B_KEY"), "kept")]
+        );
+
+        let brain = hosted_brain::any_of();
+        let base = variable(hosted_brain::BASE);
+        let api_key = variable(hosted_brain::API_KEY);
+        let provider_key = variable(hosted_brain::PROVIDER_KEY);
+        let kept_api = with_values(&[
+            (hosted_brain::BASE, "kept-base"),
+            (hosted_brain::API_KEY, "kept-key"),
+        ]);
+        assert_eq!(
+            brain.values_taken(
+                &with_values(&[(hosted_brain::PROVIDER_KEY, "own-provider-key")]),
+                &kept_api
+            ),
+            [(&provider_key, "own-provider-key")],
+            "a complete set of the own values comes before an earlier set of the kept values"
+        );
+        assert_eq!(
+            brain.values_taken(
+                &with_values(&[(hosted_brain::API_KEY, "own-key")]),
+                &kept_api
+            ),
+            [(&base, "kept-base"), (&api_key, "kept-key")],
+            "an own value adds nothing to a set of the kept values"
+        );
+        assert!(
+            brain
+                .values_taken(
+                    &with_values(&[(hosted_brain::API_KEY, "own-key")]),
+                    &with_values(&[(hosted_brain::BASE, "kept-base")])
+                )
+                .is_empty(),
+            "no set is complete in one source"
+        );
+    }
+
+    /// A message names a list as `` `A`, `B` ``, and an `any_of` set by set.
     #[test]
     fn a_message_names_a_list_and_each_set_of_an_any_of() {
         let list: LaunchVariables = serde_json5::from_str(r#"["B_KEY", "A_KEY"]"#).unwrap();
         assert_eq!(list.describe(), "`A_KEY`, `B_KEY`");
         assert_eq!(
-            any_of(BRAIN_ANY_OF).describe(),
+            hosted_brain::any_of().describe(),
             "one set of `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, or of \
              `GEMINI_API_KEY`"
         );
@@ -1873,7 +2312,7 @@ mod tests {
     fn a_name_of_any_set_that_env_vars_also_gives_is_found() {
         let env_vars = BTreeMap::from([("GEMINI_API_KEY".to_owned(), "x".to_owned())]);
         assert_eq!(
-            names(any_of(BRAIN_ANY_OF).given_in(&env_vars)),
+            names(hosted_brain::any_of().given_in(&env_vars)),
             ["GEMINI_API_KEY"]
         );
     }
@@ -1883,7 +2322,7 @@ mod tests {
     #[test]
     fn an_instance_with_an_any_of_is_refused_on_a_peer() {
         let mut brain = DeploymentInstance::empty(name("brain_inst"));
-        brain.env_from_launch = any_of(BRAIN_ANY_OF);
+        brain.env_from_launch = hosted_brain::any_of();
         let placements = Placements::new(
             CoreNodeName::new("coordinator").unwrap(),
             BTreeMap::from([(
@@ -1906,7 +2345,7 @@ mod tests {
     /// The need of an instance that takes the `any_of` of the hosted brain.
     fn choice(instance: &str, starter: Starter) -> ChoiceNeed {
         ChoiceNeed {
-            variables: any_of(BRAIN_ANY_OF),
+            variables: hosted_brain::any_of(),
             instance: instance.to_owned(),
             starter,
         }
@@ -1925,7 +2364,7 @@ mod tests {
     #[test]
     fn an_instance_with_an_any_of_needs_a_set_and_no_variable() {
         let mut brain = DeploymentInstance::empty(name("brain_inst"));
-        brain.env_from_launch = any_of(BRAIN_ANY_OF);
+        brain.env_from_launch = hosted_brain::any_of();
         let mut needs = VariableNeeds::default();
         needs.add_instance("brain_inst", &brain, &Starter::Launch);
         assert_eq!(needs.iter().count(), 0);
@@ -2031,7 +2470,7 @@ mod tests {
             ][..],
         ] {
             needs
-                .check(VariableChange::Launch, |name| held.contains(&name))
+                .check(ChangeValues::launch(&values(held)))
                 .unwrap_or_else(|refusal| panic!("{held:?}: {refusal}"));
         }
         for held in [
@@ -2040,7 +2479,7 @@ mod tests {
             &["OPENAI_COMPATIBLE_API_BASE", "GEMINI_API_KEY"][..],
         ] {
             needs
-                .check(VariableChange::Launch, |name| held.contains(&name))
+                .check(ChangeValues::launch(&values(held)))
                 .expect_err("no complete set, or a set held in part");
         }
     }
@@ -2052,10 +2491,9 @@ mod tests {
     fn the_sets_held_in_part_name_their_missing_variables() {
         let three =
             any_of(r#"{ any_of: [["C_KEY", "A_KEY", "B_KEY"], ["D_KEY"], ["E_KEY", "F_KEY"]] }"#);
-        let holding = |held: &'static [&'static str]| move |name: &str| held.contains(&name);
-        let in_part = |held: &'static [&'static str]| {
+        let in_part = |held: &[&str]| {
             three
-                .sets_held_in_part(holding(held))
+                .sets_held_in_part(&values(held))
                 .into_iter()
                 .map(|held| {
                     format!(
@@ -2076,7 +2514,7 @@ mod tests {
         assert!(in_part(&["A_KEY", "B_KEY", "C_KEY", "D_KEY"]).is_empty());
         assert!(in_part(&[]).is_empty());
         let list: LaunchVariables = serde_json5::from_str(r#"["A_KEY", "B_KEY"]"#).unwrap();
-        assert!(list.sets_held_in_part(|name| name == "A_KEY").is_empty());
+        assert!(list.sets_held_in_part(&values(&["A_KEY"])).is_empty());
     }
 
     /// The refusal of a set held in part names the set and its missing
@@ -2088,9 +2526,10 @@ mod tests {
         needs.add_choice(choice("brain_inst", Starter::Launch));
         assert_eq!(
             needs
-                .check(VariableChange::Launch, |name| {
-                    ["OPENAI_COMPATIBLE_API_BASE", "GEMINI_API_KEY"].contains(&name)
-                })
+                .check(ChangeValues::launch(&values(&[
+                    "OPENAI_COMPATIBLE_API_BASE",
+                    "GEMINI_API_KEY"
+                ])))
                 .expect_err("the first set is held in part")
                 .to_string(),
             "the launch needs one set of `OPENAI_COMPATIBLE_API_BASE` and \
@@ -2098,17 +2537,17 @@ mod tests {
              holds the set of `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY` in \
              part, as it does not hold `OPENAI_COMPATIBLE_API_KEY`, or holds it empty or with \
              characters that a node cannot receive: `brain_inst` takes the first complete set \
-             from the launch, and the launch starts it. A launch and a join refuse a set held in \
-             part, also when another set is complete, so that an instance never takes another \
-             set in its place: export every variable of such a set, or none of them, in the \
-             shell that launches. A value must not be empty, and must hold letters, digits and \
-             `_ - . / : , = @ + %` only"
+             from the launch, and the launch starts it. A launch and a join refuse a set that \
+             their own environment holds in part, also when another set is complete, so that an \
+             instance never takes another set in its place: export every variable of such a set, \
+             or none of them, in the shell that launches. A value must not be empty, and must \
+             hold letters, digits and `_ - . / : , = @ + %` only"
         );
         assert_eq!(
             needs
-                .check(VariableChange::Launch, |name| {
-                    name == "OPENAI_COMPATIBLE_API_KEY"
-                })
+                .check(ChangeValues::launch(&values(&[
+                    "OPENAI_COMPATIBLE_API_KEY"
+                ])))
                 .expect_err("the first set is held in part, and no set is complete")
                 .to_string(),
             "the launch needs one set of `OPENAI_COMPATIBLE_API_BASE` and \
@@ -2117,36 +2556,43 @@ mod tests {
              part, as it does not hold `OPENAI_COMPATIBLE_API_BASE`, or holds it empty or with \
              characters that a node cannot receive: `brain_inst` takes the first complete set \
              from the launch, and the launch starts it. Export every variable of one set in the \
-             shell that launches. A launch and a join refuse a set held in part, also when \
-             another set is complete, so that an instance never takes another set in its place: \
-             export every variable of such a set, or none of them, in the shell that launches. \
-             A value must not be empty, and must hold letters, digits and \
-             `_ - . / : , = @ + %` only"
+             shell that launches. A launch and a join refuse a set that their own environment \
+             holds in part, also when another set is complete, so that an instance never takes \
+             another set in its place: export every variable of such a set, or none of them, in \
+             the shell that launches. A value must not be empty, and must hold letters, digits \
+             and `_ - . / : , = @ + %` only"
         );
 
         let mut joined = VariableNeeds::default();
         let mut tool = choice("alpha_tool_inst", Starter::Join);
         tool.variables = any_of(r#"{ any_of: [["A_KEY", "B_KEY", "C_KEY"], ["D_KEY", "E_KEY"]] }"#);
         joined.add_choice(tool);
-        assert_eq!(
-            joined
-                .check(VariableChange::Join, |name| {
-                    ["A_KEY", "D_KEY", "E_KEY"].contains(&name)
-                })
-                .expect_err("the first set is held in part")
-                .to_string(),
-            "the join needs one set of `A_KEY`, `B_KEY` and `C_KEY`, or of `D_KEY` and `E_KEY`, \
-             and the join environment and the launch environment hold the set of `A_KEY`, \
-             `B_KEY` and `C_KEY` in part, as neither holds `B_KEY` and `C_KEY`, or they hold \
-             them empty or with characters that a node cannot receive: `alpha_tool_inst` takes \
-             the first complete set from the launch, and the join starts it. A launch and a join \
-             refuse a set held in part, also when another set is complete, so that an instance \
-             never takes another set in its place: export every variable of such a set in the \
-             shell that joins. The values that the launch kept stay for the life of the stack: \
-             to take out a variable that the launch kept, launch the stack again without it. A \
-             value must not be empty, and must hold letters, digits and `_ - . / : , = @ + %` \
-             only"
-        );
+        for kept in [values(&[]), values(&["B_KEY", "C_KEY"])] {
+            assert_eq!(
+                joined
+                    .check(ChangeValues::join(
+                        &values(&["A_KEY", "D_KEY", "E_KEY"]),
+                        &kept
+                    ))
+                    .expect_err("the join environment holds the first set in part")
+                    .to_string(),
+                "the join needs one set of `A_KEY`, `B_KEY` and `C_KEY`, or of `D_KEY` and \
+                 `E_KEY`, and the join environment holds the set of `A_KEY`, `B_KEY` and `C_KEY` \
+                 in part, as it does not hold `B_KEY` and `C_KEY`, or holds them empty or with \
+                 characters that a node cannot receive: `alpha_tool_inst` takes the first \
+                 complete set from the launch, and the join starts it. A launch and a join refuse \
+                 a set that their own environment holds in part, also when another set is \
+                 complete, so that an instance never takes another set in its place: export \
+                 every variable of such a set, or none of them, in the shell that joins. A value \
+                 must not be empty, and must hold letters, digits and `_ - . / : , = @ + %` only"
+            );
+        }
+        joined
+            .check(ChangeValues::join(
+                &values(&[]),
+                &values(&["A_KEY", "B_KEY", "C_KEY"]),
+            ))
+            .expect("the kept values hold the first set complete");
     }
 
     /// A missing variable of a list and an `any_of` with a set held in part
@@ -2163,9 +2609,10 @@ mod tests {
         needs.add_choice(choice("brain_inst", Starter::Launch));
         assert_eq!(
             needs
-                .check(VariableChange::Launch, |name| {
-                    ["OPENAI_COMPATIBLE_API_KEY", "GEMINI_API_KEY"].contains(&name)
-                })
+                .check(ChangeValues::launch(&values(&[
+                    "OPENAI_COMPATIBLE_API_KEY",
+                    "GEMINI_API_KEY"
+                ])))
                 .expect_err("a missing variable and a set held in part")
                 .to_string(),
             "the launch needs variables that the launch environment does not hold, or holds \
@@ -2173,13 +2620,14 @@ mod tests {
              takes it from the launch, and the launch starts it\n  - one set of \
              `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, or of \
              `GEMINI_API_KEY`, with the set of `OPENAI_COMPATIBLE_API_BASE` and \
-             `OPENAI_COMPATIBLE_API_KEY` held in part, without `OPENAI_COMPATIBLE_API_BASE`: \
-             `brain_inst` takes the first complete set from the launch, and the launch starts \
-             it.\nExport each variable in the shell that launches. A launch and a join refuse a \
-             set held in part, also when another set is complete, so that an instance never \
-             takes another set in its place: export every variable of such a set, or none of \
-             them, in the shell that launches. A value must not be empty, and must hold \
-             letters, digits and `_ - . / : , = @ + %` only"
+             `OPENAI_COMPATIBLE_API_KEY` held in part in the launch environment, without \
+             `OPENAI_COMPATIBLE_API_BASE`: `brain_inst` takes the first complete set from the \
+             launch, and the launch starts it.\nExport each variable in the shell that launches. \
+             A launch and a join refuse a set that their own environment holds in part, also \
+             when another set is complete, so that an instance never takes another set in its \
+             place: export every variable of such a set, or none of them, in the shell that \
+             launches. A value must not be empty, and must hold letters, digits and \
+             `_ - . / : , = @ + %` only"
         );
     }
 
@@ -2191,7 +2639,7 @@ mod tests {
         needs.add_choice(choice("brain_inst", Starter::Launch));
         assert_eq!(
             needs
-                .check(VariableChange::Launch, |_| false)
+                .check(ChangeValues::launch(&values(&[])))
                 .expect_err("no set")
                 .to_string(),
             "the launch needs one set of `OPENAI_COMPATIBLE_API_BASE` and \
@@ -2207,7 +2655,7 @@ mod tests {
         joined.add_choice(choice("alpha_brain_inst", Starter::Join));
         assert_eq!(
             joined
-                .check(VariableChange::Join, |_| false)
+                .check(ChangeValues::join(&values(&[]), &values(&[])))
                 .expect_err("no set")
                 .to_string(),
             "the join needs one set of `OPENAI_COMPATIBLE_API_BASE` and \
@@ -2234,7 +2682,7 @@ mod tests {
         needs.add_choice(choice("brain_inst", Starter::Launch));
         assert_eq!(
             needs
-                .check(VariableChange::Launch, |_| false)
+                .check(ChangeValues::launch(&values(&[])))
                 .expect_err("nothing held")
                 .to_string(),
             "the launch needs variables that the launch environment does not hold, or holds \
@@ -2253,7 +2701,7 @@ mod tests {
         other.variables = any_of(r#"{ any_of: [["A_KEY"], ["B_KEY"]] }"#);
         two.add_choice(other);
         let refusal = two
-            .check(VariableChange::Launch, |_| false)
+            .check(ChangeValues::launch(&values(&[])))
             .expect_err("nothing held")
             .to_string();
         assert!(
@@ -2262,6 +2710,165 @@ mod tests {
                     "\nExport every variable of one set of each in the shell that launches."
                 ),
             "{refusal}"
+        );
+    }
+    /// The `env_from_launch` of the instance `instance` in launcher.json5,
+    /// which writes `variables`.
+    fn entry<'a>(instance: &'a str, variables: &'a LaunchVariables) -> WrittenLaunchVariables<'a> {
+        WrittenLaunchVariables {
+            variables,
+            instance,
+            key: LaunchVariablesKey::EnvFromLaunch,
+            document: "launcher.json5",
+        }
+    }
+
+    /// A variable of a set of two variables or more is refused in a list and
+    /// in another set of another `any_of`, a set of one variable included,
+    /// whatever their order, and the refusal names the variable, the set,
+    /// the other one and where each one is written.
+    #[test]
+    fn a_variable_of_a_set_of_two_or_more_is_refused_outside_that_set() {
+        let brain = any_of(r#"{ any_of: [["OTHER_KEY", "TOOL_KEY"], ["PROBE_KEY"]] }"#);
+        let tool: LaunchVariables = serde_json5::from_str(r#"["TOOL_KEY"]"#).unwrap();
+        let refusal = |written: &[WrittenLaunchVariables<'_>]| {
+            refuse_variables_outside_their_set(written)
+                .expect_err("a variable outside its set")
+                .to_string()
+        };
+        let expected = "`TOOL_KEY` is in the set of `OTHER_KEY` and `TOOL_KEY` of an `any_of` \
+                        (the `env_from_launch` of `brain_inst` in launcher.json5) and in a list \
+                        (the `env_from_launch` of `tool_inst` in launcher.json5): an environment \
+                        that holds `TOOL_KEY` for the second holds the set in part, which a \
+                        launch and a join refuse, or complete, and then the instance of the set \
+                        takes the value of the second; write a variable of a set of two \
+                        variables or more in that set only, or in the same set of another \
+                        `any_of`";
+        assert_eq!(
+            refusal(&[entry("brain_inst", &brain), entry("tool_inst", &tool)]),
+            expected
+        );
+        assert_eq!(
+            refusal(&[entry("tool_inst", &tool), entry("brain_inst", &brain)]),
+            expected
+        );
+
+        for (other, variable, named) in [
+            (
+                r#"{ any_of: [["TOOL_KEY"], ["A_KEY"]] }"#,
+                "TOOL_KEY",
+                "the set of `TOOL_KEY` of an `any_of`",
+            ),
+            (
+                r#"{ any_of: [["A_KEY"], ["TOOL_KEY", "B_KEY"]] }"#,
+                "TOOL_KEY",
+                "the set of `B_KEY` and `TOOL_KEY` of an `any_of`",
+            ),
+            (
+                r#"{ any_of: [["OTHER_KEY", "TOOL_KEY", "C_KEY"], ["A_KEY"]] }"#,
+                "OTHER_KEY",
+                "the set of `C_KEY`, `OTHER_KEY` and `TOOL_KEY` of an `any_of`",
+            ),
+        ] {
+            let other = any_of(other);
+            let refused = refusal(&[entry("brain_inst", &brain), entry("planner_inst", &other)]);
+            assert!(
+                refused.starts_with(&format!(
+                    "`{variable}` is in the set of `OTHER_KEY` and `TOOL_KEY` of an `any_of` (the \
+                     `env_from_launch` of `brain_inst` in launcher.json5) and in {named} (the \
+                     `env_from_launch` of `planner_inst` in launcher.json5): "
+                )),
+                "{refused}"
+            );
+        }
+    }
+
+    /// Two `any_of`s that share a whole set, a list or another set that
+    /// names a variable of a set of one variable, and two instances of one
+    /// `any_of` pass.
+    #[test]
+    fn a_whole_set_and_a_set_of_one_variable_can_be_shared() {
+        let brain = hosted_brain::any_of();
+        let planner = any_of(
+            r#"{ any_of: [["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"], ["OPENROUTER_API_KEY"]] }"#,
+        );
+        let provider_key_list: LaunchVariables =
+            serde_json5::from_str(r#"["GEMINI_API_KEY", "TOOL_KEY"]"#).unwrap();
+        let provider_key_set = any_of(r#"{ any_of: [["GEMINI_API_KEY"], ["TOOL_KEY"]] }"#);
+        refuse_variables_outside_their_set(&[
+            entry("alpha_brain_inst", &brain),
+            entry("bravo_brain_inst", &brain),
+            entry("planner_inst", &planner),
+            entry("tool_inst", &provider_key_list),
+            entry("probe_inst", &provider_key_set),
+        ])
+        .expect("no variable of a set of two is outside that set");
+    }
+
+    /// A launch whose values hold a set of an `any_of` of its launcher in
+    /// part is refused, each set once, with the first one that writes it;
+    /// with every set complete or held not at all, it passes.
+    #[test]
+    fn the_kept_values_hold_no_set_in_part() {
+        let brain = hosted_brain::any_of();
+        let tool = any_of(r#"{ any_of: [["A_KEY", "B_KEY"], ["C_KEY"]] }"#);
+        let written = [
+            entry("alpha_brain_inst", &brain),
+            entry("bravo_brain_inst", &brain),
+            entry("tool_inst", &tool),
+        ];
+        for held in [
+            &[][..],
+            &["GEMINI_API_KEY", "C_KEY"][..],
+            &[
+                "OPENAI_COMPATIBLE_API_BASE",
+                "OPENAI_COMPATIBLE_API_KEY",
+                "A_KEY",
+                "B_KEY",
+            ][..],
+        ] {
+            refuse_kept_sets_held_in_part(&written, &values(held))
+                .unwrap_or_else(|refusal| panic!("{held:?}: {refusal}"));
+        }
+        assert_eq!(
+            refuse_kept_sets_held_in_part(
+                &written,
+                &values(&["OPENAI_COMPATIBLE_API_KEY", "GEMINI_API_KEY"])
+            )
+            .expect_err("the set of the API is held in part")
+            .to_string(),
+            "the launch environment holds the set of `OPENAI_COMPATIBLE_API_BASE` and \
+             `OPENAI_COMPATIBLE_API_KEY` in part, as it does not hold \
+             `OPENAI_COMPATIBLE_API_BASE`, or holds it empty or with characters that a node \
+             cannot receive: the `env_from_launch` of `alpha_brain_inst` in launcher.json5 names \
+             it in one set of `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, or \
+             of `GEMINI_API_KEY`, and the launch keeps the value of each launch variable of its \
+             launcher for the joins. A launch and a join refuse a set that their own environment \
+             holds in part, also when another set is complete, so that an instance never takes \
+             another set in its place: export every variable of such a set, or none of them, in \
+             the shell that launches. A value must not be empty, and must hold letters, digits \
+             and `_ - . / : , = @ + %` only"
+        );
+        assert_eq!(
+            refuse_kept_sets_held_in_part(
+                &written,
+                &values(&["OPENAI_COMPATIBLE_API_BASE", "B_KEY"])
+            )
+            .expect_err("two sets held in part")
+            .to_string(),
+            "the launch environment holds these sets in part, or holds a variable of them empty \
+             or with characters that a node cannot receive:\n  - the set of \
+             `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, without \
+             `OPENAI_COMPATIBLE_API_KEY`: the `env_from_launch` of `alpha_brain_inst` in \
+             launcher.json5 names it in one set of `OPENAI_COMPATIBLE_API_BASE` and \
+             `OPENAI_COMPATIBLE_API_KEY`, or of `GEMINI_API_KEY`\n  - the set of `A_KEY` and \
+             `B_KEY`, without `A_KEY`: the `env_from_launch` of `tool_inst` in launcher.json5 \
+             names it in one set of `A_KEY` and `B_KEY`, or of `C_KEY`.\nThe launch keeps the \
+             value of each launch variable of its launcher for the joins. A launch and a join \
+             refuse a set that their own environment holds in part, also when another set is \
+             complete, so that an instance never takes another set in its place: export every \
+             variable of such a set, or none of them, in the shell that launches. A value must \
+             not be empty, and must hold letters, digits and `_ - . / : , = @ + %` only"
         );
     }
 }

@@ -4,7 +4,10 @@
 use super::super::composition::{
     Adjustment, ArgumentOverrides, ComponentCardinality, CopySettings, OptionDeployment,
 };
-use super::super::launch_variables::{LaunchVariable, Starter, VariableNeeds};
+use super::super::launch_variables::{
+    LaunchVariable, LaunchVariablesKey, Starter, VariableNeeds, WrittenLaunchVariables,
+    refuse_variables_outside_their_set,
+};
 use super::super::types::{Deployment, LauncherFramework, PeppyLauncher};
 use super::adjustments::{Routed, route};
 use super::check::{TrialRefusal, compose_trial_join, pick_checked_copy_name};
@@ -205,12 +208,20 @@ pub struct RunningStack<'a> {
 }
 
 impl PreparedLauncher {
+    /// Loads the launcher `launcher` of the file `file`, its fragments
+    /// included, and refuses it when one of its `env_from_launch` and
+    /// `set_env_from_launch` names a variable of a set of two variables or
+    /// more of another one outside that set
+    /// ([`refuse_variables_outside_their_set`]).
     pub fn load(launcher: &PeppyLauncher, file: &Path) -> Result<Self, CompositionError> {
-        Ok(Self {
+        let prepared = Self {
             loaded: load_composition(launcher, file)?,
             launcher: launcher.clone(),
             label: launcher_file_label(file),
-        })
+        };
+        refuse_variables_outside_their_set(&prepared.written_launch_variables())
+            .map_err(|refusal| CompositionError::VariableOutsideItsSet(Box::new(refusal)))?;
+        Ok(prepared)
     }
 
     /// Composes a launch: the stack under `words`, then every copy the
@@ -375,12 +386,35 @@ impl PreparedLauncher {
             .map(|axis| axis.name.as_str())
     }
 
-    /// Every variable name that an `env_from_launch` or a
-    /// `set_env_from_launch` of the launcher or of the fragments of its
-    /// options holds, selected or not: the names whose values a launch of it
-    /// keeps.
-    pub fn launch_variable_names(&self) -> BTreeSet<LaunchVariable> {
+    /// Every `env_from_launch` and `set_env_from_launch` of the launcher and
+    /// of the fragments of its options, selected or not, each with the
+    /// instance it is for and the document that writes it: the instance
+    /// entries first, then the adjustments.
+    pub fn written_launch_variables(&self) -> Vec<WrittenLaunchVariables<'_>> {
         let launcher = &self.launcher;
+        let label = self.label.as_str();
+        let instances = launcher
+            .deployments
+            .iter()
+            .map(|deployment| (deployment, label))
+            .chain(self.loaded.all_fragments().flat_map(|fragment| {
+                fragment
+                    .body
+                    .deployments
+                    .iter()
+                    .map(|deployment| (deployment, fragment.origin.as_str()))
+            }))
+            .flat_map(|(deployment, document)| {
+                deployment
+                    .instances
+                    .iter()
+                    .map(move |instance| WrittenLaunchVariables {
+                        variables: &instance.env_from_launch,
+                        instance: instance.instance_id.as_str(),
+                        key: LaunchVariablesKey::EnvFromLaunch,
+                        document,
+                    })
+            });
         let adjustments = launcher
             .adjustments
             .iter()
@@ -392,27 +426,35 @@ impl PreparedLauncher {
                     .flat_map(|option| &option.adjustments),
             )
             .chain(option_entry_adjustments(&launcher.option_deployments))
+            .map(|adjustment| (adjustment, label))
             .chain(self.loaded.all_fragments().flat_map(|fragment| {
                 fragment
                     .body
                     .adjustments
                     .iter()
                     .chain(option_entry_adjustments(&fragment.body.option_deployments))
+                    .map(|adjustment| (adjustment, fragment.origin.as_str()))
             }))
-            .filter_map(|adjustment| adjustment.set_env_from_launch.as_ref());
-        let instances = launcher
-            .deployments
-            .iter()
-            .chain(
-                self.loaded
-                    .all_fragments()
-                    .flat_map(|fragment| &fragment.body.deployments),
-            )
-            .flat_map(|deployment| &deployment.instances)
-            .map(|instance| &instance.env_from_launch);
-        adjustments
-            .chain(instances)
-            .flat_map(|variables| variables.iter().cloned())
+            .filter_map(|(adjustment, document)| {
+                let variables = adjustment.set_env_from_launch.as_ref()?;
+                Some(WrittenLaunchVariables {
+                    variables,
+                    instance: adjustment.target.as_str(),
+                    key: LaunchVariablesKey::SetEnvFromLaunch,
+                    document,
+                })
+            });
+        instances.chain(adjustments).collect()
+    }
+
+    /// Every variable name that an `env_from_launch` or a
+    /// `set_env_from_launch` of the launcher or of the fragments of its
+    /// options holds, selected or not: the names whose values a launch of it
+    /// keeps.
+    pub fn launch_variable_names(&self) -> BTreeSet<LaunchVariable> {
+        self.written_launch_variables()
+            .into_iter()
+            .flat_map(|written| written.variables.iter().cloned())
             .collect()
     }
 

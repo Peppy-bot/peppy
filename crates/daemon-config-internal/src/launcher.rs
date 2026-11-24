@@ -31,11 +31,14 @@ pub use daemon_scopes::{
     DaemonScopeError, DaemonScopeRefusals, DeploymentTargets, ScopeCheck, check_daemon_scopes,
 };
 pub use joinable::{Joinable, JoinableNode, JoinableNodes};
+#[cfg(any(test, feature = "test-support"))]
+pub use launch_variables::hosted_brain;
 pub use launch_variables::{
-    BrokenAnyOf, ChoiceNeed, ForwardedEnv, LaunchValues, LaunchVariable, LaunchVariables,
-    MissingLaunchVariables, RepeatedLaunchVariable, Starter, VariableChange,
-    VariableGivenTwoValues, VariableNeed, VariableNeeds, VariablesGivenTwoValues,
-    refuse_peer_placements,
+    BrokenAnyOf, ChangeValues, ChoiceNeed, ForwardedEnv, KeptSetsHeldInPart, LaunchValues,
+    LaunchVariable, LaunchVariables, LaunchVariablesKey, MissingLaunchVariables,
+    RepeatedLaunchVariable, Starter, VariableChange, VariableGivenTwoValues, VariableNeed,
+    VariableNeeds, VariableOutsideItsSet, VariablesGivenTwoValues, WrittenLaunchVariables,
+    refuse_kept_sets_held_in_part, refuse_peer_placements, refuse_variables_outside_their_set,
 };
 pub use links::validate_link_plan;
 pub use observations::PlannedObservation;

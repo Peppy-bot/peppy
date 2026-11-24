@@ -1,5 +1,3 @@
-#[cfg(test)]
-mod any_of_fixtures;
 pub(super) mod clock;
 pub(super) mod federated;
 pub(super) mod feedback;
@@ -385,7 +383,9 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // value of each launch variable it takes from that environment, so a
     // missing one refuses the launch here, while the running stack and its
     // kept values stay as they are, and not when a join fails in the middle
-    // of a session. A build starts nothing, so it checks none and keeps none.
+    // of a session. A set of an `any_of` of the launcher that the environment
+    // holds in part refuses the launch too, so the kept values never hold
+    // one. A build starts nothing, so it checks none and keeps none.
     let environment = ForwardedEnv::parse(ctx.env_vars.clone(), &prepared.launch_variable_names());
     let launch_values = if builds_only {
         LaunchValues::default()
@@ -397,6 +397,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             &placements,
             variable_needs,
             &environment,
+            &prepared.written_launch_variables(),
         ) {
             publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
             return ChangeEnd::stopped(rejected(reason));
