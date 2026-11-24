@@ -92,23 +92,33 @@ the review of a person without end. When each open pull request of a set was
 opened by a member of the team `peppy-devs`, the dashboard has the section
 "Review by Claude", and the bot writes that dashboard on a pull request that
 is alone too: a pull request that is alone is a set of one. A person has 12
-hours to review the set first, from the time each of its open pull requests
-is ready for review. During that time the section shows the time left, and
-no box. A pull request that joins the set (a reopened one too), or that
-leaves the draft state, starts the 12 hours again, unless Claude reviewed
-each open pull request of the set: its authors then chose Claude, no wait
+hours to review the set first, from the time each of its open pull requests is
+ready for review. During that time the section shows the time left. A pull
+request that joins the set (a reopened one too), or that leaves the draft
+state, starts the 12 hours again, unless Claude reviewed each open pull
+request of the set: its authors or an admin then chose Claude, no wait
 applies, and the section says so. When a person who did not open a pull
-request of the set and has write access to its repository reviews one of
-them before the 12 hours end, a person reviews the set and the section gets
-no box. Otherwise the section gets a box that asks for the review when the
-12 hours end, and the bot tells the authors of the set in a comment, because
-an edit of the dashboard sends no notification. A review of a person after
-that does not remove the box, until the 12 hours start again: each review
-of a person before their new end counts. No event of GitHub comes when the
-time passes, so the workflow merge-set-wait.yml runs `wait-syncs` every 30
-minutes: it starts the sync of each set that waits, until one hour after the
-end of its 12 hours.
-The bot acts on the box for the same users as on its other boxes. It starts
+request of the set and has write access to its repository reviews one of them
+before the 12 hours end, a person reviews the set. Otherwise the authors can
+ask for the review of Claude when the 12 hours end, and the bot tells them in
+a comment, because an edit of the dashboard sends no notification; while a
+review that an admin asked for runs, the posts of that review tell them in its
+place. A review of a person after that does not take that right of the authors
+back, until the 12 hours start again: each review of a person before their new
+end counts. No event of GitHub comes when the time passes, so every 30
+minutes a schedule of AWS has the webhook function (webhook.py) start the
+workflow merge-set-wait.yml, which runs `wait-syncs`: it starts the sync of
+each set that waits, and of each set whose dashboard still counts down a wait
+that is over, so that a late run only puts the box of the authors off.
+The section always has the box that asks for the review. A tick asks for the
+review of every open pull request of the set, on whichever dashboard of the
+set it is. The bot acts on the box for the same users as on its other boxes,
+and for them the wait for a person applies, but not for a user with the admin
+role on every repository of the set: the box says so while the wait holds, and
+an admin can ask for the review at any time, also while a pull request of the
+set is a draft or after a person reviewed the set. When a review that an admin
+asked for posted on each open pull request of the set, no wait applies (see
+above), so the authors ask for the next rounds. It starts
 the workflow `Claude review` of the private repository
 peppy-superproject (claude_review.py runs in it) when no pull request of the
 set has a conflict with its base and no review of the set is in progress, and
@@ -1722,8 +1732,8 @@ def render_set_dashboard(
     set_review: SetReview | None,
 ) -> str:
     """The dashboard of a set. Reports are keyed by pull request label. It
-    has the section of the Claude review when `set_review` is not None, and
-    that section has the box of the review when Claude can review the set."""
+    has the section of the Claude review, with the box of the review, when
+    `set_review` is not None."""
     blockers = set_blockers(state, reports)
     stale_run_count = len(stale_runs(reports))
     lines = [
@@ -1870,8 +1880,8 @@ def render_alone_dashboard(state: SetState, set_review: SetReview | None) -> str
     """The dashboard of a set that is alone. The bot writes it on the merged
     pull requests of the set too, so with merged members it names the pull
     request that is alone and the ones that merged. It has the section of
-    the Claude review when `set_review` is not None, and that section has the
-    box of the review when Claude can review the pull request."""
+    the Claude review, with the box of the review, when `set_review` is not
+    None."""
     lines = [DASHBOARD_MARKER, f"### Set `{state.name}`", ""]
     if not state.merged:
         lines.append(
@@ -2166,18 +2176,19 @@ class PullRequestReview:
 # The wait for a person -------------------------------------------------------
 
 # A person has this long to review a set of developers, from the time each of
-# its open pull requests is ready for review, before Claude can review it.
+# its open pull requests is ready for review, before its authors can ask for
+# the review of Claude. An admin can ask for it at any time.
 PERSON_REVIEW_WAIT = timedelta(hours=12)
 
-# The workflow of peppy that starts the sync of each set that waits for a
-# person, at this interval, so that the dashboard shows the time left and
-# shows the box of the review when the wait ends: no event of GitHub comes
-# when the time passes. It goes on for WAIT_SYNC_MARGIN after the end of the
-# wait, so that a scheduled run that GitHub delays or drops does not keep the
-# box hidden.
+# The workflow of peppy that starts the sync of each set whose dashboard
+# changes as the time passes (`changes_with_time`), so that the dashboard
+# shows the time left, and gives the box of the review to the authors when
+# the wait ends: no event of GitHub comes when the time passes. The webhook
+# function starts it at this interval, at the event of a schedule of
+# aws/peppy-ci-pipelines in Peppy-bot/infraops (webhook.py), and the
+# dashboard names the interval.
 WAIT_SYNC_WORKFLOW = "merge-set-wait.yml"
 WAIT_SYNC_INTERVAL = timedelta(minutes=30)
-WAIT_SYNC_MARGIN = 2 * WAIT_SYNC_INTERVAL
 
 # The mark of the dashboard that counts down the wait: the sync that finds
 # it and offers the review tells the authors of the set. It ends the line of
@@ -2206,7 +2217,8 @@ class DraftWait:
 
 @dataclass(frozen=True)
 class PersonWait:
-    """A person can review the set until `ends_at`; Claude cannot yet."""
+    """A person can review the set until `ends_at`; until then only an admin
+    can ask for the review of Claude."""
 
     ends_at: datetime
     left: timedelta
@@ -2215,16 +2227,17 @@ class PersonWait:
 @dataclass(frozen=True)
 class ReviewedByPerson:
     """A person reviewed the set before the end of the wait, so a person
-    reviews it and Claude does not. `review` is the first such review."""
+    reviews it, and only an admin can ask for the review of Claude. `review`
+    is the first such review."""
 
     review: PersonReview
 
 
 @dataclass(frozen=True)
 class ClaudeOffered:
-    """Claude can review the set: no person reviewed it before the end of
-    the wait, or Claude reviewed each of its open pull requests, so that no
-    wait applies."""
+    """The authors of the set can ask for the review of Claude: no person
+    reviewed the set before the end of the wait, or Claude reviewed each of
+    its open pull requests, so that no wait applies."""
 
     # The end of the wait; None when no wait applies.
     wait_ended_at: datetime | None
@@ -2296,9 +2309,9 @@ def review_offer(
     reviews: Sequence[PersonReview],
     now: datetime,
 ) -> ReviewOffer:
-    """Whether Claude can review the open pull requests of a set at `now`,
-    from the end of the wait for a person (None while one of them is a
-    draft) and the reviews of persons on them. Each review before the end of
+    """Whether the authors of the open pull requests of a set can ask for
+    the review of Claude at `now`, from the end of the wait for a person
+    (None while one of them is a draft) and the reviews of persons on them. Each review before the end of
     the wait counts, also one from before the wait started again, and each
     review counts while one of them is a draft. A review after the end of
     the wait does not take the offer back."""
@@ -2338,13 +2351,27 @@ def section_subject(alone: bool) -> str:
     return "this pull request" if alone else "this set"
 
 
-def wait_rule_text(alone: bool) -> str:
+def admins_text(pull_requests: Sequence[PullRequest], alone: bool) -> str:
+    """The users who can ask for the review of Claude at any time, as the
+    section of the Claude review of the open `pull_requests` calls them: an
+    admin of every repository of the set. The text names the repository of a
+    pull request that is alone, as the bot writes the same section on the
+    merged pull requests of the set, which are in other repositories."""
+    if not alone:
+        return "an admin of every repository of this set"
+    return f"an admin of {pull_requests[0].repository.name}"
+
+
+def wait_rule_text(alone: bool, admins: str) -> str:
+    """The rule of the wait for a person; `admins` names the users who can
+    ask for the review of Claude at any time (admins_text)."""
     subject = section_subject(alone)
     ready = "it is" if alone else "each of its pull requests is"
     return (
         f"A person has {hours_text(PERSON_REVIEW_WAIT)} to review {subject} from "
         f"the time {ready} ready for review. Claude can review {subject} only if "
-        "no person reviewed it in that time."
+        f"no person reviewed it in that time, or at any time when {admins} asks "
+        "for it."
     )
 
 
@@ -2362,7 +2389,7 @@ def wait_state_text(
         case ReviewedByPerson(review):
             return (
                 f"`{review.author}` reviewed {review.pull_request.link}, so a "
-                f"person reviews {section_subject(alone)}, not Claude."
+                f"person reviews {section_subject(alone)}."
             )
         case _:
             raise ValueError(f"no wait for a person is left in {offer}")
@@ -2372,7 +2399,8 @@ def wait_state_text(
 class SetReview:
     """The Claude review of a set whose dashboard has its section."""
 
-    # Whether Claude can review the set.
+    # Whether the authors of the set can ask for the review of Claude. An
+    # admin can ask for it with each offer.
     offer: ReviewOffer
     # Ordered as the open pull requests of the set.
     pull_requests: tuple[PullRequestReview, ...]
@@ -2398,22 +2426,27 @@ def counted(count: int, noun: str) -> str:
 
 
 def review_section(set_review: SetReview, alone: bool) -> list[str]:
-    """The section "Review by Claude" of a dashboard: the wait for a person
-    and where it is, or why Claude can review the set, then the box and the
-    state of the review."""
-    lines = ["### Review by Claude", ""]
+    """The section "Review by Claude" of a dashboard: why the authors can ask
+    for the review of Claude, or the wait for a person and where it is, then
+    the box and the state of the review. While the wait holds, the box is for
+    an admin."""
     offer = set_review.offer
+    admins = admins_text(
+        [review.pull_request for review in set_review.pull_requests], alone
+    )
     if isinstance(offer, ClaudeOffered):
-        return [
-            *lines,
-            *offer_reason_lines(offer, alone),
-            "",
-            *offered_review_lines(set_review, alone),
-        ]
-    lines.extend([wait_rule_text(alone), "", wait_line(offer, alone)])
-    if set_review.in_progress:
-        lines.extend(["", *review_state_lines(set_review)])
-    return lines
+        reason = offer_reason_lines(offer, alone, admins)
+        admins_while_waiting = None
+    else:
+        reason = [wait_rule_text(alone, admins), "", wait_line(offer, alone)]
+        admins_while_waiting = admins
+    return [
+        "### Review by Claude",
+        "",
+        *reason,
+        "",
+        *review_box_lines(set_review, alone, admins_while_waiting),
+    ]
 
 
 def wait_line(offer: DraftWait | PersonWait | ReviewedByPerson, alone: bool) -> str:
@@ -2426,11 +2459,12 @@ def wait_line(offer: DraftWait | PersonWait | ReviewedByPerson, alone: bool) -> 
     return f"{text} The bot updates this time every {minutes} minutes. {WAIT_MARKER}"
 
 
-def offer_reason_lines(offer: ClaudeOffered, alone: bool) -> list[str]:
-    """Why Claude can review the set: no person reviewed it before the end of
-    the wait, or Claude reviewed each of its open pull requests. In that
-    second case no wait applies, so the lines do not give the rule of the
-    wait."""
+def offer_reason_lines(offer: ClaudeOffered, alone: bool, admins: str) -> list[str]:
+    """Why the authors can ask for the review of Claude: no person reviewed
+    the set before the end of the wait, or Claude reviewed each of its open
+    pull requests. In that second case no wait applies, so the lines do not
+    give the rule of the wait. `admins` names the users who can ask for the
+    review at any time (admins_text)."""
     subject = section_subject(alone)
     choice = (
         f"This is your choice: a person can also review and approve {subject} as usual."
@@ -2444,7 +2478,7 @@ def offer_reason_lines(offer: ClaudeOffered, alone: bool) -> list[str]:
             )
         ]
     return [
-        wait_rule_text(alone),
+        wait_rule_text(alone, admins),
         "",
         (
             f"No person reviewed {subject} in that time, so Claude can review it "
@@ -2453,9 +2487,24 @@ def offer_reason_lines(offer: ClaudeOffered, alone: bool) -> list[str]:
     ]
 
 
-def offered_review_lines(set_review: SetReview, alone: bool) -> list[str]:
-    """The box of the review of Claude, what a tick does, and the state of
-    the review."""
+def review_box_lines(
+    set_review: SetReview, alone: bool, admins_while_waiting: str | None
+) -> list[str]:
+    """Who ticks the box of the review of Claude, what a tick does, the box,
+    and the state of the review. A tick asks for the review of every open
+    pull request of the set. `admins_while_waiting` names the admins who
+    alone can tick the box while the wait for a person holds; None when the
+    authors can tick it."""
+    if admins_while_waiting is None:
+        asker = "To choose Claude, tick the box below."
+        tick = "tick the box"
+        box_suffix = ""
+    else:
+        asker = (
+            f"To ask for the review now, {admins_while_waiting} ticks the box below."
+        )
+        tick = f"ask {admins_while_waiting} to tick the box"
+        box_suffix = " now (admin only)"
     pull_requests = counted(len(set_review.pull_requests), "pull request")
     posts_on = "this pull request" if alone else "each pull request of the set"
     approves = "this pull request" if alone else f"the {pull_requests}"
@@ -2466,19 +2515,21 @@ def offered_review_lines(set_review: SetReview, alone: bool) -> list[str]:
     )
     return [
         (
-            f"To choose Claude, tick the box below. Claude posts its findings on "
-            f"{posts_on}. Correct each finding or answer in its thread, then "
-            "tick the box again. When no blocking finding is open, Claude "
-            f"approves {approves}."
+            f"{asker} Claude posts its findings on {posts_on}. Correct each "
+            f"finding or answer in its thread, then {tick} again. When no "
+            f"blocking finding is open, Claude approves {approves}."
         ),
         "",
-        box_line(Action.REVIEW, box),
+        box_line(Action.REVIEW, box + box_suffix),
         "",
-        *review_state_lines(set_review),
+        *review_state_lines(set_review, tick),
     ]
 
 
-def review_state_lines(set_review: SetReview) -> list[str]:
+def review_state_lines(set_review: SetReview, tick: str) -> list[str]:
+    """The state of the review of Claude. `tick` is the phrase that tells
+    the reader to tick the box for a new review, or to ask an admin to tick
+    it (review_box_lines)."""
     run = set_review.run
     if set_review.in_progress:
         return [f"**Review in progress** in [this run]({run.url})."]
@@ -2488,7 +2539,7 @@ def review_state_lines(set_review: SetReview) -> list[str]:
         )
         return [
             f"**Review not completed.** {cause} See [the run]({run.url}), and "
-            "tick the box to ask again."
+            f"{tick} again."
         ]
     reviews = set_review.pull_requests
     if set_review.approved:
@@ -2513,7 +2564,7 @@ def review_state_lines(set_review: SetReview) -> list[str]:
         )
         return [
             f"**{counted(total, 'open blocking finding')}** ({where}). Correct "
-            "each finding or answer in its thread, then tick the box again."
+            f"each finding or answer in its thread, then {tick} again."
         ]
     if any(review.reviewed for review in reviews):
         unapproved = ", ".join(
@@ -2521,7 +2572,7 @@ def review_state_lines(set_review: SetReview) -> list[str]:
         )
         return [
             "**Not approved.** No blocking finding is open, but Claude did not "
-            f"read the head of {unapproved}: tick the box to ask for a new review."
+            f"read the head of {unapproved}: {tick} for a new review."
         ]
     return ["**No review asked.**"]
 
@@ -2530,18 +2581,22 @@ def review_refusal_reasons(
     state: SetState,
     set_review: SetReview | None,
     mergeable: Mapping[str, bool | None],
+    asked_by_an_admin: bool,
 ) -> list[str]:
     """Why the bot does not start a review of the set; none when it starts
     one. `mergeable` tells, for each open pull request by label, whether it
-    merges into its base without conflicts (None while GitHub computes it)."""
+    merges into its base without conflicts (None while GitHub computes it).
+    The wait for a person does not hold a review that an admin of every
+    repository of the set asked for (`asked_by_an_admin`)."""
     if set_review is None:
         return [
             "Claude reviews only a set whose every open pull request a member of "
             f"`{DEVELOPER_TEAM}` opened."
         ]
-    if not isinstance(set_review.offer, ClaudeOffered):
+    if not isinstance(set_review.offer, ClaudeOffered) and not asked_by_an_admin:
+        admins = admins_text(state.open_pull_requests(), state.is_alone)
         return [
-            f"{wait_rule_text(state.is_alone)} "
+            f"{wait_rule_text(state.is_alone, admins)} "
             f"{wait_state_text(set_review.offer, state.is_alone)}"
         ]
     if set_review.in_progress:
@@ -2616,16 +2671,26 @@ def render_review_started(
 
 def wait_ended(set_review: SetReview, dashboards: Mapping[str, Dashboard]) -> bool:
     """Whether the wait for a person ended since the dashboards of the set
-    were written: one of them counts down the wait, and Claude can now
-    review the set because no person reviewed it before the end of the wait.
-    When Claude can review the set because it reviewed each of its open pull
-    requests, no wait ended."""
+    were written, so that the bot tells the authors: one of them counts down
+    the wait, and the authors can now ask for the review of Claude because no
+    person reviewed the set before the end of the wait. When they can ask
+    because Claude reviewed each of its open pull requests, no wait ended.
+    While a review that an admin asked for runs, a tick of the authors gets
+    no review, so the bot does not tell them: the review posts on each pull
+    request of the set, and that tells them."""
     offer = set_review.offer
     return (
         isinstance(offer, ClaudeOffered)
         and offer.wait_ended_at is not None
-        and any(WAIT_MARKER in dashboard.body for dashboard in dashboards.values())
+        and not set_review.in_progress
+        and any(counts_down(dashboard) for dashboard in dashboards.values())
     )
+
+
+def counts_down(dashboard: Dashboard) -> bool:
+    """Whether the dashboard shows the time left until the end of the wait
+    for a person."""
+    return WAIT_MARKER in dashboard.body
 
 
 def render_wait_ended(state: SetState) -> str:
@@ -4063,14 +4128,35 @@ def rerun_out_of_date(
     )
 
 
+def first_admin_request(
+    gateway: GitHubGateway, state: SetState, requests: Sequence[Request]
+) -> Request | None:
+    """The first of the requests whose user has the admin role on every
+    repository of the set; None when no such user asked."""
+    return next(
+        (
+            request
+            for request in requests
+            if is_admin_of_the_set(
+                state, permissions_in_the_set(gateway, state, request.requester)
+            )
+        ),
+        None,
+    )
+
+
 def start_review(
     gateway: GitHubGateway,
     state: SetState,
-    request: Request,
+    requests: Sequence[Request],
     requesters: Sequence[str],
 ) -> ReviewRun | None:
-    """Start the Claude review of the set, or answer why not; the run it
-    started, if any."""
+    """Start the Claude review of every open pull request of the set, or
+    answer why not; the run it started, if any. The review is for the first
+    of the `requests` of an admin of every repository of the set, as the
+    wait for a person does not hold it, else for the first of them."""
+    admin_request = first_admin_request(gateway, state, requests)
+    request = admin_request or requests[0]
     asked_on = request.dashboard.pull_request
     mergeable = {
         pull_request.label: computed_merge_state(
@@ -4079,7 +4165,10 @@ def start_review(
         for pull_request in state.open_pull_requests()
     }
     reasons = review_refusal_reasons(
-        state, read_set_review(gateway, state, started=None), mergeable
+        state,
+        read_set_review(gateway, state, started=None),
+        mergeable,
+        asked_by_an_admin=admin_request is not None,
     )
     if not reasons:
         try:
@@ -4113,9 +4202,10 @@ def handle_requests(
     bot does not act for them, and the reports name the users it acts for
     alone. The re-run goes first. Both read the reports from before the
     re-run, so a merge asked for at the same time stops on the CI that the
-    re-run finds out of date. The review goes last, and a set that is alone
-    has the review box alone. Returns the review run that it started, if
-    any."""
+    re-run finds out of date. The review goes last, for the first admin of
+    every repository of the set who asked for it, if one did (see
+    start_review), and a set that is alone has the review box alone. Returns
+    the review run that it started, if any."""
     actions = (
         (Action.REVIEW,)
         if state.is_alone
@@ -4147,7 +4237,7 @@ def handle_requests(
                     gateway, state, reports, dashboards, allowed[0], requesters, run_url
                 )
             case Action.REVIEW:
-                started = start_review(gateway, state, allowed[0], requesters)
+                started = start_review(gateway, state, allowed, requesters)
     return started
 
 
@@ -4181,9 +4271,10 @@ def read_review_offer(
     reviews_of: Mapping[str, Sequence[Review]],
     now: datetime,
 ) -> ReviewOffer:
-    """Whether Claude can review the open pull requests of a set at `now`,
-    whose reviews are in `reviews_of` by label. When Claude reviewed each of
-    them, the authors of the set chose Claude, so no wait applies: a pull
+    """Whether the authors of the open pull requests of a set can ask for
+    the review of Claude at `now`, whose reviews are in `reviews_of` by
+    label. When Claude reviewed each of them, the authors of the set or an
+    admin chose Claude, so no wait applies: a pull
     request that leaves the draft state then does not start the wait again.
     A pull request that joins the set and that Claude did not review starts
     the wait again."""
@@ -4329,11 +4420,11 @@ def sync(gateway: GitHubGateway, event: Event, run_url: str) -> None:
 
 # The relay -------------------------------------------------------------------
 
-# The workflow of peppy that the relay starts, and the branch it runs from:
-# that branch alone reaches the `merge-set` environment, which holds the key of
-# the App for the sync.
+# The workflow of peppy that the relay starts, and the branch that each
+# workflow of peppy that the bot starts runs from: that branch alone reaches
+# the `merge-set` environment, which holds the key of the App.
 SYNC_WORKFLOW = "merge-set.yml"
-SYNC_WORKFLOW_REF = resolve.PEPPY_DEV_BRANCH
+PEPPY_WORKFLOW_REF = resolve.PEPPY_DEV_BRANCH
 
 
 def dispatch_inputs(repository: Repository, subject: RelaySubject) -> dict[str, str]:
@@ -4413,14 +4504,26 @@ def dispatched_run(response: object, workflow: str) -> tuple[int, str]:
     return run_id, url
 
 
-def start_sync(api: GitHubApi, inputs: Mapping[str, str]) -> str:
-    """Start the Merge set workflow of peppy, and return the URL of its run."""
+def start_workflow(api: GitHubApi, workflow: str, inputs: Mapping[str, str]) -> str:
+    """Start a workflow of peppy from PEPPY_WORKFLOW_REF, and return the URL
+    of its run."""
     response = api.request(
         "POST",
-        f"/repos/{resolve.PEPPY_REPOSITORY}/actions/workflows/{SYNC_WORKFLOW}/dispatches",
-        body={"ref": SYNC_WORKFLOW_REF, "inputs": inputs, "return_run_details": True},
+        f"/repos/{resolve.PEPPY_REPOSITORY}/actions/workflows/{workflow}/dispatches",
+        body={"ref": PEPPY_WORKFLOW_REF, "inputs": inputs, "return_run_details": True},
     )
-    return dispatched_run(response, SYNC_WORKFLOW)[1]
+    return dispatched_run(response, workflow)[1]
+
+
+def start_sync(api: GitHubApi, inputs: Mapping[str, str]) -> str:
+    """Start the Merge set workflow of peppy, and return the URL of its run."""
+    return start_workflow(api, SYNC_WORKFLOW, inputs)
+
+
+def start_wait_syncs_workflow(api: GitHubApi) -> str:
+    """Start the Merge set wait workflow of peppy, and return the URL of its
+    run."""
+    return start_workflow(api, WAIT_SYNC_WORKFLOW, {})
 
 
 @dataclass(frozen=True)
@@ -4432,9 +4535,9 @@ class TokenScope:
     permissions: tuple[tuple[str, str], ...]
 
 
-# The token that starts the Merge set workflow: it can start the workflows of
-# peppy and do nothing else.
-SYNC_START_SCOPE = TokenScope((PEPPY.name,), (("actions", "write"),))
+# The token that starts the Merge set workflow and the Merge set wait
+# workflow: it can start the workflows of peppy and do nothing else.
+WORKFLOW_START_SCOPE = TokenScope((PEPPY.name,), (("actions", "write"),))
 
 
 def pull_request_scope(repository: Repository) -> TokenScope:
@@ -4468,7 +4571,7 @@ def relay(
             )
         )
     inputs = dispatch_inputs(repository, subject)
-    run_url = start_sync(api_for(SYNC_START_SCOPE), inputs)
+    run_url = start_sync(api_for(WORKFLOW_START_SCOPE), inputs)
     started = f"Started {SYNC_WORKFLOW} of peppy for {json.dumps(inputs)}: {run_url}"
     if event_name != "issue_comment":
         return started
@@ -4501,18 +4604,28 @@ def open_sets(gateway: GitHubGateway) -> dict[str, list[PullRequest]]:
     return sets
 
 
-def changes_with_time(offer: ReviewOffer, now: datetime) -> bool:
-    """Whether the dashboard of a set whose offer is `offer` at `now` changes
-    as the time passes: it counts down the wait, or the wait ended less than
-    WAIT_SYNC_MARGIN ago, so that a sync shows the box of the review and
-    tells the authors. Every other change of the offer comes with an event of
-    GitHub that starts a sync: a pull request that opens, reopens, leaves the
-    draft state or closes, and a review."""
+def changes_with_time(
+    offer: ReviewOffer, dashboards: Iterable[Dashboard | None]
+) -> bool:
+    """Whether the dashboards of a set whose offer is `offer` change as the
+    time passes: the set waits for a person, so they count down the wait, or
+    one of `dashboards` (the dashboard of each open pull request of the set,
+    None where there is none) still counts down a wait that is over, so that
+    a sync gives the box of the review to the authors and tells them. A run
+    of the wait syncs that comes late, or that does not come, only puts that
+    sync off. Every other change of the offer comes with an event of GitHub
+    that starts a sync: a pull request that opens, reopens, leaves the draft
+    state or closes, and a review. When the sync of such an event does not
+    run, the dashboard that still counts down gets a sync here too. While the
+    set waits, `dashboards` is not read. A set whose sync fails before it
+    writes its dashboards keeps its countdown, so it gets a sync at each run
+    of the wait syncs until a sync passes, and each failed run shows in the
+    Actions of peppy."""
     if isinstance(offer, PersonWait):
         return True
-    if isinstance(offer, ClaudeOffered) and offer.wait_ended_at is not None:
-        return now < offer.wait_ended_at + WAIT_SYNC_MARGIN
-    return False
+    return any(
+        dashboard is not None and counts_down(dashboard) for dashboard in dashboards
+    )
 
 
 def waiting_sets(gateway: GitHubGateway) -> list[PullRequest]:
@@ -4525,7 +4638,8 @@ def waiting_sets(gateway: GitHubGateway) -> list[PullRequest]:
             continue
         reviews_of = read_reviews(gateway, pull_requests)
         offer = read_review_offer(gateway, pull_requests, reviews_of, now)
-        if changes_with_time(offer, now):
+        dashboards = (gateway.dashboard(pull_request) for pull_request in pull_requests)
+        if changes_with_time(offer, dashboards):
             waiting.append(pull_requests[0])
     return waiting
 
@@ -4590,7 +4704,7 @@ def run_wait_syncs(environment: Mapping[str, str]) -> None:
     )
     dispatch_api = GitHubApi(required(environment, "MERGE_SET_DISPATCH_TOKEN"))
     for run_url in start_wait_syncs(gateway, dispatch_api):
-        print(f"Started the sync of a set that waits for a person: {run_url}")
+        print(f"Started the sync of a set whose dashboard changes in time: {run_url}")
 
 
 def run_repositories() -> None:
@@ -4616,7 +4730,7 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     )
     commands.add_parser(
         "wait-syncs",
-        help="Start the sync of each set that waits for the review of a person.",
+        help="Start the sync of each set whose dashboard changes with the time.",
     )
     return parser.parse_args(argv)
 
