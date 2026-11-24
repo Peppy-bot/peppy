@@ -8,7 +8,9 @@ use tracing::{error, warn};
 
 use daemon_config::consts::{AppEnv, PEPPY_VERSION, PeppyDirs, RootLifetime};
 use peppy::{
-    commands::{Command, clock, container, fleet, info, mcp, node, platform, repo, service, stack},
+    commands::{
+        Command, clock, container, fleet, info, mcp, node, platform, repo, service, stack, update,
+    },
     context::AppContext,
 };
 
@@ -94,6 +96,21 @@ enum Commands {
     },
     /// Display peppy version information
     Info {},
+    /// Update peppy to the latest release
+    Update {
+        /// Check for updates without installing
+        #[arg(long, conflicts_with_all = ["version", "force", "yes"])]
+        check: bool,
+        /// Install a specific release version (for example, v0.39.0)
+        #[arg(long, value_name = "VERSION", value_parser = update::parse_release_version)]
+        version: Option<update::ReleaseVersion>,
+        /// Reinstall even when already at the target version
+        #[arg(long)]
+        force: bool,
+        /// Skip confirmation prompts
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
+    },
 }
 
 fn main() {
@@ -152,6 +169,18 @@ fn main() {
         }
         Commands::Mcp { command } => mcp::McpCommand { command }.execute(&app_ctx),
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),
+        Commands::Update {
+            check,
+            version,
+            force,
+            yes,
+        } => update::UpdateCommand {
+            check,
+            version,
+            force,
+            yes,
+        }
+        .execute(&app_ctx),
     };
 
     if let Err(e) = result {
@@ -1025,5 +1054,71 @@ mod tests {
                 ..
             }
         );
+    }
+
+    #[test]
+    fn update_command_flags_parse_and_enforce_conflicts() {
+        let cli = Cli::try_parse_from(["peppy", "update"]).expect("plain update parses");
+        assert_matches!(
+            cli.command,
+            Commands::Update {
+                check: false,
+                version: None,
+                force: false,
+                yes: false,
+            }
+        );
+
+        let cli = Cli::try_parse_from(["peppy", "update", "--check"]).expect("--check parses");
+        assert_matches!(
+            cli.command,
+            Commands::Update {
+                check: true,
+                version: None,
+                force: false,
+                yes: false,
+            }
+        );
+
+        let cli = Cli::try_parse_from(["peppy", "update", "--version", "0.38.4", "--force", "-y"])
+            .expect("version, force, and -y parse");
+        let Commands::Update {
+            check,
+            version,
+            force,
+            yes,
+        } = cli.command
+        else {
+            panic!("expected update command");
+        };
+        assert!(!check);
+        assert_eq!(
+            version.map(update::ReleaseVersion::tag).as_deref(),
+            Some("v0.38.4")
+        );
+        assert!(force);
+        assert!(yes);
+
+        for (invalid, kind) in [
+            (
+                vec!["peppy", "update", "--check", "--force"],
+                clap::error::ErrorKind::ArgumentConflict,
+            ),
+            (
+                vec!["peppy", "update", "--check", "--yes"],
+                clap::error::ErrorKind::ArgumentConflict,
+            ),
+            (
+                vec!["peppy", "update", "--check", "--version", "v0.39.0"],
+                clap::error::ErrorKind::ArgumentConflict,
+            ),
+            (
+                vec!["peppy", "update", "--version", "not-a-version"],
+                clap::error::ErrorKind::ValueValidation,
+            ),
+        ] {
+            let err = Cli::try_parse_from(invalid.clone()).expect_err("should be refused");
+            assert_eq!(err.kind(), kind, "{invalid:?}: {err}");
+        }
     }
 }

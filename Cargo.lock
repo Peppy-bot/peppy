@@ -3764,6 +3764,7 @@ dependencies = [
  "daemon-config",
  "derive_more",
  "dirs 7.0.0",
+ "flate2",
  "futures",
  "generator",
  "git2",
@@ -3795,6 +3796,7 @@ dependencies = [
  "serde_json5",
  "service-manager",
  "stack-goal",
+ "tar",
  "tempfile",
  "testcontainers",
  "thiserror 2.0.21",
@@ -3803,6 +3805,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width",
+ "ureq",
  "url",
 ]
 

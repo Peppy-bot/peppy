@@ -69,6 +69,45 @@ On supported boards, install **Raspberry Pi OS (64-bit)** based on Debian 13 (`t
 | `PEPPY_NO_SERVICE_INSTALL` | Skip service installation and repository init/refresh |
 | `PEPPY_NO_CONTAINER_SETUP` | Skip Apptainer container setup and package installation |
 
+## Updating Peppy
+
+To update an existing installation to the latest release:
+
+```sh
+peppy update
+```
+
+`peppy update` checks the latest release before it downloads the archive. If your installation is already at the latest release, it exits without changing the binary or restarting the daemon. When a newer release is available, `peppy update`:
+
+1. Downloads the release archive and checks its gzip checksum.
+2. Runs the new `peppy --version`, and stops before it changes anything if the new binary does not run on this machine or is not the release that it installs.
+3. Stops and uninstalls the background service if one is installed at the level of the update (user-level, or system-wide when you run it with sudo).
+4. Replaces `peppy`, `zenohd`, and the bundled Apptainer and Lima in the installation directory. If a replacement fails, it puts the previous files back and starts the service again.
+5. On Linux, runs `peppy container setup`.
+6. Syncs the default repositories (`peppy repo init`).
+7. If it stopped the background service: installs and starts the service with the new binary, then refreshes the repository indexes (`peppy repo update`).
+
+A failure in step 5 or 6 does not stop step 7. If a step from 5 to 7 fails, `peppy update` names each step that did not complete, with the commands that complete it. If a system-wide service is installed and you run `peppy update` without sudo, or if no service is installed, `peppy update` does not restart a daemon or refresh the repository indexes: restart the daemon that runs, if there is one, then run `peppy repo update`.
+
+`peppy update` reads the installer variables of the table above:
+
+- `PEPPY_NO_ROOT_INSTALL`: it runs `peppy container status --packages` in place of `peppy container setup`, uses no sudo, and fails when a package that container builds need is missing.
+- `PEPPY_NO_CONTAINER_SETUP`: it skips step 5.
+- `PEPPY_NO_SERVICE_INSTALL`: it skips steps 3, 6, and 7.
+
+If the background daemon currently runs user nodes, `peppy update` prompts before stopping the daemon. An idle daemon restarts without a prompt.
+
+If an update stops before it completes (for example, with Ctrl-C), the next `peppy update` removes the files that it left in the installation directory. Two `peppy update` commands cannot run at the same time on one installation.
+
+Available flags:
+
+| Flag | Effect |
+| --- | --- |
+| `--check` | Check the latest release without downloading or installing |
+| `--version <version>` | Install a specific release version (for example, `peppy update --version v0.39.0`) |
+| `--force` | Reinstall even when already at the target version |
+| `-y`, `--yes` | Skip confirmation prompts when active user nodes are running |
+
 ## Verifying the installation
 
 The service installs at user level by default; run `peppy service install` with sudo for a system-wide install. The snippets below assume the default user-level install. You can verify the service is running with:
