@@ -4421,10 +4421,10 @@ def sync(gateway: GitHubGateway, event: Event, run_url: str) -> None:
 # The relay -------------------------------------------------------------------
 
 # The workflow of peppy that the relay starts, and the branch that each
-# workflow the bot starts runs from: that branch alone reaches the `merge-set`
-# environment, which holds the key of the App.
+# workflow of peppy that the bot starts runs from: that branch alone reaches
+# the `merge-set` environment, which holds the key of the App.
 SYNC_WORKFLOW = "merge-set.yml"
-BOT_WORKFLOW_REF = resolve.PEPPY_DEV_BRANCH
+PEPPY_WORKFLOW_REF = resolve.PEPPY_DEV_BRANCH
 
 
 def dispatch_inputs(repository: Repository, subject: RelaySubject) -> dict[str, str]:
@@ -4505,12 +4505,12 @@ def dispatched_run(response: object, workflow: str) -> tuple[int, str]:
 
 
 def start_workflow(api: GitHubApi, workflow: str, inputs: Mapping[str, str]) -> str:
-    """Start a workflow of peppy from BOT_WORKFLOW_REF, and return the URL
+    """Start a workflow of peppy from PEPPY_WORKFLOW_REF, and return the URL
     of its run."""
     response = api.request(
         "POST",
         f"/repos/{resolve.PEPPY_REPOSITORY}/actions/workflows/{workflow}/dispatches",
-        body={"ref": BOT_WORKFLOW_REF, "inputs": inputs, "return_run_details": True},
+        body={"ref": PEPPY_WORKFLOW_REF, "inputs": inputs, "return_run_details": True},
     )
     return dispatched_run(response, workflow)[1]
 
@@ -4605,21 +4605,24 @@ def open_sets(gateway: GitHubGateway) -> dict[str, list[PullRequest]]:
 
 
 def changes_with_time(
-    gateway: GitHubGateway, pull_requests: Sequence[PullRequest], offer: ReviewOffer
+    offer: ReviewOffer, dashboards: Iterable[Dashboard | None]
 ) -> bool:
-    """Whether the dashboards of the open pull requests of a set whose offer
-    is `offer` change as the time passes: the set waits for a person, so they
-    count down the wait, or one of them still counts down a wait that is
-    over, so that a sync gives the box of the review to the authors and tells
-    them. A run of the wait syncs that comes late, or that does not come,
-    only puts that sync off. Every other change of the offer comes with an
-    event of GitHub that starts a sync: a pull request that opens, reopens,
-    leaves the draft state or closes, and a review. When the sync of such an
-    event does not run, the dashboard that still counts down gets a sync
-    here too."""
+    """Whether the dashboards of a set whose offer is `offer` change as the
+    time passes: the set waits for a person, so they count down the wait, or
+    one of `dashboards` (the dashboard of each open pull request of the set,
+    None where there is none) still counts down a wait that is over, so that
+    a sync gives the box of the review to the authors and tells them. A run
+    of the wait syncs that comes late, or that does not come, only puts that
+    sync off. Every other change of the offer comes with an event of GitHub
+    that starts a sync: a pull request that opens, reopens, leaves the draft
+    state or closes, and a review. When the sync of such an event does not
+    run, the dashboard that still counts down gets a sync here too. While the
+    set waits, `dashboards` is not read. A set whose sync fails before it
+    writes its dashboards keeps its countdown, so it gets a sync at each run
+    of the wait syncs until a sync passes, and each failed run shows in the
+    Actions of peppy."""
     if isinstance(offer, PersonWait):
         return True
-    dashboards = (gateway.dashboard(pull_request) for pull_request in pull_requests)
     return any(
         dashboard is not None and counts_down(dashboard) for dashboard in dashboards
     )
@@ -4635,7 +4638,8 @@ def waiting_sets(gateway: GitHubGateway) -> list[PullRequest]:
             continue
         reviews_of = read_reviews(gateway, pull_requests)
         offer = read_review_offer(gateway, pull_requests, reviews_of, now)
-        if changes_with_time(gateway, pull_requests, offer):
+        dashboards = (gateway.dashboard(pull_request) for pull_request in pull_requests)
+        if changes_with_time(offer, dashboards):
             waiting.append(pull_requests[0])
     return waiting
 
@@ -4700,7 +4704,7 @@ def run_wait_syncs(environment: Mapping[str, str]) -> None:
     )
     dispatch_api = GitHubApi(required(environment, "MERGE_SET_DISPATCH_TOKEN"))
     for run_url in start_wait_syncs(gateway, dispatch_api):
-        print(f"Started the sync of a set that waits for a person: {run_url}")
+        print(f"Started the sync of a set whose dashboard changes in time: {run_url}")
 
 
 def run_repositories() -> None:
@@ -4726,7 +4730,7 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     )
     commands.add_parser(
         "wait-syncs",
-        help="Start the sync of each set that waits for the review of a person.",
+        help="Start the sync of each set whose dashboard changes with the time.",
     )
     return parser.parse_args(argv)
 

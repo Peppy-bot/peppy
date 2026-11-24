@@ -44,8 +44,8 @@ jobs:
         run: python3 .github/merge-set/merge_set.py repositories
 
       # Reads the open pull requests of each set, their reviews and the
-      # permissions of their reviewers, and who is in the team that gets the
-      # offer of the review.
+      # permissions of their reviewers, who is in the team that gets the offer
+      # of the review, and the merge-set comments.
       - name: Make the reading token
         id: read-token
         uses: actions/create-github-app-token@v3.3.0
@@ -68,7 +68,7 @@ jobs:
           repositories: peppy
           permission-actions: write
 
-      - name: Start the sync of each set that waits for a person
+      - name: Start the sync of each set whose merge-set comment changes with the time
         env:
           MERGE_SET_TOKEN: ${{ steps.read-token.outputs.token }}
           MERGE_SET_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}

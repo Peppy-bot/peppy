@@ -452,6 +452,22 @@ class Schedule(unittest.TestCase):
         )
         self.assertEqual(decoded(jwt.split(".")[1])["iss"], CLIENT_ID)
 
+    def test_the_handler_of_the_runtime_hands_each_invocation_to_the_function(self):
+        log = io.StringIO()
+        with (
+            patch.object(webhook, "lambda_webhook", return_value=self.webhook),
+            FakeGitHub(self.answers()),
+            patch("sys.stdout", log),
+        ):
+            started = webhook.lambda_handler(webhook.WAIT_SYNCS_EVENT, None)
+            pong = webhook.lambda_handler(
+                function_url_request("ping", {"zen": "z"}), None
+            )
+        self.assertEqual(
+            started, f"Started merge-set-wait.yml of peppy: {WAIT_RUN_URL}"
+        )
+        self.assertEqual((pong["statusCode"], pong["body"]), (200, "pong"))
+
     def test_the_schedule_reads_no_webhook_secret(self):
         self.invoke(webhook.WAIT_SYNCS_EVENT, self.answers())
         self.assertEqual(self.secret_reads.reads, 0)

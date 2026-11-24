@@ -320,9 +320,13 @@ class AppTokens:
             )
         return self.jwt.value
 
+    def app_api(self) -> merge_set.GitHubApi:
+        """The API as the App, which makes its installation tokens."""
+        return merge_set.GitHubApi(self.app_jwt())
+
     def installation_of(self, repository: merge_set.Repository) -> int:
         """The installation of the App on the repository."""
-        answer = merge_set.GitHubApi(self.app_jwt()).request(
+        answer = self.app_api().request(
             "GET", f"/repos/{repository.full_name}/installation"
         )
         installation = answer.get("id") if isinstance(answer, Mapping) else None
@@ -338,7 +342,7 @@ class AppTokens:
         token = self.installation_tokens.get(key)
         if not self.is_usable(token):
             token = parse_installation_token(
-                merge_set.GitHubApi(self.app_jwt()).request(
+                self.app_api().request(
                     "POST",
                     f"/app/installations/{installation}/access_tokens",
                     body={
@@ -349,6 +353,12 @@ class AppTokens:
             )
             self.installation_tokens[key] = token
         return token.value
+
+    def installation_api(
+        self, installation: int, scope: merge_set.TokenScope
+    ) -> merge_set.GitHubApi:
+        """The API with the installation token of the scope."""
+        return merge_set.GitHubApi(self.installation_token(installation, scope))
 
 
 # The function -----------------------------------------------------------------
@@ -378,21 +388,22 @@ class Webhook:
         document of its own, with the request in it, so only a caller that
         AWS lets invoke the function sends that event."""
         if event == WAIT_SYNCS_EVENT:
-            return self.start_wait_syncs()
+            return self.start_wait_syncs_workflow()
         return self.handle(event)
 
-    def start_wait_syncs(self) -> str:
+    def start_wait_syncs_workflow(self) -> str:
         """Start the Merge set wait workflow of peppy, and return what the
         function did. The schedule invokes the function asynchronously, so a
         failure raises: Lambda then invokes it again, as it does for each
-        asynchronous invocation that fails, and counts the error."""
+        asynchronous invocation that fails, and counts the error. A failure
+        after GitHub started the run (an answer without the run) gives one
+        more run, which the concurrency group of the workflow cancels or runs
+        after it; each run reads every set again."""
         try:
             installation = self.tokens.installation_of(merge_set.PEPPY)
             run_url = merge_set.start_wait_syncs_workflow(
-                merge_set.GitHubApi(
-                    self.tokens.installation_token(
-                        installation, merge_set.WORKFLOW_START_SCOPE
-                    )
+                self.tokens.installation_api(
+                    installation, merge_set.WORKFLOW_START_SCOPE
                 )
             )
         except merge_set.MergeSetError as error:
@@ -436,8 +447,8 @@ class Webhook:
             return "pong"
 
         def api_for(scope: merge_set.TokenScope) -> merge_set.GitHubApi:
-            return merge_set.GitHubApi(
-                self.tokens.installation_token(installation_id(delivery.payload), scope)
+            return self.tokens.installation_api(
+                installation_id(delivery.payload), scope
             )
 
         return merge_set.relay(

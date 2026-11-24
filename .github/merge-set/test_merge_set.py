@@ -5304,24 +5304,62 @@ class WaitSyncs(unittest.TestCase):
         self.assertEqual(self.waiting(), [])
 
     def test_a_set_whose_wait_ended_without_a_dashboard_gets_no_sync(self):
-        # Without a dashboard that counts down, a wait that ended changes
-        # nothing that a sync shows: the sync of the event that opened the
-        # set writes the dashboard.
+        # No dashboard counts down, so the wait syncs have none to correct:
+        # the sync of the event that opens a set writes its dashboard, and
+        # the wait syncs keep its countdown until the wait ends.
         self.github.open_pull_request(NODES_HUB, 88)
         self.github.clock = WAIT_ENDS_AT
         self.assertEqual(self.waiting(), [])
 
-    def test_a_dashboard_that_counts_down_a_wait_a_review_ended_gets_a_sync(self):
+    def test_a_set_that_waits_reads_no_dashboard(self):
+        self.github.open_pull_request(NODES_HUB, 88)
+        unread = AssertionError("a set that waits gets a sync without a read")
+        with patch.object(self.github, "dashboard", side_effect=unread):
+            self.assertEqual(self.waiting(), ["nodes-hub#88"])
+
+    def test_a_countdown_on_any_dashboard_of_the_set_gets_a_sync(self):
+        peppy = self.github.open_pull_request(PEPPY, 512)
+        self.github.open_pull_request(NODES_HUB, 88)
+        sync(self.github)
+        self.github.clock = WAIT_ENDS_AT
+        dashboard = next(
+            comment
+            for comment in self.github.comments_on(peppy)
+            if comment.body.startswith(merge_set.DASHBOARD_MARKER)
+        )
+        dashboard.body = dashboard.body.replace(merge_set.WAIT_MARKER, "")
+        self.assertEqual(self.waiting(), ["peppy#512"])
+
+    def assert_a_sync_ends_the_stale_countdown(self, pr):
+        """The dashboard of `pr` counts down a wait that an event ended, and
+        the sync of that event did not run."""
+        self.assertEqual(self.waiting(), [pr.label])
+        sync(self.github)
+        self.assertNotIn(merge_set.WAIT_MARKER, self.github.dashboard_body(pr))
+        self.assertEqual(self.waiting(), [])
+
+    def test_a_countdown_that_a_review_of_a_person_ended_gets_a_sync(self):
         nodes = self.github.open_pull_request(NODES_HUB, 88)
         sync(self.github)
-        # The review of a person whose event started no sync.
         self.github.reviews_of[nodes.label] = [
             review(2, nodes.head_commit, author="bob", submitted_at=OPENED_AT)
         ]
-        self.assertEqual(self.waiting(), ["nodes-hub#88"])
+        self.assert_a_sync_ends_the_stale_countdown(nodes)
+
+    def test_a_countdown_that_a_draft_ended_gets_a_sync(self):
+        nodes = self.github.open_pull_request(NODES_HUB, 88)
         sync(self.github)
-        self.assertNotIn(merge_set.WAIT_MARKER, self.github.dashboard_body(nodes))
-        self.assertEqual(self.waiting(), [])
+        pulls = self.github.pulls[NODES_HUB.name]
+        pulls[pulls.index(nodes)] = replace(nodes, draft=True)
+        self.assert_a_sync_ends_the_stale_countdown(nodes)
+
+    def test_a_countdown_that_a_review_of_claude_ended_gets_a_sync(self):
+        nodes = self.github.open_pull_request(NODES_HUB, 88)
+        sync(self.github)
+        self.github.reviews_of[nodes.label] = [
+            review(1, nodes.head_commit, state="COMMENTED")
+        ]
+        self.assert_a_sync_ends_the_stale_countdown(nodes)
 
     def test_a_set_that_a_person_reviewed_in_its_wait_gets_no_sync(self):
         nodes = self.github.open_pull_request(NODES_HUB, 88)
