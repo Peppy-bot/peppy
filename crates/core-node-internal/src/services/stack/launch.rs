@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod any_of_fixtures;
 pub(super) mod clock;
 pub(super) mod federated;
 pub(super) mod feedback;

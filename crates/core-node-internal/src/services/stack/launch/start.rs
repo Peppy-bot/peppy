@@ -463,6 +463,9 @@ async fn start_remotely(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::stack::launch::any_of_fixtures::{
+        API_KEY, BASE, PROVIDER_KEY, brain_with_any_of, forwarded_to_the_brain,
+    };
     use config::runtime::Name;
     use daemon_config::launcher::{LaunchVariable, LaunchVariables};
     use std::collections::BTreeSet;
@@ -621,31 +624,6 @@ mod tests {
         );
     }
 
-    const BASE: &str = "OPENAI_COMPATIBLE_API_BASE";
-    const KEY: &str = "OPENAI_COMPATIBLE_API_KEY";
-    const GEMINI: &str = "GEMINI_API_KEY";
-
-    /// The brain whose `any_of` takes the two variables of an
-    /// OpenAI-compatible API, else the key of the provider.
-    fn brain_with_any_of() -> DeploymentInstance {
-        let mut brain = instance(&[], &[]);
-        brain.env_from_launch = LaunchVariables::any_of(vec![
-            vec![variable(BASE), variable(KEY)],
-            vec![variable(GEMINI)],
-        ])
-        .unwrap();
-        brain
-    }
-
-    /// `entries` as the forwarded environment of the launcher of that brain,
-    /// whose launch variables are the names of both sets.
-    fn forwarded_to_the_brain(entries_of: &[(&str, &str)]) -> ForwardedEnv {
-        ForwardedEnv::parse(
-            entries(entries_of),
-            &BTreeSet::from([variable(BASE), variable(KEY), variable(GEMINI)]),
-        )
-    }
-
     /// With both sets in the shell of the launch, the brain takes the first
     /// set alone: the key of the provider reaches neither the brain nor an
     /// instance that names no launch variable.
@@ -654,17 +632,17 @@ mod tests {
         let launch = forwarded_to_the_brain(&[
             ("PATH", "/usr/bin"),
             (BASE, "http://127.0.0.1:8000/v1"),
-            (KEY, "api-key"),
-            (GEMINI, "provider-key"),
+            (API_KEY, "api-key"),
+            (PROVIDER_KEY, "provider-key"),
         ]);
         let kept = launch.launch_values().clone();
 
         assert_eq!(
-            instance_environment(&launch, &kept, &brain_with_any_of()),
+            instance_environment(&launch, &kept, &brain_with_any_of("brain_inst")),
             entries(&[
                 ("PATH", "/usr/bin"),
                 (BASE, "http://127.0.0.1:8000/v1"),
-                (KEY, "api-key"),
+                (API_KEY, "api-key"),
             ])
         );
         assert_eq!(
@@ -677,11 +655,16 @@ mod tests {
     /// the second set.
     #[test]
     fn an_instance_takes_the_second_set_when_it_is_the_one_complete() {
-        let launch = forwarded_to_the_brain(&[("PATH", "/usr/bin"), (GEMINI, "provider-key")]);
+        let launch =
+            forwarded_to_the_brain(&[("PATH", "/usr/bin"), (PROVIDER_KEY, "provider-key")]);
 
         assert_eq!(
-            instance_environment(&launch, launch.launch_values(), &brain_with_any_of()),
-            entries(&[("PATH", "/usr/bin"), (GEMINI, "provider-key")])
+            instance_environment(
+                &launch,
+                launch.launch_values(),
+                &brain_with_any_of("brain_inst")
+            ),
+            entries(&[("PATH", "/usr/bin"), (PROVIDER_KEY, "provider-key")])
         );
     }
 
@@ -692,17 +675,25 @@ mod tests {
     fn a_join_through_a_scope_takes_the_set_of_the_kept_values() {
         for (launch_shell, expected) in [
             (
-                &[(BASE, "base"), (KEY, "api-key"), (GEMINI, "provider-key")][..],
-                &[(BASE, "base"), (KEY, "api-key")][..],
+                &[
+                    (BASE, "base"),
+                    (API_KEY, "api-key"),
+                    (PROVIDER_KEY, "provider-key"),
+                ][..],
+                &[(BASE, "base"), (API_KEY, "api-key")][..],
             ),
             (
-                &[(GEMINI, "provider-key")][..],
-                &[(GEMINI, "provider-key")][..],
+                &[(PROVIDER_KEY, "provider-key")][..],
+                &[(PROVIDER_KEY, "provider-key")][..],
             ),
         ] {
             let kept = forwarded_to_the_brain(launch_shell).launch_values().clone();
             assert_eq!(
-                instance_environment(&ForwardedEnv::default(), &kept, &brain_with_any_of()),
+                instance_environment(
+                    &ForwardedEnv::default(),
+                    &kept,
+                    &brain_with_any_of("brain_inst")
+                ),
                 entries(expected)
             );
         }
@@ -714,28 +705,28 @@ mod tests {
     /// the same variable.
     #[test]
     fn a_cli_join_shell_that_completes_an_earlier_set_takes_it() {
-        let kept_provider_key = forwarded_to_the_brain(&[(GEMINI, "provider-key")])
+        let kept_provider_key = forwarded_to_the_brain(&[(PROVIDER_KEY, "provider-key")])
             .launch_values()
             .clone();
         assert_eq!(
             instance_environment(
-                &forwarded_to_the_brain(&[(BASE, "base"), (KEY, "api-key")]),
+                &forwarded_to_the_brain(&[(BASE, "base"), (API_KEY, "api-key")]),
                 &kept_provider_key,
-                &brain_with_any_of()
+                &brain_with_any_of("brain_inst")
             ),
-            entries(&[(BASE, "base"), (KEY, "api-key")])
+            entries(&[(BASE, "base"), (API_KEY, "api-key")])
         );
 
-        let kept_api = forwarded_to_the_brain(&[(BASE, "kept-base"), (KEY, "kept-key")])
+        let kept_api = forwarded_to_the_brain(&[(BASE, "kept-base"), (API_KEY, "kept-key")])
             .launch_values()
             .clone();
         assert_eq!(
             instance_environment(
-                &forwarded_to_the_brain(&[(KEY, "joined-key")]),
+                &forwarded_to_the_brain(&[(API_KEY, "joined-key")]),
                 &kept_api,
-                &brain_with_any_of()
+                &brain_with_any_of("brain_inst")
             ),
-            entries(&[(BASE, "kept-base"), (KEY, "joined-key")])
+            entries(&[(BASE, "kept-base"), (API_KEY, "joined-key")])
         );
     }
 }

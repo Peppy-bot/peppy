@@ -858,11 +858,10 @@ fn sets_of(held_in_part: &[SetHeldInPart]) -> String {
         .join(" and ")
 }
 
-/// Why a launch and a join refuse a set held in part, and what to export.
+/// Why a launch and a join refuse a set held in part.
 const SET_HELD_IN_PART_RULE: &str = "A launch and a join refuse a set held in part, also when \
                                      another set is complete, so that an instance never takes \
-                                     another set in its place: export every variable of such a \
-                                     set, or none of them,";
+                                     another set in its place";
 
 /// An `any_of` that a change refuses: the environment of the change holds
 /// no set of it complete, or holds a set of it in part.
@@ -954,8 +953,9 @@ impl MissingLaunchVariables {
 
     /// What to export for the `any_of`s and the missing variables of lists
     /// of the refusal: each missing variable, every variable of one set of
-    /// each `any_of` with no complete set, and every variable of a set held
-    /// in part, or none of them.
+    /// each `any_of` with no complete set, and for a set held in part, every
+    /// variable of it or, at a launch, none of them. A join cannot take out
+    /// a value that the launch kept, so its text says to launch again.
     fn remedy(&self) -> String {
         let with_no_complete_set = self
             .unmet
@@ -981,7 +981,17 @@ impl MissingLaunchVariables {
         if !holds_a_set_in_part {
             return export;
         }
-        format!("{export}{SET_HELD_IN_PART_RULE} in {shell}. ")
+        let complete_or_empty = match self.change {
+            VariableChange::Launch => {
+                "export every variable of such a set, or none of them, in the shell that launches"
+            }
+            VariableChange::Join => {
+                "export every variable of such a set in the shell that joins. The values that the \
+                 launch kept stay for the life of the stack: to take out a variable that the \
+                 launch kept, launch the stack again without it"
+            }
+        };
+        format!("{export}{SET_HELD_IN_PART_RULE}: {complete_or_empty}. ")
     }
 
     /// The refusal of one `any_of` and no missing variable of a list.
@@ -2131,9 +2141,11 @@ mod tests {
              them empty or with characters that a node cannot receive: `alpha_tool_inst` takes \
              the first complete set from the launch, and the join starts it. A launch and a join \
              refuse a set held in part, also when another set is complete, so that an instance \
-             never takes another set in its place: export every variable of such a set, or none \
-             of them, in the shell that joins or in the shell that launches. A value must not be \
-             empty, and must hold letters, digits and `_ - . / : , = @ + %` only"
+             never takes another set in its place: export every variable of such a set in the \
+             shell that joins. The values that the launch kept stay for the life of the stack: \
+             to take out a variable that the launch kept, launch the stack again without it. A \
+             value must not be empty, and must hold letters, digits and `_ - . / : , = @ + %` \
+             only"
         );
     }
 

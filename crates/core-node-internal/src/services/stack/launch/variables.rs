@@ -75,6 +75,9 @@ fn needs_of<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::stack::launch::any_of_fixtures::{
+        API_KEY, BASE, PROVIDER_KEY, brain_with_any_of, forwarded_to_the_brain,
+    };
     use config::runtime::{CoreNodeName, Name};
     use daemon_config::launcher::{LaunchVariable, LaunchVariables};
     use std::collections::{BTreeMap, BTreeSet};
@@ -211,35 +214,6 @@ mod tests {
         }
     }
 
-    const BASE: &str = "OPENAI_COMPATIBLE_API_BASE";
-    const API_KEY: &str = "OPENAI_COMPATIBLE_API_KEY";
-
-    fn variable(name: &str) -> LaunchVariable {
-        LaunchVariable::try_from(name.to_owned()).unwrap()
-    }
-
-    /// A brain whose `any_of` takes the two variables of an
-    /// OpenAI-compatible API, else `GEMINI_API_KEY`.
-    fn brain_with_any_of(id: &str) -> DeploymentInstance {
-        let mut instance = DeploymentInstance::empty(Name::new(id).unwrap());
-        instance.env_from_launch =
-            LaunchVariables::any_of(vec![vec![variable(BASE), variable(API_KEY)], vec![key()]])
-                .unwrap();
-        instance
-    }
-
-    /// `entries` as the forwarded environment of the launcher of that brain,
-    /// whose launch variables are the names of both sets.
-    fn forwarded_to_the_brain(entries: &[(&str, &str)]) -> ForwardedEnv {
-        ForwardedEnv::parse(
-            entries
-                .iter()
-                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-                .collect(),
-            &BTreeSet::from([variable(BASE), variable(API_KEY), key()]),
-        )
-    }
-
     /// A launch passes with the first set, the second set or both sets
     /// complete. It is refused, naming every set, when it holds no variable
     /// of any set: an empty value is no value. No value that the environment
@@ -249,11 +223,11 @@ mod tests {
         let brain = brain_with_any_of("brain_inst");
         for environment in [
             forwarded_to_the_brain(&[(BASE, "sentinel-base"), (API_KEY, "sentinel-api-key")]),
-            forwarded_to_the_brain(&[(KEY, "sentinel-provider-key")]),
+            forwarded_to_the_brain(&[(PROVIDER_KEY, "sentinel-provider-key")]),
             forwarded_to_the_brain(&[
                 (BASE, "sentinel-base"),
                 (API_KEY, "sentinel-api-key"),
-                (KEY, "sentinel-provider-key"),
+                (PROVIDER_KEY, "sentinel-provider-key"),
             ]),
         ] {
             check_launch(
@@ -266,7 +240,12 @@ mod tests {
         }
         for environment in [
             forwarded_to_the_brain(&[]),
-            forwarded_to_the_brain(&[(BASE, ""), (API_KEY, ""), (KEY, ""), ("PATH", "/usr/bin")]),
+            forwarded_to_the_brain(&[
+                (BASE, ""),
+                (API_KEY, ""),
+                (PROVIDER_KEY, ""),
+                ("PATH", "/usr/bin"),
+            ]),
         ] {
             let refusal = check_launch(
                 [&brain],
@@ -300,14 +279,17 @@ mod tests {
                 BASE,
             ),
             (
-                forwarded_to_the_brain(&[(BASE, "sentinel-base"), (KEY, "sentinel-provider-key")]),
+                forwarded_to_the_brain(&[
+                    (BASE, "sentinel-base"),
+                    (PROVIDER_KEY, "sentinel-provider-key"),
+                ]),
                 API_KEY,
             ),
             (
                 forwarded_to_the_brain(&[
                     (BASE, "sentinel-base"),
                     (API_KEY, ""),
-                    (KEY, "sentinel-provider-key"),
+                    (PROVIDER_KEY, "sentinel-provider-key"),
                 ]),
                 API_KEY,
             ),
@@ -341,7 +323,7 @@ mod tests {
         let joined = brain_with_any_of("alpha_brain_inst");
         let kept_of =
             |entries: &[(&str, &str)]| forwarded_to_the_brain(entries).launch_values().clone();
-        let kept_provider_key = kept_of(&[(KEY, "kept")]);
+        let kept_provider_key = kept_of(&[(PROVIDER_KEY, "kept")]);
         for (environment, kept_values) in [
             (forwarded_to_the_brain(&[]), &kept_provider_key),
             (
@@ -364,7 +346,7 @@ mod tests {
             ),
             (
                 forwarded_to_the_brain(&[]),
-                kept_of(&[(BASE, "sentinel-kept"), (KEY, "sentinel-kept")]),
+                kept_of(&[(BASE, "sentinel-kept"), (PROVIDER_KEY, "sentinel-kept")]),
                 API_KEY,
             ),
         ] {
@@ -406,13 +388,13 @@ mod tests {
             std::iter::empty::<&DeploymentInstance>(),
             &on_coordinator(),
             scoped.clone(),
-            &forwarded_to_the_brain(&[(KEY, "sentinel")]),
+            &forwarded_to_the_brain(&[(PROVIDER_KEY, "sentinel")]),
         )
         .expect("the launch holds a complete set");
         for (environment, expected) in [
             (forwarded_to_the_brain(&[]), "holds no set complete"),
             (
-                forwarded_to_the_brain(&[(BASE, "sentinel"), (KEY, "sentinel")]),
+                forwarded_to_the_brain(&[(BASE, "sentinel"), (PROVIDER_KEY, "sentinel")]),
                 "in part, as it does not hold `OPENAI_COMPATIBLE_API_KEY`",
             ),
         ] {
