@@ -806,7 +806,7 @@ fn an_any_of_is_held_to_its_rules_on_an_instance_and_in_an_adjustment() {
         ),
         (
             r#"{ any_of: [["A_KEY"], ["A_KEY", "B_KEY"]] }"#,
-            "set 2 of `any_of` holds every variable of set 1",
+            "sets 1 and 2 of `any_of` both name `A_KEY`",
         ),
         (
             r#"{ any_of: [["PWD"], ["B_KEY"]] }"#,

@@ -2,7 +2,8 @@
 //! change anything: every instance with launch variables runs on the
 //! coordinator, each variable of the list of an instance has a value, not
 //! empty, and each `any_of` of an instance has a set whose every variable
-//! has one. A launch reads its own forwarded environment for the instances
+//! has one, and no set of which some variables have one and others not. A
+//! launch reads its own forwarded environment for the instances
 //! it starts and for those a join through a scope can start; a join reads
 //! its own forwarded environment, then the values the launch kept, for the
 //! instances it starts.
@@ -239,9 +240,10 @@ mod tests {
         )
     }
 
-    /// A launch passes with either set complete, and is refused, naming
-    /// every set, when no set is: an empty value is no value, and no value
-    /// that the environment holds is in the refusal.
+    /// A launch passes with the first set, the second set or both sets
+    /// complete. It is refused, naming every set, when it holds no variable
+    /// of any set: an empty value is no value. No value that the environment
+    /// holds is in a refusal.
     #[test]
     fn a_launch_needs_one_complete_set_of_an_any_of() {
         let brain = brain_with_any_of("brain_inst");
@@ -250,7 +252,7 @@ mod tests {
             forwarded_to_the_brain(&[(KEY, "sentinel-provider-key")]),
             forwarded_to_the_brain(&[
                 (BASE, "sentinel-base"),
-                (API_KEY, ""),
+                (API_KEY, "sentinel-api-key"),
                 (KEY, "sentinel-provider-key"),
             ]),
         ] {
@@ -264,8 +266,7 @@ mod tests {
         }
         for environment in [
             forwarded_to_the_brain(&[]),
-            forwarded_to_the_brain(&[(BASE, "sentinel-base"), (KEY, "")]),
-            forwarded_to_the_brain(&[(API_KEY, "sentinel-api-key"), ("PATH", "/usr/bin")]),
+            forwarded_to_the_brain(&[(BASE, ""), (API_KEY, ""), (KEY, ""), ("PATH", "/usr/bin")]),
         ] {
             let refusal = check_launch(
                 [&brain],
@@ -284,60 +285,122 @@ mod tests {
                  that launches. A value must not be empty, and must hold letters, digits and \
                  `_ - . / : , = @ + %` only"
             );
-            assert!(!refusal.contains("sentinel"), "{refusal}");
+        }
+    }
+
+    /// A launch that holds a set in part is refused, naming its missing
+    /// variable, alone and beside a complete set: a set whose variable is
+    /// empty is held in part too.
+    #[test]
+    fn a_launch_that_holds_a_set_in_part_is_refused() {
+        let brain = brain_with_any_of("brain_inst");
+        for (environment, missing) in [
+            (
+                forwarded_to_the_brain(&[(API_KEY, "sentinel-api-key"), ("PATH", "/usr/bin")]),
+                BASE,
+            ),
+            (
+                forwarded_to_the_brain(&[(BASE, "sentinel-base"), (KEY, "sentinel-provider-key")]),
+                API_KEY,
+            ),
+            (
+                forwarded_to_the_brain(&[
+                    (BASE, "sentinel-base"),
+                    (API_KEY, ""),
+                    (KEY, "sentinel-provider-key"),
+                ]),
+                API_KEY,
+            ),
+        ] {
+            let refusal = check_launch(
+                [&brain],
+                &on_coordinator(),
+                VariableNeeds::default(),
+                &environment,
+            )
+            .expect_err("a set held in part");
+            assert!(
+                refusal.contains(&format!(
+                    "the launch environment holds the set of `OPENAI_COMPATIBLE_API_BASE` and \
+                     `OPENAI_COMPATIBLE_API_KEY` in part, as it does not hold `{missing}`"
+                )) && refusal.contains(
+                    "`brain_inst` takes the first complete set from the launch, and the launch \
+                     starts it"
+                ) && !refusal.contains("sentinel"),
+                "{environment:?}: {refusal}"
+            );
         }
     }
 
     /// A join through a scope takes the set that the launch kept, a CLI join
     /// completes a set from its own environment first, then the kept values,
-    /// and a join that neither completes is refused.
+    /// and a join that neither completes, or that they hold in part, is
+    /// refused.
     #[test]
     fn a_join_completes_a_set_from_its_own_environment_then_the_kept_values() {
         let joined = brain_with_any_of("alpha_brain_inst");
-        let kept_provider_key = forwarded_to_the_brain(&[(KEY, "kept")])
-            .launch_values()
-            .clone();
-        let kept_base = forwarded_to_the_brain(&[(BASE, "kept")])
-            .launch_values()
-            .clone();
+        let kept_of =
+            |entries: &[(&str, &str)]| forwarded_to_the_brain(entries).launch_values().clone();
+        let kept_provider_key = kept_of(&[(KEY, "kept")]);
         for (environment, kept_values) in [
             (forwarded_to_the_brain(&[]), &kept_provider_key),
             (
                 forwarded_to_the_brain(&[(BASE, "joined"), (API_KEY, "joined")]),
                 &kept_provider_key,
             ),
-            (forwarded_to_the_brain(&[(API_KEY, "joined")]), &kept_base),
+            (
+                forwarded_to_the_brain(&[(API_KEY, "joined")]),
+                &kept_of(&[(BASE, "kept")]),
+            ),
         ] {
             check_join([&joined], &on_coordinator(), &environment, kept_values)
                 .unwrap_or_else(|refusal| panic!("{environment:?}: {refusal}"));
         }
-        let refusal = check_join(
-            [&joined],
-            &on_coordinator(),
-            &forwarded_to_the_brain(&[(API_KEY, "sentinel-joined")]),
-            &LaunchValues::default(),
-        )
-        .expect_err("no complete set");
-        assert!(
-            refusal.starts_with("the join needs one set of `OPENAI_COMPATIBLE_API_BASE`")
-                && refusal.contains(
-                    "`alpha_brain_inst` takes the first complete set from the launch, and the \
-                     join starts it"
-                )
-                && !refusal.contains("sentinel"),
-            "{refusal}"
-        );
+        for (environment, kept_values, missing) in [
+            (
+                forwarded_to_the_brain(&[(API_KEY, "sentinel-joined")]),
+                LaunchValues::default(),
+                BASE,
+            ),
+            (
+                forwarded_to_the_brain(&[]),
+                kept_of(&[(BASE, "sentinel-kept"), (KEY, "sentinel-kept")]),
+                API_KEY,
+            ),
+        ] {
+            let refusal = check_join([&joined], &on_coordinator(), &environment, &kept_values)
+                .expect_err("a set held in part");
+            assert!(
+                refusal.starts_with("the join needs one set of `OPENAI_COMPATIBLE_API_BASE`")
+                    && refusal.contains(&format!(
+                        "the join environment and the launch environment hold the set of \
+                         `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY` in part, \
+                         as neither holds `{missing}`"
+                    ))
+                    && refusal.contains(
+                        "`alpha_brain_inst` takes the first complete set from the launch, and \
+                         the join starts it"
+                    )
+                    && !refusal.contains("sentinel"),
+                "{refusal}"
+            );
+        }
     }
 
     /// A launch checks the `any_of` of an instance that a join through its
-    /// scope can start, as it checks a variable of a list.
+    /// scope can start, as it checks a variable of a list: it needs a
+    /// complete set, and no set held in part.
     #[test]
     fn a_launch_needs_a_complete_set_for_a_brain_that_a_scope_can_add() {
         let mut scoped = VariableNeeds::default();
         scoped.add_instance(
             "brain_inst",
             &brain_with_any_of("brain_inst"),
-            &Starter::Join,
+            &Starter::ScopedJoin {
+                option: Name::new("demo_arm").unwrap(),
+                features: vec![],
+                scopes: vec!["framework_controls_inst".to_owned()],
+            },
         );
         check_launch(
             std::iter::empty::<&DeploymentInstance>(),
@@ -346,16 +409,30 @@ mod tests {
             &forwarded_to_the_brain(&[(KEY, "sentinel")]),
         )
         .expect("the launch holds a complete set");
-        let refusal = check_launch(
-            std::iter::empty::<&DeploymentInstance>(),
-            &on_coordinator(),
-            scoped,
-            &forwarded_to_the_brain(&[]),
-        )
-        .expect_err("no complete set");
-        assert!(
-            refusal.starts_with("the launch needs one set of"),
-            "{refusal}"
-        );
+        for (environment, expected) in [
+            (forwarded_to_the_brain(&[]), "holds no set complete"),
+            (
+                forwarded_to_the_brain(&[(BASE, "sentinel"), (KEY, "sentinel")]),
+                "in part, as it does not hold `OPENAI_COMPATIBLE_API_KEY`",
+            ),
+        ] {
+            let refusal = check_launch(
+                std::iter::empty::<&DeploymentInstance>(),
+                &on_coordinator(),
+                scoped.clone(),
+                &environment,
+            )
+            .expect_err("no complete set, or a set held in part");
+            assert!(
+                refusal.starts_with("the launch needs one set of")
+                    && refusal.contains(expected)
+                    && refusal.contains(
+                        "`brain_inst` of option `demo_arm` takes the first complete set from the \
+                         launch, and stack.join through `framework_controls_inst` can add a copy \
+                         of `demo_arm`"
+                    ),
+                "{refusal}"
+            );
+        }
     }
 }

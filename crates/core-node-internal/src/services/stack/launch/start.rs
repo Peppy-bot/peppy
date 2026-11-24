@@ -673,15 +673,15 @@ mod tests {
         );
     }
 
-    /// With the first set in part, the brain takes the second set, and no
-    /// variable of the first.
+    /// With the second set alone in the shell of the launch, the brain takes
+    /// the second set.
     #[test]
-    fn an_instance_takes_no_variable_of_a_set_that_is_not_complete() {
-        let launch = forwarded_to_the_brain(&[(KEY, "api-key"), (GEMINI, "provider-key")]);
+    fn an_instance_takes_the_second_set_when_it_is_the_one_complete() {
+        let launch = forwarded_to_the_brain(&[("PATH", "/usr/bin"), (GEMINI, "provider-key")]);
 
         assert_eq!(
             instance_environment(&launch, launch.launch_values(), &brain_with_any_of()),
-            entries(&[(GEMINI, "provider-key")])
+            entries(&[("PATH", "/usr/bin"), (GEMINI, "provider-key")])
         );
     }
 
@@ -710,32 +710,32 @@ mod tests {
 
     /// A CLI join reads its own shell first, then the kept values, for the
     /// set as for each value: a join shell that completes an earlier set
-    /// takes it, alone or with a kept value.
+    /// takes it, and a value of the join shell replaces the kept value of
+    /// the same variable.
     #[test]
     fn a_cli_join_shell_that_completes_an_earlier_set_takes_it() {
-        let kept = forwarded_to_the_brain(&[(GEMINI, "provider-key")])
+        let kept_provider_key = forwarded_to_the_brain(&[(GEMINI, "provider-key")])
             .launch_values()
             .clone();
-
         assert_eq!(
             instance_environment(
                 &forwarded_to_the_brain(&[(BASE, "base"), (KEY, "api-key")]),
-                &kept,
+                &kept_provider_key,
                 &brain_with_any_of()
             ),
             entries(&[(BASE, "base"), (KEY, "api-key")])
         );
 
-        let kept_base = forwarded_to_the_brain(&[(BASE, "kept-base"), (GEMINI, "provider-key")])
+        let kept_api = forwarded_to_the_brain(&[(BASE, "kept-base"), (KEY, "kept-key")])
             .launch_values()
             .clone();
         assert_eq!(
             instance_environment(
-                &forwarded_to_the_brain(&[(KEY, "api-key")]),
-                &kept_base,
+                &forwarded_to_the_brain(&[(KEY, "joined-key")]),
+                &kept_api,
                 &brain_with_any_of()
             ),
-            entries(&[(BASE, "kept-base"), (KEY, "api-key")])
+            entries(&[(BASE, "kept-base"), (KEY, "joined-key")])
         );
     }
 }

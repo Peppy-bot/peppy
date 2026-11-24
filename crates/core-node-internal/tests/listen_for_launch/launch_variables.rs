@@ -504,11 +504,13 @@ async fn a_new_launch_after_a_reset_gives_its_own_value() {
 }
 
 /// A brain that takes an `any_of`, the set of `OTHER_KEY` and `TOOL_KEY`,
-/// else `PROBE_KEY`: a launch that holds no set complete is refused before
-/// it builds anything, naming every set. A launch that holds both sets
-/// keeps them, and a join through the scope, which forwards nothing, gives
-/// the run of the brain the first set alone, and not the variable of the
-/// second.
+/// else `PROBE_KEY`: a launch that holds no set complete, and a launch that
+/// holds the first set in part beside the complete second set, are refused
+/// before they build anything. The first refusal names every set, the
+/// second names the variable that the set held in part lacks. A launch that
+/// holds both sets keeps them, and a join through the scope, which forwards
+/// nothing, gives the run of the brain the first set alone, and not the
+/// variable of the second.
 #[tokio::test]
 async fn a_join_through_the_scope_gives_the_brain_the_first_complete_set_of_its_any_of() {
     let started = start_core_node_with_mock_messenger().await;
@@ -519,7 +521,7 @@ async fn a_join_through_the_scope_gives_the_brain_the_first_complete_set_of_its_
     let mut responders = answer_readiness(&started, "manager", MANAGER).await;
     responders.extend(answer_readiness(&started, "brain_probe", "alpha_brain_inst").await);
 
-    execute(&started, &fleet.launch("part", &[(OTHER, "api-base")]))
+    execute(&started, &fleet.launch("none", &[]))
         .await
         .assert_failed(
             PeppyFailureKind::Rejected,
@@ -529,9 +531,23 @@ async fn a_join_through_the_scope_gives_the_brain_the_first_complete_set_of_its_
              first complete set from the launch, and stack.join through `manager_inst` can add \
              a copy of `arm`. Export every variable of one set in the shell that launches",
         );
+    execute(
+        &started,
+        &fleet.launch("part", &[(OTHER, "api-base"), (KEY, "provider-key")]),
+    )
+    .await
+    .assert_failed(
+        PeppyFailureKind::Rejected,
+        "the launch needs one set of `OTHER_KEY` and `TOOL_KEY`, or of `PROBE_KEY`, and the \
+         launch environment holds the set of `OTHER_KEY` and `TOOL_KEY` in part, as it does not \
+         hold `TOOL_KEY`, or holds it empty or with characters that a node cannot receive: \
+         `brain_inst` of option `arm` takes the first complete set from the launch, and \
+         stack.join through `manager_inst` can add a copy of `arm`. A launch and a join refuse \
+         a set held in part, also when another set is complete",
+    );
     assert!(
         !fleet.brain_builds.exists(),
-        "the refused launch builds nothing"
+        "the refused launches build nothing"
     );
 
     execute(
