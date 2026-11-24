@@ -76,7 +76,11 @@ indicatif = "0.18"
 # Keep OAuth tokens out of `Debug`/log output; the on-disk struct serializes
 # them through explicit expose helpers (the one place we intentionally expose).
 secrecy = "0.10"
-tempfile = { version = "3.8", optional = true }
+# Release download and extraction for `peppy update`.
+flate2 = "1"
+tar = "0.4"
+tempfile = "3.8"
+ureq = { version = "3.1", features = ["platform-verifier"] }
 # Docker Engine API driver for the multi-daemon e2e test (container lifecycle,
 # exec, logs) instead of shelling out to the docker CLI. Optional rather than a
 # dev-dependency so its tree is only built when `multi_daemon_e2e` is enabled.
@@ -94,7 +98,6 @@ default = []
 # Gate test-only helpers (including config's fingerprint helpers) behind this
 # feature so a release build doesn't carry them.
 test-support = [
-    "dep:tempfile",
     "dep:log-export",
     "config/fingerprint_test_helpers",
     "core-node/test-support",
@@ -106,7 +109,6 @@ test-support = [
 multi_daemon_e2e = ["pmi/build_zenoh", "dep:testcontainers", "core-node/debug-embed"]
 
 [dev-dependencies]
-tempfile = "3.8"
 # In-process HTTP mock server for the auth integration tests (cli/config, OIDC
 # discovery, device/token endpoints, /me, /logout); blocking API, fits ureq.
 httpmock = "0.9"

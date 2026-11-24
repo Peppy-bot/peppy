@@ -67,6 +67,43 @@ pub fn uninstall_peppy_daemon() -> Result<()> {
         .map_err(execution_failed)
 }
 
+/// Whether the Peppy background service definition is installed on this host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InstalledService {
+    /// Installed at the privilege level of the current process (user-level when
+    /// non-root, system-wide when root).
+    CurrentLevel(PathBuf),
+    /// Installed only as a system-wide service while the current process is not
+    /// root, so this process cannot stop or reinstall it without elevation.
+    SystemOnly(PathBuf),
+    /// No background service definition is installed.
+    None,
+}
+
+/// Inspects the OS service manager directories to determine whether the Peppy
+/// background service is installed.
+pub(crate) fn detect_installed_service() -> InstalledService {
+    let Ok(kind) = ServiceManagerKind::native() else {
+        return InstalledService::None;
+    };
+    let Ok(label) = service_label(kind).parse::<ServiceLabel>() else {
+        return InstalledService::None;
+    };
+    let level = preferred_service_level(kind);
+    if let Ok(path) = default_service_path(kind, level, &label)
+        && path.exists()
+    {
+        return InstalledService::CurrentLevel(path);
+    }
+    if matches!(level, ServiceLevel::User)
+        && let Ok(system_path) = default_service_path(kind, ServiceLevel::System, &label)
+        && system_path.exists()
+    {
+        return InstalledService::SystemOnly(system_path);
+    }
+    InstalledService::None
+}
+
 pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<PathBuf> {
     let kind = ServiceManagerKind::native()?;
     let label: ServiceLabel = service_label(kind).parse()?;

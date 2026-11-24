@@ -69,6 +69,27 @@ On supported boards, install **Raspberry Pi OS (64-bit)** based on Debian 13 (`t
 | `PEPPY_NO_SERVICE_INSTALL` | Skip service installation and repository init/refresh |
 | `PEPPY_NO_CONTAINER_SETUP` | Skip Apptainer container setup and package installation |
 
+## Updating Peppy
+
+To update an existing installation to the latest release:
+
+```sh
+peppy update
+```
+
+`peppy update` checks the latest release before it downloads the archive. If your installation is already at the latest release, it exits without changing the binary or restarting the daemon. When a newer release is available, it downloads and verifies the release archive, replaces the installed binaries in place, checks container prerequisites on Linux, syncs default repositories, restarts the background service if one is installed, and refreshes repository indexes.
+
+If the background daemon currently runs user nodes, `peppy update` prompts before stopping the daemon. An idle daemon restarts without a prompt.
+
+Available flags:
+
+| Flag | Effect |
+| --- | --- |
+| `--check` | Check the latest release without downloading or installing |
+| `--version <version>` | Install a specific release version (for example, `peppy update --version v0.39.0`) |
+| `--force` | Reinstall even when already at the target version |
+| `-y`, `--yes` | Skip confirmation prompts when active user nodes are running |
+
 ## Verifying the installation
 
 The service installs at user level by default; run `peppy service install` with sudo for a system-wide install. The snippets below assume the default user-level install. You can verify the service is running with:

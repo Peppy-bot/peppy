@@ -333,7 +333,7 @@ pub(crate) fn ask_to_continue(warning: &str) -> Result<bool> {
 /// than silently dropping it. The whole probe is bounded by
 /// [`STACK_PROBE_TIMEOUT`] because opening the session can itself stall when the
 /// router is unreachable, which the per-query timeout alone would not cover.
-fn daemon_has_user_nodes(ctx: &Arc<AppContext>) -> bool {
+pub(crate) fn daemon_has_user_nodes(ctx: &Arc<AppContext>) -> bool {
     let probe = async {
         let conn = ctx.connect_to_daemon().await?;
         // Deliberately targets the *local* daemon (not `conn.target_core_node`):
