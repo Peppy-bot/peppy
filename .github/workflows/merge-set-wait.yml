@@ -3,18 +3,19 @@ name: Merge set wait
 # A person has 12 hours to review a set of developers before its authors can
 # ask for the Claude review; an admin can ask for it at any time (see
 # .github/merge-set/merge_set.py). No event of GitHub comes when that time
-# passes, so this schedule starts the sync of each set that waits for a person
-# (merge-set.yml): the sync shows the time left in the merge-set comment, and
-# when the time ends, tells the authors that the box of the Claude review is
-# theirs to tick.
-# The cron gives WAIT_SYNC_INTERVAL of merge_set.py.
+# passes, so this workflow starts the sync (merge-set.yml) of each set that
+# waits for a person, and of each set whose merge-set comment still counts
+# down a wait that is over: the sync shows the time left in the merge-set
+# comment, and when the time ends, tells the authors that the box of the
+# Claude review is theirs to tick.
 #
-# The key of the merge-set App is a secret of the `merge-set` environment,
-# which only runs from `dev` reach. A schedule runs from the default branch,
-# `dev`.
+# The webhook function of the merge-set App (.github/merge-set/webhook.py)
+# starts this workflow from `dev` every WAIT_SYNC_INTERVAL of merge_set.py, at
+# the event of a schedule of aws/peppy-ci-pipelines in Peppy-bot/infraops. A
+# schedule of GitHub Actions starts its runs late, or drops them, when the
+# runners of GitHub are busy. The key of the merge-set App is a secret of the
+# `merge-set` environment, which only runs from `dev` reach.
 on:
-  schedule:
-    - cron: "7,37 * * * *"
   workflow_dispatch:
 
 # One run at a time. A run that waits is cancelled by the next one: each run
