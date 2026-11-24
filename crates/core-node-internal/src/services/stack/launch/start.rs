@@ -21,8 +21,11 @@ use std::collections::{BTreeMap, HashMap};
 /// on the coordinator's own machine, then the value of each launch variable
 /// the instance takes, then the instance's own `env_vars`, so a deployment
 /// can pin what differs per instance (a device path, a board id) without
-/// depending on whoever ran the launch. A launch variable that the instance
-/// does not name does not reach it: the launcher states which instances
+/// depending on whoever ran the launch. The instance takes each variable of
+/// its list, or the variables of the first set of its `one_of` that the
+/// forwarded environment and the kept values hold complete. A launch
+/// variable that the instance does not take does not reach it, a variable of
+/// another set of its `one_of` included: the launcher states which instances
 /// take each one. An instance placed on a peer starts from an empty forwarded
 /// set and no kept value, because the caller's environment describes the
 /// caller's machine and no other; a launch and a join refuse to place an
@@ -46,13 +49,18 @@ fn instance_environment(
     kept: &LaunchValues,
     instance: &DeploymentInstance,
 ) -> Vec<(String, String)> {
-    let from_launch = instance.env_from_launch.iter().filter_map(|variable| {
-        let name = variable.as_str();
+    let value_of = |name: &str| {
         forwarded
             .launch_values()
             .value_of(name)
             .or_else(|| kept.value_of(name))
-            .map(|value| (name.to_owned(), value.to_owned()))
+    };
+    let taken = instance
+        .env_from_launch
+        .taken(|name| value_of(name).is_some());
+    let from_launch = taken.into_iter().filter_map(|variable| {
+        let name = variable.as_str();
+        value_of(name).map(|value| (name.to_owned(), value.to_owned()))
     });
     forwarded
         .common()
@@ -610,6 +618,124 @@ mod tests {
         assert_eq!(
             instance_environment(&forwarded(&[("GEMINI_API_KEY", "")]), &kept, &brain),
             entries(&[("GEMINI_API_KEY", "kept-key")])
+        );
+    }
+
+    const BASE: &str = "OPENAI_COMPATIBLE_API_BASE";
+    const KEY: &str = "OPENAI_COMPATIBLE_API_KEY";
+    const GEMINI: &str = "GEMINI_API_KEY";
+
+    /// The brain whose `one_of` takes the two variables of an
+    /// OpenAI-compatible API, else the key of the provider.
+    fn brain_with_one_of() -> DeploymentInstance {
+        let mut brain = instance(&[], &[]);
+        brain.env_from_launch = LaunchVariables::one_of(vec![
+            vec![variable(BASE), variable(KEY)],
+            vec![variable(GEMINI)],
+        ])
+        .unwrap();
+        brain
+    }
+
+    /// `entries` as the forwarded environment of the launcher of that brain,
+    /// whose launch variables are the names of both sets.
+    fn forwarded_to_the_brain(entries_of: &[(&str, &str)]) -> ForwardedEnv {
+        ForwardedEnv::parse(
+            entries(entries_of),
+            &BTreeSet::from([variable(BASE), variable(KEY), variable(GEMINI)]),
+        )
+    }
+
+    /// With both sets in the shell of the launch, the brain takes the first
+    /// set alone: the key of the provider reaches neither the brain nor an
+    /// instance that names no launch variable.
+    #[test]
+    fn an_instance_takes_the_first_complete_set_of_its_one_of_alone() {
+        let launch = forwarded_to_the_brain(&[
+            ("PATH", "/usr/bin"),
+            (BASE, "http://127.0.0.1:8000/v1"),
+            (KEY, "api-key"),
+            (GEMINI, "provider-key"),
+        ]);
+        let kept = launch.launch_values().clone();
+
+        assert_eq!(
+            instance_environment(&launch, &kept, &brain_with_one_of()),
+            entries(&[
+                ("PATH", "/usr/bin"),
+                (BASE, "http://127.0.0.1:8000/v1"),
+                (KEY, "api-key"),
+            ])
+        );
+        assert_eq!(
+            instance_environment(&launch, &kept, &instance(&[], &[])),
+            entries(&[("PATH", "/usr/bin")])
+        );
+    }
+
+    /// With the first set in part, the brain takes the second set, and no
+    /// variable of the first.
+    #[test]
+    fn an_instance_takes_no_variable_of_a_set_that_is_not_complete() {
+        let launch = forwarded_to_the_brain(&[(KEY, "api-key"), (GEMINI, "provider-key")]);
+
+        assert_eq!(
+            instance_environment(&launch, launch.launch_values(), &brain_with_one_of()),
+            entries(&[(GEMINI, "provider-key")])
+        );
+    }
+
+    /// A join through `robot_membership:v1` forwards nothing, so the brain
+    /// it starts takes the set that the kept values complete: the set that
+    /// the launch took.
+    #[test]
+    fn a_join_through_a_scope_takes_the_set_of_the_kept_values() {
+        for (launch_shell, expected) in [
+            (
+                &[(BASE, "base"), (KEY, "api-key"), (GEMINI, "provider-key")][..],
+                &[(BASE, "base"), (KEY, "api-key")][..],
+            ),
+            (
+                &[(GEMINI, "provider-key")][..],
+                &[(GEMINI, "provider-key")][..],
+            ),
+        ] {
+            let kept = forwarded_to_the_brain(launch_shell).launch_values().clone();
+            assert_eq!(
+                instance_environment(&ForwardedEnv::default(), &kept, &brain_with_one_of()),
+                entries(expected)
+            );
+        }
+    }
+
+    /// A CLI join reads its own shell first, then the kept values, for the
+    /// set as for each value: a join shell that completes an earlier set
+    /// takes it, alone or with a kept value.
+    #[test]
+    fn a_cli_join_shell_that_completes_an_earlier_set_takes_it() {
+        let kept = forwarded_to_the_brain(&[(GEMINI, "provider-key")])
+            .launch_values()
+            .clone();
+
+        assert_eq!(
+            instance_environment(
+                &forwarded_to_the_brain(&[(BASE, "base"), (KEY, "api-key")]),
+                &kept,
+                &brain_with_one_of()
+            ),
+            entries(&[(BASE, "base"), (KEY, "api-key")])
+        );
+
+        let kept_base = forwarded_to_the_brain(&[(BASE, "kept-base"), (GEMINI, "provider-key")])
+            .launch_values()
+            .clone();
+        assert_eq!(
+            instance_environment(
+                &forwarded_to_the_brain(&[(KEY, "api-key")]),
+                &kept_base,
+                &brain_with_one_of()
+            ),
+            entries(&[(BASE, "kept-base"), (KEY, "api-key")])
         );
     }
 }
