@@ -82,6 +82,22 @@ MERGED_BEFORE_THE_SET = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 # When the wait for a person ends for a set whose pull requests opened at
 # OPENED_AT and were never drafts.
 WAIT_ENDS_AT = OPENED_AT + merge_set.PERSON_REVIEW_WAIT
+# The box of the review while the wait for a person holds, in the section of a
+# set of two pull requests.
+ADMIN_BOX_OF_TWO = (
+    "- [ ] <!-- merge-set:review --> Ask Claude to review the 2 pull requests "
+    "of this set now (admin only)"
+)
+# The box of the review when the authors can tick it, with its line end, so
+# that the box of an admin does not hold it: in the section of a set of two
+# pull requests, and of a pull request that is alone.
+AUTHOR_BOX_OF_TWO = (
+    "- [ ] <!-- merge-set:review --> Ask Claude to review the 2 pull requests "
+    "of this set\n"
+)
+AUTHOR_BOX_ALONE = (
+    "- [ ] <!-- merge-set:review --> Ask Claude to review this pull request\n"
+)
 # When a review is submitted, unless a test names another time: after the
 # wait.
 REVIEWED_AT = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
@@ -2848,7 +2864,8 @@ class ReviewSection(unittest.TestCase):
             "### Review by Claude\n\n"
             "A person has 12 hours to review this set from the time each of its "
             "pull requests is ready for review. Claude can review this set only if "
-            "no person reviewed it in that time.\n\n"
+            "no person reviewed it in that time, or at any time when an admin of "
+            "every repository of this set asks for it.\n\n"
             "No person reviewed this set in that time, so Claude can review it and "
             "approve it. This is your choice: a person can also review and approve "
             "this set as usual.\n\n"
@@ -2868,7 +2885,8 @@ class ReviewSection(unittest.TestCase):
         self.assertIn(
             "A person has 12 hours to review this pull request from the time it is "
             "ready for review. Claude can review this pull request only if no "
-            "person reviewed it in that time.\n\n"
+            "person reviewed it in that time, or at any time when an admin of "
+            "nodes-hub asks for it.\n\n"
             "No person reviewed this pull request in that time, so Claude can "
             "review it and approve it. This is your choice: a person can also "
             "review and approve this pull request as usual.",
@@ -2880,10 +2898,7 @@ class ReviewSection(unittest.TestCase):
             "finding is open, Claude approves this pull request.",
             text,
         )
-        self.assertIn(
-            "- [ ] <!-- merge-set:review --> Ask Claude to review this pull request",
-            text,
-        )
+        self.assertIn(AUTHOR_BOX_ALONE, text)
 
     def wait_section(self, offer, run=None, alone=False):
         return self.section(
@@ -2896,51 +2911,83 @@ class ReviewSection(unittest.TestCase):
             alone,
         )
 
-    def test_while_a_person_can_review_the_section_counts_down_with_no_box(self):
+    def test_while_a_person_can_review_the_section_counts_down_over_an_admin_box(
+        self,
+    ):
         wait = merge_set.PersonWait(WAIT_ENDS_AT, timedelta(hours=11, minutes=5))
         self.assertEqual(
             self.wait_section(wait),
             "### Review by Claude\n\n"
             "A person has 12 hours to review this set from the time each of its "
             "pull requests is ready for review. Claude can review this set only if "
-            "no person reviewed it in that time.\n\n"
+            "no person reviewed it in that time, or at any time when an admin of "
+            "every repository of this set asks for it.\n\n"
             "**11 h 5 min left**, until 2026-10-27 08:32 UTC. The bot updates "
-            "this time every 30 minutes. <!-- claude-review:wait -->",
+            "this time every 30 minutes. <!-- claude-review:wait -->\n\n"
+            "To ask for the review now, an admin of every repository of this set "
+            "ticks the box below. Claude posts its findings on each pull request "
+            "of the set. Correct each finding or answer in its thread, then ask "
+            "an admin of every repository of this set to tick the box again. When "
+            "no blocking finding is open, Claude approves the 2 pull requests.\n\n"
+            "- [ ] <!-- merge-set:review --> Ask Claude to review the 2 pull "
+            "requests of this set now (admin only)\n\n"
+            "**No review asked.**",
+        )
+
+    def test_the_admin_box_of_a_pull_request_alone_is_for_an_admin_of_its_repository(
+        self,
+    ):
+        wait = merge_set.PersonWait(WAIT_ENDS_AT, timedelta(hours=1))
+        text = self.section(
+            set_review(pull_request_review(self.nodes), offer=wait), alone=True
+        )
+        self.assertIn(
+            "To ask for the review now, an admin of nodes-hub ticks the box below. "
+            "Claude posts its findings on this pull request. Correct each finding "
+            "or answer in its thread, then ask an admin of nodes-hub to tick the "
+            "box again.",
+            text,
+        )
+        self.assertIn(
+            "- [ ] <!-- merge-set:review --> Ask Claude to review this pull request "
+            "now (admin only)",
+            text,
         )
 
     def test_a_draft_holds_the_start_of_the_wait(self):
         drafts = (replace(self.peppy, draft=True), replace(self.nodes, draft=True))
         text = self.wait_section(merge_set.DraftWait(drafts))
-        self.assertTrue(
-            text.endswith(
-                f"{self.peppy.link}, {self.nodes.link} are drafts, so that time has "
-                "not started."
-            )
+        self.assertIn(
+            f"\n\n{self.peppy.link}, {self.nodes.link} are drafts, so that time "
+            "has not started.\n\nTo ask for the review now, an admin of every "
+            "repository of this set ticks the box below.",
+            text,
         )
-        self.assertNotIn("merge-set:review", text)
+        self.assertIn(ADMIN_BOX_OF_TWO, text)
         self.assertNotIn(merge_set.WAIT_MARKER, text)
         one = self.wait_section(merge_set.DraftWait((self.nodes,)), alone=True)
-        self.assertTrue(
-            one.endswith(f"{self.nodes.link} is a draft, so that time has not started.")
+        self.assertIn(
+            f"\n\n{self.nodes.link} is a draft, so that time has not started.\n\n",
+            one,
         )
 
-    def test_a_review_of_a_person_in_the_wait_leaves_the_review_to_persons(self):
+    def test_a_review_of_a_person_in_the_wait_leaves_the_box_to_an_admin(self):
         reviewed = merge_set.ReviewedByPerson(
             merge_set.PersonReview(self.nodes, "bob", OPENED_AT)
         )
         text = self.wait_section(reviewed)
-        self.assertTrue(
-            text.endswith(
-                f"`bob` reviewed {self.nodes.link}, so a person reviews this set, "
-                "not Claude."
-            )
+        self.assertIn(
+            f"\n\n`bob` reviewed {self.nodes.link}, so a person reviews this "
+            "set.\n\nTo ask for the review now, an admin of every repository of "
+            "this set ticks the box below.",
+            text,
         )
-        self.assertNotIn("merge-set:review", text)
+        self.assertIn(ADMIN_BOX_OF_TWO, text)
         self.assertNotIn(merge_set.WAIT_MARKER, text)
-        self.assertTrue(
-            self.wait_section(reviewed, alone=True).endswith(
-                "so a person reviews this pull request, not Claude."
-            )
+        self.assertIn(
+            f"\n\n`bob` reviewed {self.nodes.link}, so a person reviews this pull "
+            "request.\n\n",
+            self.wait_section(reviewed, alone=True),
         )
 
     def test_when_claude_reviewed_each_pull_request_the_section_gives_no_wait(self):
@@ -2957,11 +3004,7 @@ class ReviewSection(unittest.TestCase):
             ),
             text,
         )
-        self.assertIn(
-            "- [ ] <!-- merge-set:review --> Ask Claude to review the 2 pull "
-            "requests of this set",
-            text,
-        )
+        self.assertIn(AUTHOR_BOX_OF_TWO, text)
         alone = self.wait_section(no_wait, alone=True)
         self.assertTrue(
             alone.startswith(
@@ -2984,8 +3027,8 @@ class ReviewSection(unittest.TestCase):
         wait = merge_set.PersonWait(WAIT_ENDS_AT, timedelta(hours=1))
         self.assertTrue(
             self.wait_section(wait, run=run).endswith(
-                f"The bot updates this time every 30 minutes. {merge_set.WAIT_MARKER}"
-                f"\n\n**Review in progress** in [this run]({run.url})."
+                f"{ADMIN_BOX_OF_TWO}\n\n**Review in progress** in [this "
+                f"run]({run.url})."
             )
         )
 
@@ -3013,7 +3056,7 @@ class ReviewSection(unittest.TestCase):
                 self.assertTrue(
                     text.endswith(
                         f"**Review not completed.** {said} See [the run]({run.url}), "
-                        "and tick the box to ask again."
+                        "and tick the box again."
                     )
                 )
 
@@ -3084,7 +3127,7 @@ class ReviewSection(unittest.TestCase):
         self.assertTrue(
             text.endswith(
                 "**Not approved.** No blocking finding is open, but Claude did not "
-                f"read the head of {self.nodes.link}: tick the box to ask for a new "
+                f"read the head of {self.nodes.link}: tick the box for a new "
                 "review."
             )
         )
@@ -3115,7 +3158,7 @@ class ReviewSection(unittest.TestCase):
                 "### Review by Claude\n"
             )
         )
-        self.assertIn("Ask Claude to review this pull request", body)
+        self.assertIn(AUTHOR_BOX_ALONE, body)
 
 
 class ReviewRefusals(unittest.TestCase):
@@ -3127,48 +3170,87 @@ class ReviewRefusals(unittest.TestCase):
             pull_request_review(self.peppy), pull_request_review(self.nodes)
         )
 
-    def test_a_set_that_merges_cleanly_and_has_no_review_in_progress_starts_one(self):
-        self.assertEqual(
-            merge_set.review_refusal_reasons(self.state, self.review, self.mergeable),
-            [],
+    def reasons(self, review, mergeable=None, state=None, asked_by_an_admin=False):
+        return merge_set.review_refusal_reasons(
+            state or self.state,
+            review,
+            self.mergeable if mergeable is None else mergeable,
+            asked_by_an_admin=asked_by_an_admin,
         )
 
+    def test_a_set_that_merges_cleanly_and_has_no_review_in_progress_starts_one(self):
+        self.assertEqual(self.reasons(self.review), [])
+
     def test_a_set_that_does_not_offer_the_review_starts_none(self):
-        self.assertEqual(
-            merge_set.review_refusal_reasons(self.state, None, self.mergeable),
-            [
-                "Claude reviews only a set whose every open pull request a member "
-                "of `peppy-devs` opened."
-            ],
-        )
+        for asked_by_an_admin in (False, True):
+            with self.subTest(asked_by_an_admin=asked_by_an_admin):
+                self.assertEqual(
+                    self.reasons(None, asked_by_an_admin=asked_by_an_admin),
+                    [
+                        "Claude reviews only a set whose every open pull request a "
+                        "member of `peppy-devs` opened."
+                    ],
+                )
 
     def test_a_set_that_waits_for_a_person_starts_no_review(self):
         wait = merge_set.PersonWait(WAIT_ENDS_AT, timedelta(minutes=40))
         self.assertEqual(
-            merge_set.review_refusal_reasons(
-                self.state, replace(self.review, offer=wait), self.mergeable
-            ),
+            self.reasons(replace(self.review, offer=wait)),
             [
                 "A person has 12 hours to review this set from the time each of its "
                 "pull requests is ready for review. Claude can review this set only "
-                "if no person reviewed it in that time. **40 min left**, until "
-                "2026-10-27 08:32 UTC."
+                "if no person reviewed it in that time, or at any time when an "
+                "admin of every repository of this set asks for it. **40 min "
+                "left**, until 2026-10-27 08:32 UTC."
             ],
+        )
+
+    def test_an_admin_starts_a_review_at_any_time_of_the_wait(self):
+        offers = (
+            merge_set.PersonWait(WAIT_ENDS_AT, timedelta(minutes=40)),
+            merge_set.DraftWait((replace(self.nodes, draft=True),)),
+            merge_set.ReviewedByPerson(
+                merge_set.PersonReview(self.nodes, "bob", OPENED_AT)
+            ),
+        )
+        for offer in offers:
+            with self.subTest(offer=type(offer).__name__):
+                self.assertEqual(
+                    self.reasons(
+                        replace(self.review, offer=offer), asked_by_an_admin=True
+                    ),
+                    [],
+                )
+
+    def test_an_admin_in_the_wait_starts_no_review_that_the_set_holds(self):
+        wait = merge_set.PersonWait(WAIT_ENDS_AT, timedelta(minutes=40))
+        run = merge_set.parse_review_run(review_run_item(5, status="queued"))
+        self.assertEqual(
+            self.reasons(
+                replace(self.review, offer=wait, run=run), asked_by_an_admin=True
+            ),
+            [f"A review of this set is in progress in [this run]({run.url})."],
+        )
+        self.assertEqual(
+            self.reasons(
+                replace(self.review, offer=wait),
+                mergeable={self.peppy.label: False, self.nodes.label: True},
+                asked_by_an_admin=True,
+            ),
+            ["peppy#512 has conflicts with `dev`: resolve them."],
         )
 
     def test_a_review_in_progress_starts_no_other(self):
         run = merge_set.parse_review_run(review_run_item(5, status="queued"))
         self.assertEqual(
-            merge_set.review_refusal_reasons(
-                self.state, replace(self.review, run=run), self.mergeable
-            ),
+            self.reasons(replace(self.review, run=run)),
             [f"A review of this set is in progress in [this run]({run.url})."],
         )
 
     def test_a_conflict_or_a_merge_state_github_has_not_computed_starts_none(self):
         mergeable = {self.peppy.label: False, self.nodes.label: None}
         self.assertEqual(
-            merge_set.review_refusal_reasons(self.state, self.review, mergeable),
+            self.reasons(self.review, mergeable=mergeable),
             [
                 "peppy#512 has conflicts with `dev`: resolve them.",
                 "GitHub has not yet computed whether nodes-hub#88 merges cleanly "
@@ -3179,10 +3261,10 @@ class ReviewRefusals(unittest.TestCase):
     def test_a_member_without_one_open_pull_request_starts_none(self):
         state = set_state(member(PEPPY, self.peppy), member(NODES_HUB))
         self.assertEqual(
-            merge_set.review_refusal_reasons(
-                state,
+            self.reasons(
                 set_review(pull_request_review(self.peppy)),
-                {self.peppy.label: True},
+                mergeable={self.peppy.label: True},
+                state=state,
             ),
             [
                 f"nodes-hub has a change on the branch `{SET_NAME}` "
@@ -3197,7 +3279,7 @@ class ReviewRefusals(unittest.TestCase):
             pull_request_review(self.nodes, approved_at=commit(NODES_HUB)),
         )
         self.assertEqual(
-            merge_set.review_refusal_reasons(self.state, approved, self.mergeable),
+            self.reasons(approved),
             ["Claude already approved each pull request of this set at its head."],
         )
 
@@ -4503,11 +4585,7 @@ class SyncReview(unittest.TestCase):
     def test_the_dashboard_of_a_set_of_developers_offers_the_review(self):
         sync(self.github)
         body = self.github.dashboard_body(self.peppy)
-        self.assertIn(
-            "- [ ] <!-- merge-set:review --> Ask Claude to review the 2 pull "
-            "requests of this set",
-            body,
-        )
+        self.assertIn(AUTHOR_BOX_OF_TWO, body)
         self.assertTrue(body.endswith("**No review asked.**\n"))
         self.assertEqual(self.github.started_reviews, [])
 
@@ -4683,8 +4761,8 @@ class SyncReview(unittest.TestCase):
         )
         self.assertIn(
             "**Not approved.** No blocking finding is open, but Claude did not read "
-            f"the head of {self.peppy.link}, {self.nodes.link}: tick the box to ask "
-            "for a new review.",
+            f"the head of {self.peppy.link}, {self.nodes.link}: tick the box for a "
+            "new review.",
             self.github.dashboard_body(self.nodes),
         )
 
@@ -4713,7 +4791,7 @@ class SyncReview(unittest.TestCase):
         sync(self.github)
         self.assertIn(
             "**Review not completed.** The Claude login is at its usage limit. See "
-            f"[the run]({review_run_item(5)['html_url']}), and tick the box to ask "
+            f"[the run]({review_run_item(5)['html_url']}), and tick the box "
             "again.",
             self.github.dashboard_body(self.nodes),
         )
@@ -4731,7 +4809,7 @@ class SyncReviewAlone(unittest.TestCase):
         self.assertIn(
             "this pull request is alone: its own merge button merges it.", body
         )
-        self.assertIn("Ask Claude to review this pull request", body)
+        self.assertIn(AUTHOR_BOX_ALONE, body)
         self.assertEqual(
             self.github.gates(self.nodes), [merge_set.alone_gate(SET_NAME)]
         )
@@ -4796,7 +4874,14 @@ class SyncWait(unittest.TestCase):
             )
         ]
 
-    def test_the_dashboards_count_down_the_wait_with_no_review_box(self):
+    def dashboard_of(self, pr):
+        return next(
+            comment
+            for comment in self.github.comments_on(pr)
+            if comment.body.startswith(merge_set.DASHBOARD_MARKER)
+        )
+
+    def test_the_dashboards_count_down_the_wait_over_the_box_of_an_admin(self):
         sync(self.github)
         for pr in (self.peppy, self.nodes):
             with self.subTest(pr=pr.label):
@@ -4807,7 +4892,179 @@ class SyncWait(unittest.TestCase):
                     f"this time every 30 minutes. {merge_set.WAIT_MARKER}\n",
                     body,
                 )
-                self.assertNotIn("merge-set:review", body)
+                self.assertIn(f"\n{ADMIN_BOX_OF_TWO}\n", body)
+
+    def test_an_admin_ticks_in_the_wait_and_claude_reviews_the_whole_set(self):
+        self.github.make_admin("mallory")
+        sync(self.github)
+        self.github.tick(self.dashboard_of(self.nodes), Action.REVIEW, login="mallory")
+        sync(self.github)
+        self.assertEqual(
+            self.github.started_reviews,
+            [
+                {
+                    "set": SET_NAME,
+                    "repository": "nodes-hub",
+                    "pull-request": "88",
+                    "requester": "mallory",
+                    "heads": json.dumps(
+                        {
+                            "nodes-hub": self.nodes.head_commit,
+                            "peppy": self.peppy.head_commit,
+                        },
+                        sort_keys=True,
+                    ),
+                }
+            ],
+        )
+        self.assertEqual(
+            self.github.reports_on(self.nodes),
+            [
+                f"@mallory, Claude reviews the set `{SET_NAME}` in [this "
+                f"run]({REVIEW_RUN_URL}). It posts its findings on each pull request "
+                "of the set, and the merge-set comment shows the state of the "
+                "review.\n"
+            ],
+        )
+        for pr in (self.peppy, self.nodes):
+            with self.subTest(pr=pr.label):
+                body = self.github.dashboard_body(pr)
+                self.assertIn(merge_set.WAIT_MARKER, body)
+                self.assertTrue(
+                    body.endswith(
+                        f"{ADMIN_BOX_OF_TWO}\n\n**Review in progress** in [this "
+                        f"run]({REVIEW_RUN_URL}).\n"
+                    )
+                )
+
+    def test_an_author_who_is_no_admin_is_answered_with_the_time_left(self):
+        self.github.set_author(self.peppy, "alice")
+        sync(self.github)
+        self.github.tick(self.dashboard_of(self.nodes), Action.REVIEW, login="alice")
+        sync(self.github)
+        self.assertEqual(self.github.started_reviews, [])
+        self.assertEqual(
+            self.github.reports_on(self.nodes),
+            [
+                f"@alice, Claude did not start a review of the set `{SET_NAME}`, "
+                "because:\n\n- A person has 12 hours to review this set from the "
+                "time each of its pull requests is ready for review. Claude can "
+                "review this set only if no person reviewed it in that time, or at "
+                "any time when an admin of every repository of this set asks for "
+                "it. **2 h left**, until 2026-10-27 08:32 UTC.\n"
+            ],
+        )
+
+    def test_an_admin_of_some_repositories_of_the_set_alone_waits_as_an_author(self):
+        self.github.set_author(self.peppy, "alice")
+        self.github.make_admin("alice", repositories=(NODES_HUB,))
+        sync(self.github)
+        self.github.tick(self.dashboard_of(self.nodes), Action.REVIEW, login="alice")
+        sync(self.github)
+        self.assertEqual(self.github.started_reviews, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn("**2 h left**, until 2026-10-27 08:32 UTC.", refusal)
+
+    def test_the_tick_of_an_admin_wins_over_the_tick_of_an_author_in_the_wait(self):
+        self.github.set_author(self.peppy, "alice")
+        self.github.make_admin("mallory")
+        sync(self.github)
+        # The bot reads the dashboard of peppy first, so the tick of the author
+        # comes before the one of the admin.
+        self.github.tick(self.dashboard_of(self.peppy), Action.REVIEW, login="alice")
+        self.github.tick(self.dashboard_of(self.nodes), Action.REVIEW, login="mallory")
+        sync(self.github)
+        (started,) = self.github.started_reviews
+        self.assertEqual(
+            (started["requester"], started["repository"], started["pull-request"]),
+            ("mallory", "nodes-hub", "88"),
+        )
+        self.assertEqual(self.github.reports_on(self.peppy), [])
+        self.assertEqual(
+            self.github.reports_on(self.nodes),
+            [
+                f"@alice, @mallory, Claude reviews the set `{SET_NAME}` in [this "
+                f"run]({REVIEW_RUN_URL}). It posts its findings on each pull request "
+                "of the set, and the merge-set comment shows the state of the "
+                "review.\n"
+            ],
+        )
+
+    def test_an_admin_starts_the_review_while_a_draft_holds_the_wait(self):
+        pulls = self.github.pulls[NODES_HUB.name]
+        pulls[pulls.index(self.nodes)] = replace(self.nodes, draft=True)
+        self.github.make_admin("mallory")
+        sync(self.github)
+        self.github.tick(self.dashboard_of(self.nodes), Action.REVIEW, login="mallory")
+        sync(self.github)
+        self.assertEqual(len(self.github.started_reviews), 1)
+
+    def test_an_admin_starts_the_review_of_a_set_that_a_person_reviewed(self):
+        self.person_review(WAIT_ENDS_AT - timedelta(hours=3))
+        self.github.make_admin("mallory")
+        self.github.clock = NOW
+        sync(self.github)
+        self.github.tick(self.dashboard_of(self.nodes), Action.REVIEW, login="mallory")
+        sync(self.github)
+        self.assertEqual(len(self.github.started_reviews), 1)
+
+    def finish_a_round_of_claude(self):
+        """The reviewer posts a review on each open pull request of the set,
+        and its run completes."""
+        for pr in (self.peppy, self.nodes):
+            self.github.reviews_of.setdefault(pr.label, []).append(
+                review(
+                    9, pr.head_commit, state="COMMENTED", submitted_at=self.github.clock
+                )
+            )
+        self.github.review_runs_listed = [review_run_item(5)]
+
+    def assert_a_round_of_an_admin_gives_the_box_to_the_authors(self):
+        self.github.set_author(self.peppy, "alice")
+        self.github.make_admin("mallory")
+        sync(self.github)
+        self.github.tick(self.dashboard_of(self.nodes), Action.REVIEW, login="mallory")
+        sync(self.github)
+        self.finish_a_round_of_claude()
+        sync(self.github)
+        body = self.dashboard_of(self.nodes).body
+        self.assertNotIn(merge_set.WAIT_MARKER, body)
+        self.assertIn(
+            "Claude reviewed each pull request of this set, so no wait for a "
+            "person applies",
+            body,
+        )
+        self.assertIn(AUTHOR_BOX_OF_TWO, body)
+        self.github.tick(self.dashboard_of(self.nodes), Action.REVIEW, login="alice")
+        sync(self.github)
+        self.assertEqual(
+            [started["requester"] for started in self.github.started_reviews],
+            ["mallory", "alice"],
+        )
+
+    def test_after_a_round_of_an_admin_in_the_wait_the_authors_ask_for_the_next(self):
+        self.assert_a_round_of_an_admin_gives_the_box_to_the_authors()
+
+    def test_after_a_round_of_an_admin_on_a_set_a_person_reviewed_the_authors_ask(
+        self,
+    ):
+        self.person_review(WAIT_ENDS_AT - timedelta(hours=3))
+        self.assert_a_round_of_an_admin_gives_the_box_to_the_authors()
+
+    def test_the_end_of_the_wait_tells_no_author_while_the_review_of_an_admin_runs(
+        self,
+    ):
+        self.github.make_admin("mallory")
+        sync(self.github)
+        self.github.tick(self.dashboard_of(self.nodes), Action.REVIEW, login="mallory")
+        sync(self.github)
+        self.github.review_runs_listed = [review_run_item(5, status="in_progress")]
+        self.github.clock = WAIT_ENDS_AT
+        sync(self.github)
+        self.assertNotIn(merge_set.WAIT_MARKER, self.github.dashboard_body(self.nodes))
+        self.assertEqual(self.github.reports_on(self.peppy), [])
+        (started,) = self.github.reports_on(self.nodes)
+        self.assertTrue(started.startswith("@mallory, Claude reviews the set"))
 
     def test_the_wait_ends_after_the_last_pull_request_left_the_draft_state(self):
         self.github.ready_times[self.nodes.label] = OPENED_AT + timedelta(hours=10)
@@ -4827,16 +5084,13 @@ class SyncWait(unittest.TestCase):
         self.assertIn(
             f"{self.nodes.link} is a draft, so that time has not started.", body
         )
-        self.assertNotIn("merge-set:review", body)
+        self.assertIn(ADMIN_BOX_OF_TWO, body)
 
     def test_the_end_of_the_wait_shows_the_box_and_tells_the_authors_once(self):
         sync(self.github)
         self.github.clock = WAIT_ENDS_AT
         sync(self.github)
-        self.assertIn(
-            "Ask Claude to review the 2 pull requests of this set",
-            self.github.dashboard_body(self.nodes),
-        )
+        self.assertIn(AUTHOR_BOX_OF_TWO, self.github.dashboard_body(self.nodes))
         notice = [
             f"@bob, @alice, no person reviewed the set `{SET_NAME}` in 12 hours, so "
             "Claude can review it now. To ask for the review, tick the box in the "
@@ -4850,7 +5104,7 @@ class SyncWait(unittest.TestCase):
     def test_a_set_seen_first_after_its_wait_gets_the_box_and_no_notice(self):
         self.github.clock = NOW
         sync(self.github)
-        self.assertIn("merge-set:review", self.github.dashboard_body(self.nodes))
+        self.assertIn(AUTHOR_BOX_OF_TWO, self.github.dashboard_body(self.nodes))
         self.assertEqual(self.github.reports_on(self.peppy), [])
 
     def test_a_review_of_a_person_in_the_wait_leaves_the_set_to_persons(self):
@@ -4860,11 +5114,10 @@ class SyncWait(unittest.TestCase):
         sync(self.github)
         body = self.github.dashboard_body(self.nodes)
         self.assertIn(
-            f"`carol` reviewed {self.nodes.link}, so a person reviews this set, not "
-            "Claude.",
+            f"`carol` reviewed {self.nodes.link}, so a person reviews this set.",
             body,
         )
-        self.assertNotIn("merge-set:review", body)
+        self.assertIn(ADMIN_BOX_OF_TWO, body)
         self.assertEqual(self.github.reports_on(self.peppy), [])
 
     def test_a_review_of_a_reader_does_not_end_the_wait(self):
@@ -4879,19 +5132,12 @@ class SyncWait(unittest.TestCase):
                 review(1, pr.head_commit, state="COMMENTED", submitted_at=OPENED_AT)
             ]
 
-    def dashboard_of_nodes(self):
-        return next(
-            comment
-            for comment in self.github.comments_on(self.nodes)
-            if comment.body.startswith(merge_set.DASHBOARD_MARKER)
-        )
-
     def test_after_a_round_of_claude_a_draft_made_ready_keeps_the_box(self):
         self.claude_reviewed_both()
         self.github.ready_times[self.nodes.label] = NOW - timedelta(hours=1)
         self.github.clock = NOW
         sync(self.github)
-        dashboard = self.dashboard_of_nodes()
+        dashboard = self.dashboard_of(self.nodes)
         self.assertNotIn(merge_set.WAIT_MARKER, dashboard.body)
         self.assertIn(
             "Claude reviewed each pull request of this set, so no wait for a "
@@ -4913,7 +5159,11 @@ class SyncWait(unittest.TestCase):
         sync(self.github)
         body = self.github.dashboard_body(self.nodes)
         self.assertIn("**11 h left**, until 2026-10-28 20:00 UTC.", body)
-        self.assertNotIn("merge-set:review", body)
+        self.assertIn(
+            "- [ ] <!-- merge-set:review --> Ask Claude to review the 3 pull "
+            "requests of this set now (admin only)",
+            body,
+        )
 
     def test_the_close_of_the_pull_request_that_joined_gives_the_box_and_no_notice(
         self,
@@ -4926,38 +5176,38 @@ class SyncWait(unittest.TestCase):
         sync(self.github)
         self.github.close_and_delete_the_branch(launchers)
         sync(self.github)
-        self.assertIn("merge-set:review", self.dashboard_of_nodes().body)
+        self.assertIn(AUTHOR_BOX_OF_TWO, self.dashboard_of(self.nodes).body)
         for pr in (self.peppy, self.nodes, launchers):
             with self.subTest(pr=pr.label):
                 self.assertEqual(self.github.reports_on(pr), [])
 
     def test_a_tick_after_the_wait_started_again_is_answered_with_the_time_left(self):
+        self.github.set_author(self.peppy, "alice")
         self.github.clock = NOW
         sync(self.github)
-        dashboard = next(
-            comment
-            for comment in self.github.comments_on(self.nodes)
-            if comment.body.startswith(merge_set.DASHBOARD_MARKER)
-        )
+        dashboard = self.dashboard_of(self.nodes)
         # A pull request joins the set, so the wait starts again.
         self.github.open_pull_request(
-            LAUNCHERS_HUB, 9, author="bob", created_at=NOW - timedelta(hours=1)
+            LAUNCHERS_HUB, 9, author="alice", created_at=NOW - timedelta(hours=1)
         )
-        self.github.tick(dashboard, Action.REVIEW, login="mallory")
-        self.github.make_admin("mallory")
+        self.github.tick(dashboard, Action.REVIEW, login="alice")
         sync(self.github)
         self.assertEqual(self.github.started_reviews, [])
         self.assertEqual(
             self.github.reports_on(self.nodes),
             [
-                f"@mallory, Claude did not start a review of the set `{SET_NAME}`, "
+                f"@alice, Claude did not start a review of the set `{SET_NAME}`, "
                 "because:\n\n- A person has 12 hours to review this set from the "
                 "time each of its pull requests is ready for review. Claude can "
-                "review this set only if no person reviewed it in that time. "
-                "**11 h left**, until 2026-10-28 20:00 UTC.\n"
+                "review this set only if no person reviewed it in that time, or at "
+                "any time when an admin of every repository of this set asks for "
+                "it. **11 h left**, until 2026-10-28 20:00 UTC.\n"
             ],
         )
-        self.assertNotIn("merge-set:review", self.github.dashboard_body(self.nodes))
+        self.assertIn(
+            "requests of this set now (admin only)",
+            self.github.dashboard_body(self.nodes),
+        )
 
 
 class SyncWaitAlone(unittest.TestCase):
@@ -4977,9 +5227,7 @@ class SyncWaitAlone(unittest.TestCase):
         self.assertEqual(raw_text_lines(body), [])
         github.clock = WAIT_ENDS_AT + timedelta(minutes=5)
         sync(github)
-        self.assertIn(
-            "Ask Claude to review this pull request", github.dashboard_body(nodes)
-        )
+        self.assertIn(AUTHOR_BOX_ALONE, github.dashboard_body(nodes))
         self.assertEqual(
             github.reports_on(nodes),
             [
@@ -4988,6 +5236,40 @@ class SyncWaitAlone(unittest.TestCase):
                 'section "Review by Claude" of the merge-set comment.\n'
             ],
         )
+
+    def test_an_admin_of_its_repository_asks_for_the_review_in_the_wait(self):
+        github = FakeGitHub(self)
+        github.developers.add("alice")
+        nodes = github.open_pull_request(NODES_HUB, 88)
+        github.make_admin("mallory", repositories=(NODES_HUB,))
+        github.clock = WAIT_ENDS_AT - timedelta(hours=2)
+        sync(github)
+        self.assertIn(
+            "To ask for the review now, an admin of nodes-hub ticks the box below.",
+            github.dashboard_body(nodes),
+        )
+
+        def dashboard():
+            return next(
+                comment
+                for comment in github.comments_on(nodes)
+                if comment.body.startswith(merge_set.DASHBOARD_MARKER)
+            )
+
+        github.tick(dashboard(), Action.REVIEW, login="alice")
+        sync(github)
+        self.assertEqual(github.started_reviews, [])
+        (refusal,) = github.reports_on(nodes)
+        self.assertIn(
+            "Claude can review this pull request only if no person reviewed it in "
+            "that time, or at any time when an admin of nodes-hub asks for it. "
+            "**2 h left**",
+            refusal,
+        )
+        github.tick(dashboard(), Action.REVIEW, login="mallory")
+        sync(github)
+        (started,) = github.started_reviews
+        self.assertEqual(started["requester"], "mallory")
 
 
 class WaitSyncs(unittest.TestCase):
