@@ -22,7 +22,7 @@ impl Joinable {
     /// Adds what the joins of another scope can start.
     pub fn merge(&mut self, other: Self) {
         self.nodes.merge(other.nodes);
-        self.variable_needs.extend(other.variable_needs);
+        self.variable_needs.merge(other.variable_needs);
     }
 }
 

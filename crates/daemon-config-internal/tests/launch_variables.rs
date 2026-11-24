@@ -965,3 +965,48 @@ fn a_one_of_adds_no_combination() {
         "{with_list:?}"
     );
 }
+
+/// The brain of the example takes a `one_of`: a join through the scope can
+/// add it, so the launch needs one complete set, and the refusal names every
+/// set, the instance, the option and the instance whose scope offers it.
+#[test]
+fn the_example_needs_one_set_of_the_brain_that_a_join_can_add() {
+    let prepared = load(
+        &Demo {
+            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, BRAIN_ONE_OF),
+            ..Demo::default()
+        }
+        .document(),
+    );
+    let joinable = joinable(&prepared, &[]).expect("the scopes hold");
+    assert_eq!(joinable.variable_needs.iter().count(), 0);
+    let choices: Vec<_> = joinable.variable_needs.choices().cloned().collect();
+    assert_eq!(choices.len(), 1, "{choices:?}");
+    assert_eq!(choices[0].instance, "brain_inst");
+    assert_eq!(
+        choices[0].starter,
+        Starter::ScopedJoin {
+            option: name("demo_arm"),
+            features: vec![],
+            scopes: vec!["framework_controls_inst".to_owned()],
+        }
+    );
+    assert_eq!(
+        joinable
+            .variable_needs
+            .check(VariableChange::Launch, |_| false)
+            .expect_err("an empty launch environment holds no set")
+            .to_string(),
+        "the launch needs one set of `OPENAI_COMPATIBLE_API_BASE` and \
+         `OPENAI_COMPATIBLE_API_KEY`, or of `GEMINI_API_KEY`, and the launch environment holds no \
+         set complete, or holds a variable of it empty or with characters that a node cannot \
+         receive: `brain_inst` of option `demo_arm` takes the first complete set from the launch, \
+         and stack.join through `framework_controls_inst` can add a copy of `demo_arm`. Export \
+         every variable of one set in the shell that launches. A value must not be empty, and \
+         must hold letters, digits and `_ - . / : , = @ + %` only"
+    );
+    joinable
+        .variable_needs
+        .check(VariableChange::Launch, |name| name == "GEMINI_API_KEY")
+        .expect("the second set is complete");
+}

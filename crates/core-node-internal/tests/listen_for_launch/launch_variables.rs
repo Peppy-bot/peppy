@@ -49,6 +49,12 @@ impl Fleet {
     /// own axis `tool` deploys, under `gripper`, the tool `tool_inst`, which
     /// takes `TOOL_KEY`. The scope offers `arm` with no feature.
     fn write(started: &StartedCoreNode) -> Self {
+        Self::write_with_brain(started, &format!(r#"["{KEY}"]"#))
+    }
+
+    /// The fleet of [`Self::write`], whose brain takes `brain_variables`
+    /// from the launch: a list or a `one_of`, as `env_from_launch` writes it.
+    fn write_with_brain(started: &StartedCoreNode, brain_variables: &str) -> Self {
         let directory = tempdir().unwrap();
         let probes = directory.path().join("probes");
         fs::create_dir_all(&probes).unwrap();
@@ -122,7 +128,7 @@ impl Fleet {
                 {{ name: "robot", cardinality: "zero_or_more", options: {{
                     arm: {{
                         deployments: [{{ source: {{ name: "brain_probe", tag: "v1" }}, instances: [
-                            {{ instance_id: "brain_inst", env_from_launch: ["{KEY}"] }}
+                            {{ instance_id: "brain_inst", env_from_launch: {brain_variables} }}
                         ] }}],
                         components: [{{ name: "tool", cardinality: "zero_or_one", options: {{
                             gripper: {{ deployments: [{{ source: {{ name: "tool_probe", tag: "v1" }}, instances: [
@@ -494,5 +500,60 @@ async fn a_new_launch_after_a_reset_gives_its_own_value() {
     assert_eq!(
         probe_lines(&fleet.brain_runs, 1).await,
         ["new-value|unset|unset"]
+    );
+}
+
+/// A brain that takes a `one_of`, the set of `OTHER_KEY` and `TOOL_KEY`,
+/// else `PROBE_KEY`: a launch that holds no set complete is refused before
+/// it builds anything, naming every set. A launch that holds both sets
+/// keeps them, and a join through the scope, which forwards nothing, gives
+/// the run of the brain the first set alone, and not the variable of the
+/// second.
+#[tokio::test]
+async fn a_join_through_the_scope_gives_the_brain_the_first_complete_set_of_its_one_of() {
+    let started = start_core_node_with_mock_messenger().await;
+    let fleet = Fleet::write_with_brain(
+        &started,
+        &format!(r#"{{ one_of: [["{OTHER}", "{TOOL_KEY}"], ["{KEY}"]] }}"#),
+    );
+    let mut responders = answer_readiness(&started, "manager", MANAGER).await;
+    responders.extend(answer_readiness(&started, "brain_probe", "alpha_brain_inst").await);
+
+    execute(&started, &fleet.launch("part", &[(OTHER, "api-base")]))
+        .await
+        .assert_failed(
+            PeppyFailureKind::Rejected,
+            "the launch needs one set of `OTHER_KEY` and `TOOL_KEY`, or of `PROBE_KEY`, and the \
+             launch environment holds no set complete, or holds a variable of it empty or with \
+             characters that a node cannot receive: `brain_inst` of option `arm` takes the \
+             first complete set from the launch, and stack.join through `manager_inst` can add \
+             a copy of `arm`. Export every variable of one set in the shell that launches",
+        );
+    assert!(
+        !fleet.brain_builds.exists(),
+        "the refused launch builds nothing"
+    );
+
+    execute(
+        &started,
+        &fleet.launch(
+            "both",
+            &[
+                (KEY, "provider-key"),
+                (OTHER, "api-base"),
+                (TOOL_KEY, "api-key"),
+            ],
+        ),
+    )
+    .await
+    .assert_completed();
+    assert_eq!(
+        join_through_the_scope(&started, "alpha").await,
+        GoalOutcome::Completed(json!({}))
+    );
+    assert_eq!(
+        probe_lines(&fleet.brain_runs, 1).await,
+        ["unset|api-base|api-key"],
+        "the run takes the kept values of the first set, and not the variable of the second"
     );
 }

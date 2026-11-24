@@ -14,8 +14,8 @@ use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, ComposedLaunch, CopyMembership,
     Deployment, DeploymentInstance, DeploymentSource, ExternallyCoveredSlots, MemberAddressing,
     PairingValidationItem, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks, ScopeCheck,
-    Starter, UnitSelection, VariableNeed, VariableNeeds, check_daemon_scopes, instance_restart,
-    resolve_clocks, resolve_restart, restart_request_of, validate_link_plan,
+    Starter, UnitSelection, VariableNeeds, check_daemon_scopes, instance_restart, resolve_clocks,
+    resolve_restart, restart_request_of, validate_link_plan,
 };
 use daemon_config::repository::EntryOrigin;
 use serde::{Deserialize, Serialize};
@@ -680,13 +680,9 @@ fn report_launch_variables(
     };
     let mut needs = VariableNeeds::default();
     for instance in instances() {
-        needs.extend(VariableNeed::each_of(
-            instance.instance_id.as_str(),
-            instance,
-            &Starter::Launch,
-        ));
+        needs.add_instance(instance.instance_id.as_str(), instance, &Starter::Launch);
     }
-    needs.extend(scoped);
+    needs.merge(scoped);
     for (variable, reasons) in needs.reasons() {
         report.push(format!(
             "launch variables: the launch needs `{variable}` from the shell that launches: \

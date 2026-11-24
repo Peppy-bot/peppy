@@ -4,7 +4,7 @@
 use super::super::composition::{
     Adjustment, ArgumentOverrides, ComponentCardinality, CopySettings, OptionDeployment,
 };
-use super::super::launch_variables::{LaunchVariable, Starter, VariableNeed};
+use super::super::launch_variables::{LaunchVariable, Starter, VariableNeeds};
 use super::super::types::{Deployment, LauncherFramework, PeppyLauncher};
 use super::adjustments::{Routed, route};
 use super::check::{TrialRefusal, compose_trial_join, pick_checked_copy_name};
@@ -108,26 +108,27 @@ pub struct TrialCopy {
 }
 
 impl TrialCopy {
-    /// One need for each variable that an instance of the copy takes from
-    /// the launch, the instance named by its id in the copy, which every copy
-    /// of the option shares, and started by `starter`.
-    pub fn variable_needs<'a>(
-        &'a self,
-        starter: &'a Starter,
-    ) -> impl Iterator<Item = VariableNeed> + 'a {
-        self.deployments
+    /// The needs of each instance of the copy that takes launch variables,
+    /// one for each variable of its list or one for its `one_of`, the
+    /// instance named by its id in the copy, which every copy of the option
+    /// shares, and started by `starter`.
+    pub fn variable_needs(&self, starter: &Starter) -> VariableNeeds {
+        let mut needs = VariableNeeds::default();
+        for instance in self
+            .deployments
             .iter()
             .flat_map(|deployment| &deployment.instances)
-            .flat_map(move |instance| {
-                let in_copy = self
-                    .instances
-                    .iter()
-                    .find(|owned| owned.instance_id == instance.instance_id)
-                    .map_or(instance.instance_id.as_str(), |owned| {
-                        owned.in_copy.as_str()
-                    });
-                VariableNeed::each_of(in_copy, instance, starter)
-            })
+        {
+            let in_copy = self
+                .instances
+                .iter()
+                .find(|owned| owned.instance_id == instance.instance_id)
+                .map_or(instance.instance_id.as_str(), |owned| {
+                    owned.in_copy.as_str()
+                });
+            needs.add_instance(in_copy, instance, starter);
+        }
+        needs
     }
 }
 

@@ -6,15 +6,20 @@
 //!
 //! A launch and a join parse the environment that the CLI forwarded with
 //! them against the launch variables of the launcher ([`ForwardedEnv`]): the
-//! value of a launch variable reaches the run of each instance that names it,
-//! and no other node, add or build. The daemon keeps, in memory, the values
-//! of the launch ([`LaunchValues`]), and a join gives each instance that it
-//! starts the kept value of each variable that the instance names and the
-//! join does not forward. The launch is refused when an instance that the
-//! launch or a join through a `robot_membership` scope can start takes a
-//! variable that the forwarded environment of the launch does not hold, and a
-//! join when an instance that it starts takes a variable that neither its own
-//! forwarded environment nor the kept values hold ([`VariableNeeds::check`]).
+//! value of a launch variable reaches the run of each instance that takes it,
+//! and no other node, add or build. An instance takes each variable of its
+//! list, or the variables of the first set of its `one_of` that the
+//! environment of the change holds complete. The daemon keeps, in memory,
+//! the values of the launch ([`LaunchValues`]), and a join gives each
+//! instance that it starts the kept value of each variable that the instance
+//! takes and the join does not forward: a join reads its own forwarded
+//! environment, then the kept values, for a set as for a value. The launch
+//! is refused when an instance that the launch or a join through a
+//! `robot_membership` scope can start takes a variable that the forwarded
+//! environment of the launch does not hold, or a `one_of` none of whose sets
+//! it holds complete, and a join when an instance that it starts takes a
+//! variable or a `one_of` that neither its own forwarded environment nor the
+//! kept values hold, or hold complete ([`VariableNeeds::check`]).
 //! An instance with launch variables runs on the coordinator's machine only
 //! ([`refuse_peer_placements`]).
 
@@ -424,18 +429,21 @@ pub struct VariableNeed {
 }
 
 impl VariableNeed {
-    /// One need for each variable that `instance` takes, `instance` named
-    /// `shown`.
+    /// One need for each variable of the list of `instance`, `instance` named
+    /// `shown`. A `one_of` is a [`ChoiceNeed`].
     pub fn each_of<'a>(
         shown: &'a str,
         instance: &'a DeploymentInstance,
         starter: &'a Starter,
     ) -> impl Iterator<Item = Self> + 'a {
-        instance.env_from_launch.iter().map(move |variable| Self {
-            variable: variable.clone(),
-            instance: shown.to_owned(),
-            starter: starter.clone(),
-        })
+        instance
+            .env_from_launch
+            .required()
+            .map(move |variable| Self {
+                variable: variable.clone(),
+                instance: shown.to_owned(),
+                starter: starter.clone(),
+            })
     }
 }
 
@@ -443,40 +451,78 @@ impl VariableNeed {
 /// "`brain_inst` takes it from the launch, and the launch starts it".
 impl std::fmt::Display for VariableNeed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let instance = &self.instance;
-        match &self.starter {
-            Starter::Launch => {
-                write!(
-                    f,
-                    "`{instance}` takes it from the launch, and the launch starts it"
-                )
-            }
-            Starter::Join => {
-                write!(
-                    f,
-                    "`{instance}` takes it from the launch, and the join starts it"
-                )
-            }
-            Starter::ScopedJoin {
-                option,
-                features,
-                scopes,
-            } => {
-                let with = match features.as_slice() {
-                    [] => String::new(),
-                    [feature] => format!(" with the feature `{feature}`"),
-                    _ => format!(
-                        " with the features {}",
-                        crate::error::format_quoted_list(features)
-                    ),
-                };
-                write!(
-                    f,
-                    "`{instance}` of option `{option}` takes it from the launch, and stack.join \
-                     through {} can add a copy of `{option}`{with}",
-                    quoted_series(scopes, "or")
-                )
-            }
+        write_need(f, &self.instance, &self.starter, "it")
+    }
+}
+
+/// One instance that takes the first complete set of a `one_of`, and what
+/// can start it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceNeed {
+    /// The `one_of` that the instance takes a set of.
+    pub variables: LaunchVariables,
+    /// The instance: its id in the stack, or its id in the copy for an
+    /// instance of a copy that a join through a scope can add.
+    pub instance: String,
+    pub starter: Starter,
+}
+
+impl ChoiceNeed {
+    /// The need of `instance`, named `shown`, when it takes a `one_of`.
+    pub fn of(shown: &str, instance: &DeploymentInstance, starter: &Starter) -> Option<Self> {
+        (!instance.env_from_launch.sets().is_empty()).then(|| Self {
+            variables: instance.env_from_launch.clone(),
+            instance: shown.to_owned(),
+            starter: starter.clone(),
+        })
+    }
+}
+
+/// The instance that takes a set and what can start it, as a clause:
+/// "`brain_inst` takes the first complete set from the launch, and the
+/// launch starts it".
+impl std::fmt::Display for ChoiceNeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write_need(f, &self.instance, &self.starter, "the first complete set")
+    }
+}
+
+/// The clause of a need: `instance` takes `taken` from the launch, and what
+/// can start it.
+fn write_need(
+    f: &mut std::fmt::Formatter<'_>,
+    instance: &str,
+    starter: &Starter,
+    taken: &str,
+) -> std::fmt::Result {
+    match starter {
+        Starter::Launch => write!(
+            f,
+            "`{instance}` takes {taken} from the launch, and the launch starts it"
+        ),
+        Starter::Join => write!(
+            f,
+            "`{instance}` takes {taken} from the launch, and the join starts it"
+        ),
+        Starter::ScopedJoin {
+            option,
+            features,
+            scopes,
+        } => {
+            let with = match features.as_slice() {
+                [] => String::new(),
+                [feature] => format!(" with the feature `{feature}`"),
+                _ => format!(
+                    " with the features {}",
+                    crate::error::format_quoted_list(features)
+                ),
+            };
+            write!(
+                f,
+                "`{instance}` of option `{option}` takes {taken} from the launch, and stack.join \
+                 through {} can add a copy of `{option}`{with}",
+                quoted_series(scopes, "or")
+            )
         }
     }
 }
@@ -491,60 +537,120 @@ fn quoted_series<T: std::fmt::Display>(items: &[T], word: &str) -> String {
     }
 }
 
-/// The instances that take launch variables, each with what can start it,
-/// one entry per variable.
+/// The instances that take launch variables, each with what can start it:
+/// one entry per variable of a list ([`VariableNeed`]), and one per
+/// `one_of` ([`ChoiceNeed`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct VariableNeeds(Vec<VariableNeed>);
+pub struct VariableNeeds {
+    variables: Vec<VariableNeed>,
+    choices: Vec<ChoiceNeed>,
+}
 
-impl VariableNeeds {
-    /// Adds `need`. A need that an entry already gives is left out: an entry
-    /// of the same variable, instance and option, through a scope of each
-    /// scope of `need`, with features that `need` holds. An entry that differs
-    /// from `need` by its scopes alone takes the scopes of `need`.
-    pub fn add(&mut self, need: VariableNeed) {
+/// What [`add_need`] reads of a need: whether two needs take the same
+/// variables for the same instance, and what can start the instance.
+trait Need: PartialEq {
+    fn takes_as(&self, other: &Self) -> bool;
+    fn starter(&self) -> &Starter;
+    fn starter_mut(&mut self) -> &mut Starter;
+}
+
+impl Need for VariableNeed {
+    fn takes_as(&self, other: &Self) -> bool {
+        self.variable == other.variable && self.instance == other.instance
+    }
+
+    fn starter(&self) -> &Starter {
+        &self.starter
+    }
+
+    fn starter_mut(&mut self) -> &mut Starter {
+        &mut self.starter
+    }
+}
+
+impl Need for ChoiceNeed {
+    fn takes_as(&self, other: &Self) -> bool {
+        self.variables == other.variables && self.instance == other.instance
+    }
+
+    fn starter(&self) -> &Starter {
+        &self.starter
+    }
+
+    fn starter_mut(&mut self) -> &mut Starter {
+        &mut self.starter
+    }
+}
+
+/// Adds `need` to `held`. A need that an entry already gives is left out:
+/// an entry that takes the same variables for the same instance and option,
+/// through a scope of each scope of `need`, with features that `need` holds.
+/// An entry that differs from `need` by its scopes alone takes the scopes of
+/// `need`.
+fn add_need<N: Need>(held: &mut Vec<N>, need: N) {
+    let Starter::ScopedJoin {
+        option,
+        features,
+        scopes,
+    } = need.starter()
+    else {
+        if !held.contains(&need) {
+            held.push(need);
+        }
+        return;
+    };
+    for entry in held.iter_mut() {
+        if !entry.takes_as(&need) {
+            continue;
+        }
         let Starter::ScopedJoin {
-            option,
-            features,
-            scopes,
-        } = &need.starter
+            option: held_option,
+            features: held_features,
+            scopes: held_scopes,
+        } = entry.starter_mut()
         else {
-            if !self.0.contains(&need) {
-                self.0.push(need);
+            continue;
+        };
+        if held_option != option {
+            continue;
+        }
+        if held_features == features {
+            for scope in scopes {
+                if !held_scopes.contains(scope) {
+                    held_scopes.push(scope.clone());
+                }
             }
             return;
-        };
-        for held in &mut self.0 {
-            let Starter::ScopedJoin {
-                option: held_option,
-                features: held_features,
-                scopes: held_scopes,
-            } = &mut held.starter
-            else {
-                continue;
-            };
-            if held.variable != need.variable
-                || held.instance != need.instance
-                || held_option != option
-            {
-                continue;
-            }
-            if held_features == features {
-                for scope in scopes {
-                    if !held_scopes.contains(scope) {
-                        held_scopes.push(scope.clone());
-                    }
-                }
-                return;
-            }
-            let held_covers = held_features
-                .iter()
-                .all(|feature| features.contains(feature))
-                && scopes.iter().all(|scope| held_scopes.contains(scope));
-            if held_covers {
-                return;
-            }
         }
-        self.0.push(need);
+        let held_covers = held_features
+            .iter()
+            .all(|feature| features.contains(feature))
+            && scopes.iter().all(|scope| held_scopes.contains(scope));
+        if held_covers {
+            return;
+        }
+    }
+    held.push(need);
+}
+
+impl VariableNeeds {
+    /// Adds `need`, as [`add_need`] says.
+    pub fn add(&mut self, need: VariableNeed) {
+        add_need(&mut self.variables, need);
+    }
+
+    /// Adds the need of a `one_of`, as [`add_need`] says.
+    pub fn add_choice(&mut self, need: ChoiceNeed) {
+        add_need(&mut self.choices, need);
+    }
+
+    /// Adds the needs of `instance`, named `shown`, started by `starter`: one
+    /// for each variable of its list, or one for its `one_of`.
+    pub fn add_instance(&mut self, shown: &str, instance: &DeploymentInstance, starter: &Starter) {
+        self.extend(VariableNeed::each_of(shown, instance, starter));
+        if let Some(choice) = ChoiceNeed::of(shown, instance, starter) {
+            self.add_choice(choice);
+        }
     }
 
     /// Adds each need of `other`.
@@ -554,19 +660,34 @@ impl VariableNeeds {
         }
     }
 
+    /// Adds every need of `other`, of a variable and of a `one_of`.
+    pub fn merge(&mut self, other: Self) {
+        self.extend(other.variables);
+        for choice in other.choices {
+            self.add_choice(choice);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.variables.is_empty() && self.choices.is_empty()
     }
 
+    /// The needs of the variables of lists.
     pub fn iter(&self) -> impl Iterator<Item = &VariableNeed> {
-        self.0.iter()
+        self.variables.iter()
     }
 
-    /// Each variable of these needs, in name order, with each instance that
-    /// takes it and what can start that instance, as one clause.
+    /// The needs of `one_of`s.
+    pub fn choices(&self) -> impl Iterator<Item = &ChoiceNeed> {
+        self.choices.iter()
+    }
+
+    /// Each variable of the lists of these needs, in name order, with each
+    /// instance that takes it and what can start that instance, as one
+    /// clause.
     pub fn reasons(&self) -> BTreeMap<LaunchVariable, String> {
         let mut grouped: BTreeMap<LaunchVariable, Vec<String>> = BTreeMap::new();
-        for need in &self.0 {
+        for need in &self.variables {
             grouped
                 .entry(need.variable.clone())
                 .or_default()
@@ -578,9 +699,30 @@ impl VariableNeeds {
             .collect()
     }
 
-    /// The refusal of `change` when a variable of these needs is one that
-    /// `holds` does not hold: it names each such variable, each instance that
-    /// needs it and what can start that instance.
+    /// Each `one_of` of these needs, in the order it is first added, with
+    /// each instance that takes a set of it and what can start that
+    /// instance, as one clause.
+    pub fn choice_reasons(&self) -> Vec<(LaunchVariables, String)> {
+        let mut grouped: Vec<(LaunchVariables, Vec<String>)> = Vec::new();
+        for need in &self.choices {
+            match grouped
+                .iter_mut()
+                .find(|(variables, _)| *variables == need.variables)
+            {
+                Some((_, needs)) => needs.push(need.to_string()),
+                None => grouped.push((need.variables.clone(), vec![need.to_string()])),
+            }
+        }
+        grouped
+            .into_iter()
+            .map(|(variables, needs)| (variables, needs.join("; ")))
+            .collect()
+    }
+
+    /// The refusal of `change` when a variable of a list of these needs is
+    /// one that `holds` does not hold, or when `holds` holds no set of a
+    /// `one_of` complete: it names each such variable and `one_of`, each
+    /// instance that needs it and what can start that instance.
     pub fn check(
         &self,
         change: VariableChange,
@@ -591,20 +733,20 @@ impl VariableNeeds {
             .into_iter()
             .filter(|(variable, _)| !holds(variable.as_str()))
             .collect();
-        if missing.is_empty() {
+        let unmet: Vec<(LaunchVariables, String)> = self
+            .choice_reasons()
+            .into_iter()
+            .filter(|(variables, _)| variables.taken(&holds).is_empty())
+            .collect();
+        if missing.is_empty() && unmet.is_empty() {
             Ok(())
         } else {
-            Err(MissingLaunchVariables { change, missing })
+            Err(MissingLaunchVariables {
+                change,
+                missing,
+                unmet,
+            })
         }
-    }
-}
-
-impl IntoIterator for VariableNeeds {
-    type Item = VariableNeed;
-    type IntoIter = std::vec::IntoIter<VariableNeed>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
     }
 }
 
@@ -626,41 +768,120 @@ impl std::fmt::Display for VariableChange {
 }
 
 /// A launch or a join refused because one of its instances takes a launch
-/// variable that its environment does not hold. The CLI does not forward a
-/// value with characters that a node cannot receive, and the daemon counts
-/// an empty value as no value, so the refusal also names these causes.
+/// variable that its environment does not hold, or a `one_of` none of whose
+/// sets its environment holds complete. The CLI does not forward a value
+/// with characters that a node cannot receive, and the daemon counts an
+/// empty value as no value, so the refusal also names these causes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MissingLaunchVariables {
     change: VariableChange,
-    /// Each missing variable, with what needs it ([`VariableNeeds::reasons`]).
+    /// Each missing variable of a list, with what needs it
+    /// ([`VariableNeeds::reasons`]).
     missing: BTreeMap<LaunchVariable, String>,
+    /// Each `one_of` with no complete set, with what needs it
+    /// ([`VariableNeeds::choice_reasons`]).
+    unmet: Vec<(LaunchVariables, String)>,
 }
 
 impl MissingLaunchVariables {
-    /// The variables the change needs and does not get, in name order.
+    /// The variables of lists the change needs and does not get, in name
+    /// order.
     pub fn variables(&self) -> impl Iterator<Item = &LaunchVariable> {
         self.missing.keys()
     }
-}
 
-impl std::fmt::Display for MissingLaunchVariables {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    /// The shell where a value of the change is exported.
+    fn shell(&self) -> &'static str {
+        match self.change {
+            VariableChange::Launch => "the shell that launches",
+            VariableChange::Join => "the shell that joins or in the shell that launches",
+        }
+    }
+
+    /// The refusal of one `one_of` and no missing variable of a list.
+    fn write_one_choice(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        variables: &LaunchVariables,
+        reasons: &str,
+    ) -> std::fmt::Result {
+        let environment = match self.change {
+            VariableChange::Launch => {
+                "the launch environment holds no set complete, or holds a variable of it"
+            }
+            VariableChange::Join => {
+                "neither the join environment nor the launch environment holds a set complete, \
+                 or they hold a variable of it"
+            }
+        };
+        write!(
+            f,
+            "{} needs {}, and {environment} empty or with characters that a node cannot \
+             receive: {reasons}. Export every variable of one set in {}. A value must not be \
+             empty, and must hold {SAFE_ENV_VALUE_CHARACTERS} only",
+            self.change,
+            variables.describe(),
+            self.shell(),
+        )
+    }
+
+    /// The refusal of several `one_of`s, or of `one_of`s and missing
+    /// variables of lists: one line each.
+    fn write_several(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let environment = match self.change {
+            VariableChange::Launch => {
+                "the launch environment does not hold, or holds empty or with characters that a \
+                 node cannot receive"
+            }
+            VariableChange::Join => {
+                "neither the join environment nor the launch environment holds, or they hold \
+                 empty or with characters that a node cannot receive"
+            }
+        };
+        let lines = self
+            .missing
+            .iter()
+            .map(|(variable, reasons)| format!("`{variable}`: {reasons}"))
+            .chain(
+                self.unmet
+                    .iter()
+                    .map(|(variables, reasons)| format!("{}: {reasons}", variables.describe())),
+            );
+        let of_each_set = if self.unmet.len() == 1 {
+            "every variable of one set"
+        } else {
+            "every variable of one set of each"
+        };
+        let export = if self.missing.is_empty() {
+            format!("Export {of_each_set}")
+        } else {
+            format!("Export each variable, and {of_each_set},")
+        };
+        write!(
+            f,
+            "{} needs variables that {environment}:{}.\n{export} in {}. A value must not be \
+             empty, and must hold {SAFE_ENV_VALUE_CHARACTERS} only",
+            self.change,
+            crate::error::format_bulleted(lines),
+            self.shell(),
+        )
+    }
+
+    /// The refusal of missing variables of lists alone.
+    fn write_missing(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let variables: Vec<&LaunchVariable> = self.missing.keys().collect();
         let one = variables.len() == 1;
         let them = if one { "it" } else { "them" };
-        let (environment, shell) = match self.change {
-            VariableChange::Launch => (
-                format!("the launch environment does not hold {them}, or holds {them}"),
-                "the shell that launches",
-            ),
-            VariableChange::Join => (
-                format!(
-                    "neither the join environment nor the launch environment holds {them}, or \
-                     they hold {them}"
-                ),
-                "the shell that joins or in the shell that launches",
+        let environment = match self.change {
+            VariableChange::Launch => {
+                format!("the launch environment does not hold {them}, or holds {them}")
+            }
+            VariableChange::Join => format!(
+                "neither the join environment nor the launch environment holds {them}, or they \
+                 hold {them}"
             ),
         };
+        let shell = self.shell();
         let (details, export) = if one {
             (
                 format!(" {}.", self.missing[variables[0]]),
@@ -687,6 +908,16 @@ impl std::fmt::Display for MissingLaunchVariables {
             self.change,
             quoted_series(&variables, "and"),
         )
+    }
+}
+
+impl std::fmt::Display for MissingLaunchVariables {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.missing.is_empty(), self.unmet.as_slice()) {
+            (_, []) => self.write_missing(f),
+            (true, [(variables, reasons)]) => self.write_one_choice(f, variables, reasons),
+            _ => self.write_several(f),
+        }
     }
 }
 
@@ -1439,6 +1670,219 @@ mod tests {
                  `OPENAI_COMPATIBLE_API_KEY`, or of `GEMINI_API_KEY` from the launch, and the \
                  launch places it on `peer_b`"
             ),
+            "{refusal}"
+        );
+    }
+
+    /// The need of an instance that takes the `one_of` of the hosted brain.
+    fn choice(instance: &str, starter: Starter) -> ChoiceNeed {
+        ChoiceNeed {
+            variables: one_of(BRAIN_ONE_OF),
+            instance: instance.to_owned(),
+            starter,
+        }
+    }
+
+    fn scoped_starter(features: &[&str], scopes: &[&str]) -> Starter {
+        Starter::ScopedJoin {
+            option: name("demo_arm"),
+            features: features.iter().map(|feature| name(feature)).collect(),
+            scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+        }
+    }
+
+    /// The needs of an instance: one per variable of a list, or one for a
+    /// `one_of`, which no variable need stands for.
+    #[test]
+    fn an_instance_with_a_one_of_needs_a_set_and_no_variable() {
+        let mut brain = DeploymentInstance::empty(name("brain_inst"));
+        brain.env_from_launch = one_of(BRAIN_ONE_OF);
+        let mut needs = VariableNeeds::default();
+        needs.add_instance("brain_inst", &brain, &Starter::Launch);
+        assert_eq!(needs.iter().count(), 0);
+        assert_eq!(
+            needs.choices().cloned().collect::<Vec<_>>(),
+            [choice("brain_inst", Starter::Launch)]
+        );
+        assert!(!needs.is_empty());
+    }
+
+    /// The needs of a `one_of` merge their scopes and features as the needs
+    /// of a variable do, and another `one_of` is another need.
+    #[test]
+    fn a_scoped_choice_keeps_its_smallest_feature_sets_and_every_scope() {
+        let mut needs = VariableNeeds::default();
+        needs.add_choice(choice(
+            "brain_inst",
+            scoped_starter(&["router"], &["controls_inst"]),
+        ));
+        needs.add_choice(choice(
+            "brain_inst",
+            scoped_starter(&["router", "camera"], &["controls_inst"]),
+        ));
+        needs.add_choice(choice(
+            "brain_inst",
+            scoped_starter(&["router"], &["applier_inst"]),
+        ));
+        let mut other = choice(
+            "brain_inst",
+            scoped_starter(&["router"], &["controls_inst"]),
+        );
+        other.variables = one_of(r#"{ one_of: [["A_KEY"], ["B_KEY"]] }"#);
+        needs.add_choice(other.clone());
+
+        assert_eq!(
+            needs.choices().cloned().collect::<Vec<_>>(),
+            [
+                choice(
+                    "brain_inst",
+                    scoped_starter(&["router"], &["controls_inst", "applier_inst"])
+                ),
+                other,
+            ]
+        );
+    }
+
+    /// The needs of the same `one_of` are one group, in the order added.
+    #[test]
+    fn the_choice_reasons_group_the_needs_by_one_of() {
+        let mut needs = VariableNeeds::default();
+        needs.add_choice(choice("alpha_brain_inst", Starter::Launch));
+        let mut other = choice("tool_inst", Starter::Launch);
+        other.variables = one_of(r#"{ one_of: [["A_KEY"], ["B_KEY"]] }"#);
+        needs.add_choice(other);
+        needs.add_choice(choice(
+            "brain_inst",
+            scoped_starter(&[], &["framework_controls_inst"]),
+        ));
+
+        let grouped: Vec<(String, String)> = needs
+            .choice_reasons()
+            .into_iter()
+            .map(|(variables, reasons)| (variables.describe(), reasons))
+            .collect();
+        assert_eq!(
+            grouped,
+            [
+                (
+                    "one set of `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, or \
+                     of `GEMINI_API_KEY`"
+                        .to_owned(),
+                    "`alpha_brain_inst` takes the first complete set from the launch, and the \
+                     launch starts it; `brain_inst` of option `demo_arm` takes the first \
+                     complete set from the launch, and stack.join through \
+                     `framework_controls_inst` can add a copy of `demo_arm`"
+                        .to_owned(),
+                ),
+                (
+                    "one set of `A_KEY`, or of `B_KEY`".to_owned(),
+                    "`tool_inst` takes the first complete set from the launch, and the launch \
+                     starts it"
+                        .to_owned(),
+                ),
+            ]
+        );
+    }
+
+    /// A `one_of` passes the check when one set is complete, and fails it
+    /// when each set misses a variable.
+    #[test]
+    fn a_one_of_passes_the_check_with_one_complete_set() {
+        let mut needs = VariableNeeds::default();
+        needs.add_choice(choice("brain_inst", Starter::Launch));
+        for held in [
+            &["GEMINI_API_KEY"][..],
+            &["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"][..],
+        ] {
+            needs
+                .check(VariableChange::Launch, |name| held.contains(&name))
+                .unwrap_or_else(|refusal| panic!("{held:?}: {refusal}"));
+        }
+        for held in [&[][..], &["OPENAI_COMPATIBLE_API_KEY"][..]] {
+            needs
+                .check(VariableChange::Launch, |name| held.contains(&name))
+                .expect_err("no complete set");
+        }
+    }
+
+    /// The refusal of one `one_of` names every set, each instance that takes
+    /// one and what starts it, in the launch and in the join.
+    #[test]
+    fn the_refusal_of_one_one_of_names_every_set() {
+        let mut needs = VariableNeeds::default();
+        needs.add_choice(choice("brain_inst", Starter::Launch));
+        assert_eq!(
+            needs
+                .check(VariableChange::Launch, |_| false)
+                .expect_err("no set")
+                .to_string(),
+            "the launch needs one set of `OPENAI_COMPATIBLE_API_BASE` and \
+             `OPENAI_COMPATIBLE_API_KEY`, or of `GEMINI_API_KEY`, and the launch environment \
+             holds no set complete, or holds a variable of it empty or with characters that a \
+             node cannot receive: `brain_inst` takes the first complete set from the launch, and \
+             the launch starts it. Export every variable of one set in the shell that launches. \
+             A value must not be empty, and must hold letters, digits and `_ - . / : , = @ + %` \
+             only"
+        );
+
+        let mut joined = VariableNeeds::default();
+        joined.add_choice(choice("alpha_brain_inst", Starter::Join));
+        assert_eq!(
+            joined
+                .check(VariableChange::Join, |_| false)
+                .expect_err("no set")
+                .to_string(),
+            "the join needs one set of `OPENAI_COMPATIBLE_API_BASE` and \
+             `OPENAI_COMPATIBLE_API_KEY`, or of `GEMINI_API_KEY`, and neither the join \
+             environment nor the launch environment holds a set complete, or they hold a \
+             variable of it empty or with characters that a node cannot receive: \
+             `alpha_brain_inst` takes the first complete set from the launch, and the join \
+             starts it. Export every variable of one set in the shell that joins or in the shell \
+             that launches. A value must not be empty, and must hold letters, digits and \
+             `_ - . / : , = @ + %` only"
+        );
+    }
+
+    /// A missing variable of a list and a `one_of` with no complete set are
+    /// one refusal, one line each.
+    #[test]
+    fn a_missing_variable_and_an_unmet_one_of_are_one_refusal() {
+        let mut needs = VariableNeeds::default();
+        needs.add(VariableNeed {
+            variable: variable("TOOL_KEY"),
+            instance: "tool_inst".to_owned(),
+            starter: Starter::Launch,
+        });
+        needs.add_choice(choice("brain_inst", Starter::Launch));
+        assert_eq!(
+            needs
+                .check(VariableChange::Launch, |_| false)
+                .expect_err("nothing held")
+                .to_string(),
+            "the launch needs variables that the launch environment does not hold, or holds \
+             empty or with characters that a node cannot receive:\n  - `TOOL_KEY`: `tool_inst` \
+             takes it from the launch, and the launch starts it\n  - one set of \
+             `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, or of \
+             `GEMINI_API_KEY`: `brain_inst` takes the first complete set from the launch, and \
+             the launch starts it.\nExport each variable, and every variable of one set, in the \
+             shell that launches. A value must not be empty, and must hold letters, digits and \
+             `_ - . / : , = @ + %` only"
+        );
+
+        let mut two = VariableNeeds::default();
+        two.add_choice(choice("brain_inst", Starter::Launch));
+        let mut other = choice("tool_inst", Starter::Launch);
+        other.variables = one_of(r#"{ one_of: [["A_KEY"], ["B_KEY"]] }"#);
+        two.add_choice(other);
+        let refusal = two
+            .check(VariableChange::Launch, |_| false)
+            .expect_err("nothing held")
+            .to_string();
+        assert!(
+            refusal.contains("\n  - one set of `A_KEY`, or of `B_KEY`: `tool_inst`")
+                && refusal.contains(
+                    "\nExport every variable of one set of each in the shell that launches."
+                ),
             "{refusal}"
         );
     }

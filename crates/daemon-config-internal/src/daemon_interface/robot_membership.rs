@@ -456,7 +456,7 @@ impl RobotMembershipScope {
                 };
                 joinable
                     .variable_needs
-                    .extend(trial.variable_needs(&starter));
+                    .merge(trial.variable_needs(&starter));
                 joinable.nodes.add_copy(&entry.option, trial.deployments);
                 if !set.is_empty() {
                     continue;
