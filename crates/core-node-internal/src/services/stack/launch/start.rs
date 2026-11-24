@@ -22,10 +22,10 @@ use std::collections::{BTreeMap, HashMap};
 /// the instance takes, then the instance's own `env_vars`, so a deployment
 /// can pin what differs per instance (a device path, a board id) without
 /// depending on whoever ran the launch. The instance takes each variable of
-/// its list, or the variables of the first set of its `one_of` that the
+/// its list, or the variables of the first set of its `any_of` that the
 /// forwarded environment and the kept values hold complete. A launch
 /// variable that the instance does not take does not reach it, a variable of
-/// another set of its `one_of` included: the launcher states which instances
+/// another set of its `any_of` included: the launcher states which instances
 /// take each one. An instance placed on a peer starts from an empty forwarded
 /// set and no kept value, because the caller's environment describes the
 /// caller's machine and no other; a launch and a join refuse to place an
@@ -625,11 +625,11 @@ mod tests {
     const KEY: &str = "OPENAI_COMPATIBLE_API_KEY";
     const GEMINI: &str = "GEMINI_API_KEY";
 
-    /// The brain whose `one_of` takes the two variables of an
+    /// The brain whose `any_of` takes the two variables of an
     /// OpenAI-compatible API, else the key of the provider.
-    fn brain_with_one_of() -> DeploymentInstance {
+    fn brain_with_any_of() -> DeploymentInstance {
         let mut brain = instance(&[], &[]);
-        brain.env_from_launch = LaunchVariables::one_of(vec![
+        brain.env_from_launch = LaunchVariables::any_of(vec![
             vec![variable(BASE), variable(KEY)],
             vec![variable(GEMINI)],
         ])
@@ -650,7 +650,7 @@ mod tests {
     /// set alone: the key of the provider reaches neither the brain nor an
     /// instance that names no launch variable.
     #[test]
-    fn an_instance_takes_the_first_complete_set_of_its_one_of_alone() {
+    fn an_instance_takes_the_first_complete_set_of_its_any_of_alone() {
         let launch = forwarded_to_the_brain(&[
             ("PATH", "/usr/bin"),
             (BASE, "http://127.0.0.1:8000/v1"),
@@ -660,7 +660,7 @@ mod tests {
         let kept = launch.launch_values().clone();
 
         assert_eq!(
-            instance_environment(&launch, &kept, &brain_with_one_of()),
+            instance_environment(&launch, &kept, &brain_with_any_of()),
             entries(&[
                 ("PATH", "/usr/bin"),
                 (BASE, "http://127.0.0.1:8000/v1"),
@@ -680,7 +680,7 @@ mod tests {
         let launch = forwarded_to_the_brain(&[(KEY, "api-key"), (GEMINI, "provider-key")]);
 
         assert_eq!(
-            instance_environment(&launch, launch.launch_values(), &brain_with_one_of()),
+            instance_environment(&launch, launch.launch_values(), &brain_with_any_of()),
             entries(&[(GEMINI, "provider-key")])
         );
     }
@@ -702,7 +702,7 @@ mod tests {
         ] {
             let kept = forwarded_to_the_brain(launch_shell).launch_values().clone();
             assert_eq!(
-                instance_environment(&ForwardedEnv::default(), &kept, &brain_with_one_of()),
+                instance_environment(&ForwardedEnv::default(), &kept, &brain_with_any_of()),
                 entries(expected)
             );
         }
@@ -721,7 +721,7 @@ mod tests {
             instance_environment(
                 &forwarded_to_the_brain(&[(BASE, "base"), (KEY, "api-key")]),
                 &kept,
-                &brain_with_one_of()
+                &brain_with_any_of()
             ),
             entries(&[(BASE, "base"), (KEY, "api-key")])
         );
@@ -733,7 +733,7 @@ mod tests {
             instance_environment(
                 &forwarded_to_the_brain(&[(KEY, "api-key")]),
                 &kept_base,
-                &brain_with_one_of()
+                &brain_with_any_of()
             ),
             entries(&[(BASE, "kept-base"), (KEY, "api-key")])
         );

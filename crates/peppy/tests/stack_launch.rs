@@ -3786,11 +3786,11 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
     );
 }
 
-/// `peppy stack resolve` writes a `one_of` back in the flat file, its sets in
+/// `peppy stack resolve` writes an `any_of` back in the flat file, its sets in
 /// order, and gives one report line for it, which names each set and the
 /// instance that takes a set of it.
 #[test]
-fn stack_resolve_reports_the_sets_of_a_one_of() {
+fn stack_resolve_reports_the_sets_of_an_any_of() {
     let dir = tempfile::tempdir().expect("temp dir");
     let launcher = dir.path().join("arm.json5");
     fs::write(
@@ -3800,7 +3800,7 @@ fn stack_resolve_reports_the_sets_of_a_one_of() {
             description: ["A test launcher."],
             deployments: [
                 { source: { name: "vlm_router_brain", tag: "v1" }, instances: [
-                    { instance_id: "brain_inst", env_from_launch: { one_of: [
+                    { instance_id: "brain_inst", env_from_launch: { any_of: [
                         ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_API_BASE"],
                         ["GEMINI_API_KEY"],
                     ] } },
@@ -3841,7 +3841,7 @@ fn stack_resolve_reports_the_sets_of_a_one_of() {
         !report
             .iter()
             .any(|line| line.starts_with("launch variables: the launch needs `")),
-        "a one_of is no list of required variables: {report:?}"
+        "a any_of is no list of required variables: {report:?}"
     );
 }
 

@@ -1,7 +1,7 @@
 //! The checks of launch variables that a launch and a join run before they
 //! change anything: every instance with launch variables runs on the
 //! coordinator, each variable of the list of an instance has a value, not
-//! empty, and each `one_of` of an instance has a set whose every variable
+//! empty, and each `any_of` of an instance has a set whose every variable
 //! has one. A launch reads its own forwarded environment for the instances
 //! it starts and for those a join through a scope can start; a join reads
 //! its own forwarded environment, then the values the launch kept, for the
@@ -58,7 +58,7 @@ pub(in crate::services::stack) fn check_join<'a>(
 }
 
 /// The needs of each instance of `instances` that takes launch variables,
-/// one for each variable of its list or one for its `one_of`, each started
+/// one for each variable of its list or one for its `any_of`, each started
 /// by `starter`.
 fn needs_of<'a>(
     instances: impl IntoIterator<Item = &'a DeploymentInstance>,
@@ -217,12 +217,12 @@ mod tests {
         LaunchVariable::try_from(name.to_owned()).unwrap()
     }
 
-    /// A brain whose `one_of` takes the two variables of an
+    /// A brain whose `any_of` takes the two variables of an
     /// OpenAI-compatible API, else `GEMINI_API_KEY`.
-    fn brain_with_one_of(id: &str) -> DeploymentInstance {
+    fn brain_with_any_of(id: &str) -> DeploymentInstance {
         let mut instance = DeploymentInstance::empty(Name::new(id).unwrap());
         instance.env_from_launch =
-            LaunchVariables::one_of(vec![vec![variable(BASE), variable(API_KEY)], vec![key()]])
+            LaunchVariables::any_of(vec![vec![variable(BASE), variable(API_KEY)], vec![key()]])
                 .unwrap();
         instance
     }
@@ -243,8 +243,8 @@ mod tests {
     /// every set, when no set is: an empty value is no value, and no value
     /// that the environment holds is in the refusal.
     #[test]
-    fn a_launch_needs_one_complete_set_of_a_one_of() {
-        let brain = brain_with_one_of("brain_inst");
+    fn a_launch_needs_one_complete_set_of_an_any_of() {
+        let brain = brain_with_any_of("brain_inst");
         for environment in [
             forwarded_to_the_brain(&[(BASE, "sentinel-base"), (API_KEY, "sentinel-api-key")]),
             forwarded_to_the_brain(&[(KEY, "sentinel-provider-key")]),
@@ -293,7 +293,7 @@ mod tests {
     /// and a join that neither completes is refused.
     #[test]
     fn a_join_completes_a_set_from_its_own_environment_then_the_kept_values() {
-        let joined = brain_with_one_of("alpha_brain_inst");
+        let joined = brain_with_any_of("alpha_brain_inst");
         let kept_provider_key = forwarded_to_the_brain(&[(KEY, "kept")])
             .launch_values()
             .clone();
@@ -329,14 +329,14 @@ mod tests {
         );
     }
 
-    /// A launch checks the `one_of` of an instance that a join through its
+    /// A launch checks the `any_of` of an instance that a join through its
     /// scope can start, as it checks a variable of a list.
     #[test]
     fn a_launch_needs_a_complete_set_for_a_brain_that_a_scope_can_add() {
         let mut scoped = VariableNeeds::default();
         scoped.add_instance(
             "brain_inst",
-            &brain_with_one_of("brain_inst"),
+            &brain_with_any_of("brain_inst"),
             &Starter::Join,
         );
         check_launch(

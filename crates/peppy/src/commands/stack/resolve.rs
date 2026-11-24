@@ -660,7 +660,7 @@ fn check_daemon_scope_rules(
 /// one line for each variable of a list that the launch needs from the shell
 /// that launches: each instance that takes it and what can start that
 /// instance, the launch itself or a join through a scope of the launch
-/// (`scoped`). Then one line for each `one_of` of which the launch needs one
+/// (`scoped`). Then one line for each `any_of` of which the launch needs one
 /// complete set: its sets, in order, and each instance that takes a set of
 /// it and what can start that instance. A script reads the sets of the line
 /// between `needs one set of ` and `, from the shell that launches: `, each

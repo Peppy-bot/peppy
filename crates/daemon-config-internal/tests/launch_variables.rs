@@ -772,20 +772,20 @@ fn set_env_from_launch_refuses_a_name_the_launch_environment_cannot_give() {
     }
 }
 
-// -- one_of --------------------------------------------------------------
+// -- any_of --------------------------------------------------------------
 
-/// The `one_of` of the hosted brain: the two variables of an
+/// The `any_of` of the hosted brain: the two variables of an
 /// OpenAI-compatible API, else the key of the provider.
-const BRAIN_ONE_OF: &str = r#"{ one_of: [
+const BRAIN_ANY_OF: &str = r#"{ any_of: [
     ["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"],
     ["GEMINI_API_KEY"],
 ] }"#;
 
-/// A `one_of` parses on an instance and in an adjustment, and a broken one
+/// An `any_of` parses on an instance and in an adjustment, and a broken one
 /// is refused naming the instance or the adjustment, and the set.
 #[test]
-fn a_one_of_is_held_to_its_rules_on_an_instance_and_in_an_adjustment() {
-    let flat = PeppyLauncherParser::from_content(&flat_with(BRAIN_ONE_OF)).expect("parses");
+fn an_any_of_is_held_to_its_rules_on_an_instance_and_in_an_adjustment() {
+    let flat = PeppyLauncherParser::from_content(&flat_with(BRAIN_ANY_OF)).expect("parses");
     assert_eq!(
         names(instance(&flat, "brain_inst")),
         [
@@ -795,21 +795,21 @@ fn a_one_of_is_held_to_its_rules_on_an_instance_and_in_an_adjustment() {
         ]
     );
     for (written, expected) in [
-        (r#"{ one_of: [["A_KEY"]] }"#, "`one_of` names one set"),
+        (r#"{ any_of: [["A_KEY"]] }"#, "`any_of` names one set"),
         (
-            r#"{ one_of: [["A_KEY"], []] }"#,
-            "set 2 of `one_of` is empty",
+            r#"{ any_of: [["A_KEY"], []] }"#,
+            "set 2 of `any_of` is empty",
         ),
         (
-            r#"{ one_of: [["A_KEY", "A_KEY"], ["B_KEY"]] }"#,
-            "set 1 of `one_of` names `A_KEY` two times",
+            r#"{ any_of: [["A_KEY", "A_KEY"], ["B_KEY"]] }"#,
+            "set 1 of `any_of` names `A_KEY` two times",
         ),
         (
-            r#"{ one_of: [["A_KEY"], ["A_KEY", "B_KEY"]] }"#,
-            "set 2 of `one_of` holds every variable of set 1",
+            r#"{ any_of: [["A_KEY"], ["A_KEY", "B_KEY"]] }"#,
+            "set 2 of `any_of` holds every variable of set 1",
         ),
         (
-            r#"{ one_of: [["PWD"], ["B_KEY"]] }"#,
+            r#"{ any_of: [["PWD"], ["B_KEY"]] }"#,
             "`PWD` is never forwarded by the CLI",
         ),
     ] {
@@ -836,12 +836,12 @@ fn a_one_of_is_held_to_its_rules_on_an_instance_and_in_an_adjustment() {
     }
 }
 
-/// A name of any set of a `one_of` that `env_vars` also gives is refused,
+/// A name of any set of an `any_of` that `env_vars` also gives is refused,
 /// as a name of a list is: whichever set is taken, no variable gets two
 /// values.
 #[test]
-fn a_name_of_a_one_of_that_env_vars_also_gives_is_refused() {
-    let document = flat_with(BRAIN_ONE_OF).replace(
+fn a_name_of_an_any_of_that_env_vars_also_gives_is_refused() {
+    let document = flat_with(BRAIN_ANY_OF).replace(
         r#"instance_id: "brain_inst","#,
         r#"instance_id: "brain_inst", env_vars: { GEMINI_API_KEY: "a" },"#,
     );
@@ -857,12 +857,12 @@ fn a_name_of_a_one_of_that_env_vars_also_gives_is_refused() {
     );
 }
 
-/// `set_env_from_launch` with a `one_of` replaces the list of its target,
-/// the report gives the list before and the `one_of` after, and the flat
-/// file writes the `one_of` back.
+/// `set_env_from_launch` with an `any_of` replaces the list of its target,
+/// the report gives the list before and the `any_of` after, and the flat
+/// file writes the `any_of` back.
 #[test]
-fn set_env_from_launch_with_a_one_of_replaces_the_list() {
-    let adjustment = format!(r#"{{ target: "brain_inst", set_env_from_launch: {BRAIN_ONE_OF} }},"#);
+fn set_env_from_launch_with_an_any_of_replaces_the_list() {
+    let adjustment = format!(r#"{{ target: "brain_inst", set_env_from_launch: {BRAIN_ANY_OF} }},"#);
     let prepared = load(
         &Demo {
             adjustments: &adjustment,
@@ -879,7 +879,7 @@ fn set_env_from_launch_with_a_one_of_replaces_the_list() {
     let rendered = composed.report.render_lines().join("\n");
     assert!(
         rendered.contains(
-            r#"alpha_brain_inst.env_from_launch: ["GEMINI_API_KEY"] -> {"one_of":[["OPENAI_COMPATIBLE_API_BASE","OPENAI_COMPATIBLE_API_KEY"],["GEMINI_API_KEY"]]}"#
+            r#"alpha_brain_inst.env_from_launch: ["GEMINI_API_KEY"] -> {"any_of":[["OPENAI_COMPATIBLE_API_BASE","OPENAI_COMPATIBLE_API_KEY"],["GEMINI_API_KEY"]]}"#
         ),
         "{rendered}"
     );
@@ -891,14 +891,14 @@ fn set_env_from_launch_with_a_one_of_replaces_the_list() {
     );
 }
 
-/// Every name of every set of a `one_of` is a launch variable of the
+/// Every name of every set of an `any_of` is a launch variable of the
 /// launcher: the launch keeps its value, and no instance that does not name
 /// it gets it from the forwarded environment.
 #[test]
 fn every_name_of_every_set_is_a_launch_variable() {
     let prepared = load(
         &Demo {
-            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, BRAIN_ONE_OF),
+            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, BRAIN_ANY_OF),
             ..Demo::default()
         }
         .document(),
@@ -946,18 +946,18 @@ fn fourteen_axes_with(variables: &str) -> String {
     )
 }
 
-/// A `one_of` adds no axis and no combination: the check of a launcher above
-/// the ceiling names the same count with a list as with a `one_of`.
+/// An `any_of` adds no axis and no combination: the check of a launcher above
+/// the ceiling names the same count with a list as with an `any_of`.
 #[test]
-fn a_one_of_adds_no_combination() {
+fn an_any_of_adds_no_combination() {
     let count = |variables: &str| {
         let launcher = PeppyLauncherParser::from_content(&fourteen_axes_with(variables))
             .expect("the launcher parses");
         check_composition(&launcher, Path::new("fourteen.json5"))
     };
     let with_list = count(r#"["GEMINI_API_KEY"]"#);
-    let with_one_of = count(BRAIN_ONE_OF);
-    assert_eq!(with_list, with_one_of);
+    let with_any_of = count(BRAIN_ANY_OF);
+    assert_eq!(with_list, with_any_of);
     assert!(
         with_list
             .iter()
@@ -966,14 +966,14 @@ fn a_one_of_adds_no_combination() {
     );
 }
 
-/// The brain of the example takes a `one_of`: a join through the scope can
+/// The brain of the example takes an `any_of`: a join through the scope can
 /// add it, so the launch needs one complete set, and the refusal names every
 /// set, the instance, the option and the instance whose scope offers it.
 #[test]
 fn the_example_needs_one_set_of_the_brain_that_a_join_can_add() {
     let prepared = load(
         &Demo {
-            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, BRAIN_ONE_OF),
+            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, BRAIN_ANY_OF),
             ..Demo::default()
         }
         .document(),

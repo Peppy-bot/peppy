@@ -109,7 +109,7 @@ pub struct TrialCopy {
 
 impl TrialCopy {
     /// The needs of each instance of the copy that takes launch variables,
-    /// one for each variable of its list or one for its `one_of`, the
+    /// one for each variable of its list or one for its `any_of`, the
     /// instance named by its id in the copy, which every copy of the option
     /// shares, and started by `starter`.
     pub fn variable_needs(&self, starter: &Starter) -> VariableNeeds {

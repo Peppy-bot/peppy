@@ -1,14 +1,14 @@
 //! Launch variables: the environment variables that an instance takes from
 //! the environment of the launch, by name. A launcher names them in the
 //! `env_from_launch` of an instance and with a `set_env_from_launch`
-//! adjustment, so no launcher file holds a value: a list, or a `one_of` of
+//! adjustment, so no launcher file holds a value: a list, or an `any_of` of
 //! sets ([`LaunchVariables`]).
 //!
 //! A launch and a join parse the environment that the CLI forwarded with
 //! them against the launch variables of the launcher ([`ForwardedEnv`]): the
 //! value of a launch variable reaches the run of each instance that takes it,
 //! and no other node, add or build. An instance takes each variable of its
-//! list, or the variables of the first set of its `one_of` that the
+//! list, or the variables of the first set of its `any_of` that the
 //! environment of the change holds complete. The daemon keeps, in memory,
 //! the values of the launch ([`LaunchValues`]), and a join gives each
 //! instance that it starts the kept value of each variable that the instance
@@ -16,9 +16,9 @@
 //! environment, then the kept values, for a set as for a value. The launch
 //! is refused when an instance that the launch or a join through a
 //! `robot_membership` scope can start takes a variable that the forwarded
-//! environment of the launch does not hold, or a `one_of` none of whose sets
+//! environment of the launch does not hold, or an `any_of` none of whose sets
 //! it holds complete, and a join when an instance that it starts takes a
-//! variable or a `one_of` that neither its own forwarded environment nor the
+//! variable or an `any_of` that neither its own forwarded environment nor the
 //! kept values hold, or hold complete ([`VariableNeeds::check`]).
 //! An instance with launch variables runs on the coordinator's machine only
 //! ([`refuse_peer_placements`]).
@@ -79,32 +79,32 @@ pub struct RepeatedLaunchVariable {
     pub variable: LaunchVariable,
 }
 
-/// A `one_of` that names no set an instance can take, or a set that is never
+/// An `any_of` that names no set an instance can take, or a set that is never
 /// chosen. Each message names the set by its place in the list, from 1.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum BrokenOneOf {
+pub enum BrokenAnyOf {
     #[error(
-        "`one_of` names no set; an instance that takes no variable from the launch writes `[]`"
+        "`any_of` names no set; an instance that takes no variable from the launch writes `[]`"
     )]
     NoSet,
-    #[error("`one_of` names one set; write that set as a list")]
+    #[error("`any_of` names one set; write that set as a list")]
     OneSet,
-    #[error("set {set} of `one_of` is empty; each set names at least one variable")]
+    #[error("set {set} of `any_of` is empty; each set names at least one variable")]
     EmptySet { set: usize },
-    #[error("set {set} of `one_of` names `{variable}` two times; a set names each variable once")]
+    #[error("set {set} of `any_of` names `{variable}` two times; a set names each variable once")]
     RepeatedInSet {
         set: usize,
         variable: LaunchVariable,
     },
     #[error(
-        "set {later} of `one_of` holds every variable of set {earlier}, which comes before it, so \
+        "set {later} of `any_of` holds every variable of set {earlier}, which comes before it, so \
          it is never chosen; take it out, or put it before set {earlier}"
     )]
     NeverChosen { earlier: usize, later: usize },
 }
 
-/// The key of the `one_of` form of a list of launch variables.
-const ONE_OF: &str = "one_of";
+/// The key of the `any_of` form of a list of launch variables.
+const ANY_OF: &str = "any_of";
 
 /// The variables that one instance takes from the launch environment, in one
 /// of two forms.
@@ -114,11 +114,11 @@ const ONE_OF: &str = "one_of";
 /// are the same, and a list writes back in name order. An empty list is the
 /// same as no list.
 ///
-/// A `one_of`, `{ one_of: [["A", "B"], ["C"]] }`, names two sets or more, in
+/// An `any_of`, `{ any_of: [["A", "B"], ["C"]] }`, names two sets or more, in
 /// order: of these, [`Self::taken`] gives the first set that the environment
 /// holds complete. A name can be in several sets. Each set writes back in
 /// name order, and the sets in the order written. The parse refuses a
-/// `one_of` that [`BrokenOneOf`] names.
+/// `any_of` that [`BrokenAnyOf`] names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaunchVariables(Form);
 
@@ -126,8 +126,8 @@ pub struct LaunchVariables(Form);
 enum Form {
     /// A list: each variable is taken.
     Each(BTreeSet<LaunchVariable>),
-    /// A `one_of`: the first complete set is taken.
-    OneOf(Vec<BTreeSet<LaunchVariable>>),
+    /// An `any_of`: the first complete set is taken.
+    AnyOf(Vec<BTreeSet<LaunchVariable>>),
 }
 
 impl Default for Form {
@@ -160,32 +160,32 @@ impl TryFrom<Vec<LaunchVariable>> for LaunchVariables {
 }
 
 impl LaunchVariables {
-    /// The `one_of` of `written`, its sets in order: two sets or more, none
+    /// The `any_of` of `written`, its sets in order: two sets or more, none
     /// empty, each naming a variable once, and none holding every variable
     /// of a set before it, which would be complete first.
-    pub fn one_of(written: Vec<Vec<LaunchVariable>>) -> Result<Self, BrokenOneOf> {
+    pub fn any_of(written: Vec<Vec<LaunchVariable>>) -> Result<Self, BrokenAnyOf> {
         match written.len() {
-            0 => return Err(BrokenOneOf::NoSet),
-            1 => return Err(BrokenOneOf::OneSet),
+            0 => return Err(BrokenAnyOf::NoSet),
+            1 => return Err(BrokenAnyOf::OneSet),
             _ => {}
         }
         let mut sets: Vec<BTreeSet<LaunchVariable>> = Vec::with_capacity(written.len());
         for (index, variables) in written.into_iter().enumerate() {
             let set = index + 1;
             if variables.is_empty() {
-                return Err(BrokenOneOf::EmptySet { set });
+                return Err(BrokenAnyOf::EmptySet { set });
             }
             let variables = set_of(variables)
-                .map_err(|variable| BrokenOneOf::RepeatedInSet { set, variable })?;
+                .map_err(|variable| BrokenAnyOf::RepeatedInSet { set, variable })?;
             if let Some(earlier) = sets.iter().position(|before| before.is_subset(&variables)) {
-                return Err(BrokenOneOf::NeverChosen {
+                return Err(BrokenAnyOf::NeverChosen {
                     earlier: earlier + 1,
                     later: set,
                 });
             }
             sets.push(variables);
         }
-        Ok(Self(Form::OneOf(sets)))
+        Ok(Self(Form::AnyOf(sets)))
     }
 
     /// Whether the instance takes no variable: an empty list.
@@ -194,41 +194,41 @@ impl LaunchVariables {
     }
 
     /// Every variable that the instance can take, each once, in name order:
-    /// each variable of a list, or the variables of every set of a `one_of`.
+    /// each variable of a list, or the variables of every set of an `any_of`.
     pub fn iter(&self) -> impl Iterator<Item = &LaunchVariable> {
         let names: BTreeSet<&LaunchVariable> = match &self.0 {
             Form::Each(variables) => variables.iter().collect(),
-            Form::OneOf(sets) => sets.iter().flatten().collect(),
+            Form::AnyOf(sets) => sets.iter().flatten().collect(),
         };
         names.into_iter()
     }
 
     /// The variables that the instance takes each one of, in name order: the
-    /// variables of a list, and none for a `one_of`.
+    /// variables of a list, and none for an `any_of`.
     pub fn required(&self) -> impl Iterator<Item = &LaunchVariable> {
         let list = match &self.0 {
             Form::Each(variables) => Some(variables),
-            Form::OneOf(_) => None,
+            Form::AnyOf(_) => None,
         };
         list.into_iter().flatten()
     }
 
-    /// The sets of a `one_of`, in order, and none for a list.
+    /// The sets of an `any_of`, in order, and none for a list.
     pub fn sets(&self) -> &[BTreeSet<LaunchVariable>] {
         match &self.0 {
             Form::Each(_) => &[],
-            Form::OneOf(sets) => sets,
+            Form::AnyOf(sets) => sets,
         }
     }
 
     /// The variables that the instance takes, in name order, when `holds`
     /// tells which variables the environment holds: each variable of a list,
-    /// or the variables of the first set of a `one_of` that `holds` holds
+    /// or the variables of the first set of an `any_of` that `holds` holds
     /// complete, and none when no set is complete.
     pub fn taken(&self, holds: impl Fn(&str) -> bool) -> Vec<&LaunchVariable> {
         match &self.0 {
             Form::Each(variables) => variables.iter().collect(),
-            Form::OneOf(sets) => sets
+            Form::AnyOf(sets) => sets
                 .iter()
                 .find(|set| set.iter().all(|variable| holds(variable.as_str())))
                 .map_or_default(|set| set.iter().collect()),
@@ -236,11 +236,11 @@ impl LaunchVariables {
     }
 
     /// The variables as a message names them: a list as `` `A`, `B` ``, and
-    /// a `one_of` as "one set of `A` and `B`, or of `C`".
+    /// an `any_of` as "one set of `A` and `B`, or of `C`".
     pub fn describe(&self) -> String {
         match &self.0 {
             Form::Each(variables) => crate::error::format_quoted_list(variables),
-            Form::OneOf(sets) => {
+            Form::AnyOf(sets) => {
                 let sets: Vec<String> = sets
                     .iter()
                     .map(|set| quoted_series(&set.iter().collect::<Vec<_>>(), "and"))
@@ -262,16 +262,16 @@ impl LaunchVariables {
     }
 }
 
-/// A list writes as a list of names, and a `one_of` as an object with the
-/// one key `one_of`.
+/// A list writes as a list of names, and an `any_of` as an object with the
+/// one key `any_of`.
 impl Serialize for LaunchVariables {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         match &self.0 {
             Form::Each(variables) => serializer.collect_seq(variables),
-            Form::OneOf(sets) => {
+            Form::AnyOf(sets) => {
                 let mut map = serializer.serialize_map(Some(1))?;
-                map.serialize_entry(ONE_OF, sets)?;
+                map.serialize_entry(ANY_OF, sets)?;
                 map.end()
             }
         }
@@ -279,7 +279,7 @@ impl Serialize for LaunchVariables {
 }
 
 /// A list reads as [`LaunchVariables::try_from`], and an object as
-/// [`LaunchVariables::one_of`]. Each name is a [`LaunchVariable`], and every
+/// [`LaunchVariables::any_of`]. Each name is a [`LaunchVariable`], and every
 /// refusal keeps the text of its error.
 impl<'de> Deserialize<'de> for LaunchVariables {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -287,11 +287,11 @@ impl<'de> Deserialize<'de> for LaunchVariables {
     }
 }
 
-/// The object form as it is written: the key `one_of` and no other.
+/// The object form as it is written: the key `any_of` and no other.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WrittenOneOf {
-    one_of: Vec<Vec<LaunchVariable>>,
+struct WrittenAnyOf {
+    any_of: Vec<Vec<LaunchVariable>>,
 }
 
 struct LaunchVariablesVisitor;
@@ -300,7 +300,7 @@ impl<'de> serde::de::Visitor<'de> for LaunchVariablesVisitor {
     type Value = LaunchVariables;
 
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a list of variable names, or an object `{ one_of: [[...], [...]] }`")
+        f.write_str("a list of variable names, or an object `{ any_of: [[...], [...]] }`")
     }
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
@@ -310,9 +310,9 @@ impl<'de> serde::de::Visitor<'de> for LaunchVariablesVisitor {
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-        let WrittenOneOf { one_of } =
-            WrittenOneOf::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-        LaunchVariables::one_of(one_of).map_err(serde::de::Error::custom)
+        let WrittenAnyOf { any_of } =
+            WrittenAnyOf::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+        LaunchVariables::any_of(any_of).map_err(serde::de::Error::custom)
     }
 }
 
@@ -430,7 +430,7 @@ pub struct VariableNeed {
 
 impl VariableNeed {
     /// One need for each variable of the list of `instance`, `instance` named
-    /// `shown`. A `one_of` is a [`ChoiceNeed`].
+    /// `shown`. An `any_of` is a [`ChoiceNeed`].
     pub fn each_of<'a>(
         shown: &'a str,
         instance: &'a DeploymentInstance,
@@ -455,11 +455,11 @@ impl std::fmt::Display for VariableNeed {
     }
 }
 
-/// One instance that takes the first complete set of a `one_of`, and what
+/// One instance that takes the first complete set of an `any_of`, and what
 /// can start it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChoiceNeed {
-    /// The `one_of` that the instance takes a set of.
+    /// The `any_of` that the instance takes a set of.
     pub variables: LaunchVariables,
     /// The instance: its id in the stack, or its id in the copy for an
     /// instance of a copy that a join through a scope can add.
@@ -468,7 +468,7 @@ pub struct ChoiceNeed {
 }
 
 impl ChoiceNeed {
-    /// The need of `instance`, named `shown`, when it takes a `one_of`.
+    /// The need of `instance`, named `shown`, when it takes an `any_of`.
     pub fn of(shown: &str, instance: &DeploymentInstance, starter: &Starter) -> Option<Self> {
         (!instance.env_from_launch.sets().is_empty()).then(|| Self {
             variables: instance.env_from_launch.clone(),
@@ -539,7 +539,7 @@ fn quoted_series<T: std::fmt::Display>(items: &[T], word: &str) -> String {
 
 /// The instances that take launch variables, each with what can start it:
 /// one entry per variable of a list ([`VariableNeed`]), and one per
-/// `one_of` ([`ChoiceNeed`]).
+/// `any_of` ([`ChoiceNeed`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VariableNeeds {
     variables: Vec<VariableNeed>,
@@ -639,13 +639,13 @@ impl VariableNeeds {
         add_need(&mut self.variables, need);
     }
 
-    /// Adds the need of a `one_of`, as [`add_need`] says.
+    /// Adds the need of an `any_of`, as [`add_need`] says.
     pub fn add_choice(&mut self, need: ChoiceNeed) {
         add_need(&mut self.choices, need);
     }
 
     /// Adds the needs of `instance`, named `shown`, started by `starter`: one
-    /// for each variable of its list, or one for its `one_of`.
+    /// for each variable of its list, or one for its `any_of`.
     pub fn add_instance(&mut self, shown: &str, instance: &DeploymentInstance, starter: &Starter) {
         self.extend(VariableNeed::each_of(shown, instance, starter));
         if let Some(choice) = ChoiceNeed::of(shown, instance, starter) {
@@ -660,7 +660,7 @@ impl VariableNeeds {
         }
     }
 
-    /// Adds every need of `other`, of a variable and of a `one_of`.
+    /// Adds every need of `other`, of a variable and of an `any_of`.
     pub fn merge(&mut self, other: Self) {
         self.extend(other.variables);
         for choice in other.choices {
@@ -677,7 +677,7 @@ impl VariableNeeds {
         self.variables.iter()
     }
 
-    /// The needs of `one_of`s.
+    /// The needs of `any_of`s.
     pub fn choices(&self) -> impl Iterator<Item = &ChoiceNeed> {
         self.choices.iter()
     }
@@ -699,7 +699,7 @@ impl VariableNeeds {
             .collect()
     }
 
-    /// Each `one_of` of these needs, in the order it is first added, with
+    /// Each `any_of` of these needs, in the order it is first added, with
     /// each instance that takes a set of it and what can start that
     /// instance, as one clause.
     pub fn choice_reasons(&self) -> Vec<(LaunchVariables, String)> {
@@ -721,7 +721,7 @@ impl VariableNeeds {
 
     /// The refusal of `change` when a variable of a list of these needs is
     /// one that `holds` does not hold, or when `holds` holds no set of a
-    /// `one_of` complete: it names each such variable and `one_of`, each
+    /// `any_of` complete: it names each such variable and `any_of`, each
     /// instance that needs it and what can start that instance.
     pub fn check(
         &self,
@@ -768,7 +768,7 @@ impl std::fmt::Display for VariableChange {
 }
 
 /// A launch or a join refused because one of its instances takes a launch
-/// variable that its environment does not hold, or a `one_of` none of whose
+/// variable that its environment does not hold, or an `any_of` none of whose
 /// sets its environment holds complete. The CLI does not forward a value
 /// with characters that a node cannot receive, and the daemon counts an
 /// empty value as no value, so the refusal also names these causes.
@@ -778,7 +778,7 @@ pub struct MissingLaunchVariables {
     /// Each missing variable of a list, with what needs it
     /// ([`VariableNeeds::reasons`]).
     missing: BTreeMap<LaunchVariable, String>,
-    /// Each `one_of` with no complete set, with what needs it
+    /// Each `any_of` with no complete set, with what needs it
     /// ([`VariableNeeds::choice_reasons`]).
     unmet: Vec<(LaunchVariables, String)>,
 }
@@ -798,7 +798,7 @@ impl MissingLaunchVariables {
         }
     }
 
-    /// The refusal of one `one_of` and no missing variable of a list.
+    /// The refusal of one `any_of` and no missing variable of a list.
     fn write_one_choice(
         &self,
         f: &mut std::fmt::Formatter<'_>,
@@ -825,7 +825,7 @@ impl MissingLaunchVariables {
         )
     }
 
-    /// The refusal of several `one_of`s, or of `one_of`s and missing
+    /// The refusal of several `any_of`s, or of `any_of`s and missing
     /// variables of lists: one line each.
     fn write_several(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let environment = match self.change {
@@ -1456,14 +1456,14 @@ mod tests {
         );
     }
 
-    /// The `one_of` of the hosted brain: the API's two variables, else the
+    /// The `any_of` of the hosted brain: the API's two variables, else the
     /// key of the provider.
-    const BRAIN_ONE_OF: &str = r#"{ one_of: [
+    const BRAIN_ANY_OF: &str = r#"{ any_of: [
         ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_API_BASE"],
         ["GEMINI_API_KEY"],
     ] }"#;
 
-    fn one_of(written: &str) -> LaunchVariables {
+    fn any_of(written: &str) -> LaunchVariables {
         serde_json5::from_str(written).expect(written)
     }
 
@@ -1471,13 +1471,13 @@ mod tests {
         variables.into_iter().map(LaunchVariable::as_str).collect()
     }
 
-    /// A `one_of` keeps its sets in the order written, each set in name
-    /// order, and writes back as an object with the one key `one_of`. Every
+    /// An `any_of` keeps its sets in the order written, each set in name
+    /// order, and writes back as an object with the one key `any_of`. Every
     /// name of every set is a variable that the instance can take, and none
     /// is one that it takes each time.
     #[test]
-    fn a_one_of_keeps_its_sets_in_order_and_writes_back_as_an_object() {
-        let parsed = one_of(BRAIN_ONE_OF);
+    fn an_any_of_keeps_its_sets_in_order_and_writes_back_as_an_object() {
+        let parsed = any_of(BRAIN_ANY_OF);
         assert_eq!(
             parsed.sets().iter().map(names).collect::<Vec<_>>(),
             [
@@ -1487,7 +1487,7 @@ mod tests {
         );
         assert_eq!(
             serde_json5::to_string(&parsed).unwrap(),
-            r#"{"one_of":[["OPENAI_COMPATIBLE_API_BASE","OPENAI_COMPATIBLE_API_KEY"],["GEMINI_API_KEY"]]}"#
+            r#"{"any_of":[["OPENAI_COMPATIBLE_API_BASE","OPENAI_COMPATIBLE_API_KEY"],["GEMINI_API_KEY"]]}"#
         );
         assert_eq!(
             serde_json5::from_str::<LaunchVariables>(&serde_json5::to_string(&parsed).unwrap())
@@ -1509,16 +1509,16 @@ mod tests {
         assert!(list.sets().is_empty());
     }
 
-    /// The same sets in another order are another `one_of`, and a `one_of`
+    /// The same sets in another order are another `any_of`, and an `any_of`
     /// is never the list of its names.
     #[test]
-    fn the_order_of_the_sets_is_part_of_a_one_of() {
-        let first = one_of(r#"{ one_of: [["A_KEY"], ["B_KEY"]] }"#);
-        let second = one_of(r#"{ one_of: [["B_KEY"], ["A_KEY"]] }"#);
+    fn the_order_of_the_sets_is_part_of_an_any_of() {
+        let first = any_of(r#"{ any_of: [["A_KEY"], ["B_KEY"]] }"#);
+        let second = any_of(r#"{ any_of: [["B_KEY"], ["A_KEY"]] }"#);
         let list: LaunchVariables = serde_json5::from_str(r#"["A_KEY", "B_KEY"]"#).unwrap();
         assert_ne!(first, second);
         assert_ne!(first, list);
-        assert_eq!(first, one_of(r#"{ one_of: [["A_KEY"], ["B_KEY"]] }"#));
+        assert_eq!(first, any_of(r#"{ any_of: [["A_KEY"], ["B_KEY"]] }"#));
     }
 
     /// A name can be in several sets, and a set after a larger one that holds
@@ -1526,59 +1526,59 @@ mod tests {
     #[test]
     fn a_name_can_be_in_several_sets() {
         let shared =
-            one_of(r#"{ one_of: [["TOOL_KEY", "A_KEY", "B_KEY"], ["TOOL_KEY", "C_KEY"]] }"#);
+            any_of(r#"{ any_of: [["TOOL_KEY", "A_KEY", "B_KEY"], ["TOOL_KEY", "C_KEY"]] }"#);
         assert_eq!(
             names(shared.iter()),
             ["A_KEY", "B_KEY", "C_KEY", "TOOL_KEY"]
         );
-        one_of(r#"{ one_of: [["A_KEY", "B_KEY"], ["A_KEY"]] }"#);
+        any_of(r#"{ any_of: [["A_KEY", "B_KEY"], ["A_KEY"]] }"#);
     }
 
-    /// Each `one_of` that an instance cannot use is refused at the parse, and
+    /// Each `any_of` that an instance cannot use is refused at the parse, and
     /// the message names the set by its place, from 1.
     #[test]
-    fn a_broken_one_of_is_refused_naming_the_set() {
+    fn a_broken_any_of_is_refused_naming_the_set() {
         for (written, expected) in [
             (
-                r"{ one_of: [] }",
-                "`one_of` names no set; an instance that takes no variable from the launch \
+                r"{ any_of: [] }",
+                "`any_of` names no set; an instance that takes no variable from the launch \
                  writes `[]`",
             ),
             (
-                r#"{ one_of: [["A_KEY"]] }"#,
-                "`one_of` names one set; write that set as a list",
+                r#"{ any_of: [["A_KEY"]] }"#,
+                "`any_of` names one set; write that set as a list",
             ),
             (
-                r#"{ one_of: [["A_KEY"], []] }"#,
-                "set 2 of `one_of` is empty; each set names at least one variable",
+                r#"{ any_of: [["A_KEY"], []] }"#,
+                "set 2 of `any_of` is empty; each set names at least one variable",
             ),
             (
-                r#"{ one_of: [["A_KEY", "B_KEY", "A_KEY"], ["C_KEY"]] }"#,
-                "set 1 of `one_of` names `A_KEY` two times; a set names each variable once",
+                r#"{ any_of: [["A_KEY", "B_KEY", "A_KEY"], ["C_KEY"]] }"#,
+                "set 1 of `any_of` names `A_KEY` two times; a set names each variable once",
             ),
             (
-                r#"{ one_of: [["A_KEY"], ["B_KEY", "A_KEY"]] }"#,
-                "set 2 of `one_of` holds every variable of set 1, which comes before it, so it \
+                r#"{ any_of: [["A_KEY"], ["B_KEY", "A_KEY"]] }"#,
+                "set 2 of `any_of` holds every variable of set 1, which comes before it, so it \
                  is never chosen; take it out, or put it before set 1",
             ),
             (
-                r#"{ one_of: [["C_KEY"], ["A_KEY", "B_KEY"], ["B_KEY", "A_KEY"]] }"#,
-                "set 3 of `one_of` holds every variable of set 2, which comes before it, so it \
+                r#"{ any_of: [["C_KEY"], ["A_KEY", "B_KEY"], ["B_KEY", "A_KEY"]] }"#,
+                "set 3 of `any_of` holds every variable of set 2, which comes before it, so it \
                  is never chosen; take it out, or put it before set 2",
             ),
             (
-                r#"{ one_of: [["has-dash"], ["B_KEY"]] }"#,
+                r#"{ any_of: [["has-dash"], ["B_KEY"]] }"#,
                 "`has-dash` is not a valid shell identifier",
             ),
             (
-                r#"{ one_of: [["TMPDIR"], ["B_KEY"]] }"#,
+                r#"{ any_of: [["TMPDIR"], ["B_KEY"]] }"#,
                 "`TMPDIR` is never forwarded by the CLI",
             ),
             (
-                r#"{ one_of: [["A_KEY"], ["B_KEY"]], all: ["C_KEY"] }"#,
+                r#"{ any_of: [["A_KEY"], ["B_KEY"]], all: ["C_KEY"] }"#,
                 "unknown field `all`",
             ),
-            (r"{}", "missing field `one_of`"),
+            (r"{}", "missing field `any_of`"),
             (r#""A_KEY""#, "a list of variable names, or an object"),
         ] {
             let error = serde_json5::from_str::<LaunchVariables>(written)
@@ -1589,10 +1589,10 @@ mod tests {
     }
 
     /// The variables taken: each one of a list whatever the environment
-    /// holds, and of a `one_of` the first complete set alone, or none.
+    /// holds, and of an `any_of` the first complete set alone, or none.
     #[test]
     fn the_first_complete_set_is_taken() {
-        let brain = one_of(BRAIN_ONE_OF);
+        let brain = any_of(BRAIN_ANY_OF);
         let holding = |held: &'static [&'static str]| move |name: &str| held.contains(&name);
         let api = ["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"];
         for (held, expected) in [
@@ -1622,39 +1622,39 @@ mod tests {
         assert_eq!(names(list.taken(|_| false)), ["A_KEY", "B_KEY"]);
     }
 
-    /// A message names a list as today, and a `one_of` set by set.
+    /// A message names a list as today, and an `any_of` set by set.
     #[test]
-    fn a_message_names_a_list_and_each_set_of_a_one_of() {
+    fn a_message_names_a_list_and_each_set_of_an_any_of() {
         let list: LaunchVariables = serde_json5::from_str(r#"["B_KEY", "A_KEY"]"#).unwrap();
         assert_eq!(list.describe(), "`A_KEY`, `B_KEY`");
         assert_eq!(
-            one_of(BRAIN_ONE_OF).describe(),
+            any_of(BRAIN_ANY_OF).describe(),
             "one set of `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, or of \
              `GEMINI_API_KEY`"
         );
         assert_eq!(
-            one_of(r#"{ one_of: [["A_KEY", "B_KEY", "C_KEY"], ["D_KEY"], ["E_KEY"]] }"#).describe(),
+            any_of(r#"{ any_of: [["A_KEY", "B_KEY", "C_KEY"], ["D_KEY"], ["E_KEY"]] }"#).describe(),
             "one set of `A_KEY`, `B_KEY` and `C_KEY`, or of `D_KEY`, or of `E_KEY`"
         );
     }
 
-    /// A name of any set of a `one_of` that `env_vars` also gives is found:
+    /// A name of any set of an `any_of` that `env_vars` also gives is found:
     /// whichever set is taken, no variable gets two values.
     #[test]
     fn a_name_of_any_set_that_env_vars_also_gives_is_found() {
         let env_vars = BTreeMap::from([("GEMINI_API_KEY".to_owned(), "x".to_owned())]);
         assert_eq!(
-            names(one_of(BRAIN_ONE_OF).given_in(&env_vars)),
+            names(any_of(BRAIN_ANY_OF).given_in(&env_vars)),
             ["GEMINI_API_KEY"]
         );
     }
 
-    /// An instance with a `one_of` on a peer is refused, and the refusal
+    /// An instance with an `any_of` on a peer is refused, and the refusal
     /// names its sets.
     #[test]
-    fn an_instance_with_a_one_of_is_refused_on_a_peer() {
+    fn an_instance_with_an_any_of_is_refused_on_a_peer() {
         let mut brain = DeploymentInstance::empty(name("brain_inst"));
-        brain.env_from_launch = one_of(BRAIN_ONE_OF);
+        brain.env_from_launch = any_of(BRAIN_ANY_OF);
         let placements = Placements::new(
             CoreNodeName::new("coordinator").unwrap(),
             BTreeMap::from([(
@@ -1674,10 +1674,10 @@ mod tests {
         );
     }
 
-    /// The need of an instance that takes the `one_of` of the hosted brain.
+    /// The need of an instance that takes the `any_of` of the hosted brain.
     fn choice(instance: &str, starter: Starter) -> ChoiceNeed {
         ChoiceNeed {
-            variables: one_of(BRAIN_ONE_OF),
+            variables: any_of(BRAIN_ANY_OF),
             instance: instance.to_owned(),
             starter,
         }
@@ -1692,11 +1692,11 @@ mod tests {
     }
 
     /// The needs of an instance: one per variable of a list, or one for a
-    /// `one_of`, which no variable need stands for.
+    /// `any_of`, which no variable need stands for.
     #[test]
-    fn an_instance_with_a_one_of_needs_a_set_and_no_variable() {
+    fn an_instance_with_an_any_of_needs_a_set_and_no_variable() {
         let mut brain = DeploymentInstance::empty(name("brain_inst"));
-        brain.env_from_launch = one_of(BRAIN_ONE_OF);
+        brain.env_from_launch = any_of(BRAIN_ANY_OF);
         let mut needs = VariableNeeds::default();
         needs.add_instance("brain_inst", &brain, &Starter::Launch);
         assert_eq!(needs.iter().count(), 0);
@@ -1707,8 +1707,8 @@ mod tests {
         assert!(!needs.is_empty());
     }
 
-    /// The needs of a `one_of` merge their scopes and features as the needs
-    /// of a variable do, and another `one_of` is another need.
+    /// The needs of an `any_of` merge their scopes and features as the needs
+    /// of a variable do, and another `any_of` is another need.
     #[test]
     fn a_scoped_choice_keeps_its_smallest_feature_sets_and_every_scope() {
         let mut needs = VariableNeeds::default();
@@ -1728,7 +1728,7 @@ mod tests {
             "brain_inst",
             scoped_starter(&["router"], &["controls_inst"]),
         );
-        other.variables = one_of(r#"{ one_of: [["A_KEY"], ["B_KEY"]] }"#);
+        other.variables = any_of(r#"{ any_of: [["A_KEY"], ["B_KEY"]] }"#);
         needs.add_choice(other.clone());
 
         assert_eq!(
@@ -1743,13 +1743,13 @@ mod tests {
         );
     }
 
-    /// The needs of the same `one_of` are one group, in the order added.
+    /// The needs of the same `any_of` are one group, in the order added.
     #[test]
-    fn the_choice_reasons_group_the_needs_by_one_of() {
+    fn the_choice_reasons_group_the_needs_by_any_of() {
         let mut needs = VariableNeeds::default();
         needs.add_choice(choice("alpha_brain_inst", Starter::Launch));
         let mut other = choice("tool_inst", Starter::Launch);
-        other.variables = one_of(r#"{ one_of: [["A_KEY"], ["B_KEY"]] }"#);
+        other.variables = any_of(r#"{ any_of: [["A_KEY"], ["B_KEY"]] }"#);
         needs.add_choice(other);
         needs.add_choice(choice(
             "brain_inst",
@@ -1784,10 +1784,10 @@ mod tests {
         );
     }
 
-    /// A `one_of` passes the check when one set is complete, and fails it
+    /// An `any_of` passes the check when one set is complete, and fails it
     /// when each set misses a variable.
     #[test]
-    fn a_one_of_passes_the_check_with_one_complete_set() {
+    fn an_any_of_passes_the_check_with_one_complete_set() {
         let mut needs = VariableNeeds::default();
         needs.add_choice(choice("brain_inst", Starter::Launch));
         for held in [
@@ -1805,10 +1805,10 @@ mod tests {
         }
     }
 
-    /// The refusal of one `one_of` names every set, each instance that takes
+    /// The refusal of one `any_of` names every set, each instance that takes
     /// one and what starts it, in the launch and in the join.
     #[test]
-    fn the_refusal_of_one_one_of_names_every_set() {
+    fn the_refusal_of_one_any_of_names_every_set() {
         let mut needs = VariableNeeds::default();
         needs.add_choice(choice("brain_inst", Starter::Launch));
         assert_eq!(
@@ -1843,10 +1843,10 @@ mod tests {
         );
     }
 
-    /// A missing variable of a list and a `one_of` with no complete set are
+    /// A missing variable of a list and an `any_of` with no complete set are
     /// one refusal, one line each.
     #[test]
-    fn a_missing_variable_and_an_unmet_one_of_are_one_refusal() {
+    fn a_missing_variable_and_an_unmet_any_of_are_one_refusal() {
         let mut needs = VariableNeeds::default();
         needs.add(VariableNeed {
             variable: variable("TOOL_KEY"),
@@ -1872,7 +1872,7 @@ mod tests {
         let mut two = VariableNeeds::default();
         two.add_choice(choice("brain_inst", Starter::Launch));
         let mut other = choice("tool_inst", Starter::Launch);
-        other.variables = one_of(r#"{ one_of: [["A_KEY"], ["B_KEY"]] }"#);
+        other.variables = any_of(r#"{ any_of: [["A_KEY"], ["B_KEY"]] }"#);
         two.add_choice(other);
         let refusal = two
             .check(VariableChange::Launch, |_| false)

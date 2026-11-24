@@ -53,7 +53,7 @@ impl Fleet {
     }
 
     /// The fleet of [`Self::write`], whose brain takes `brain_variables`
-    /// from the launch: a list or a `one_of`, as `env_from_launch` writes it.
+    /// from the launch: a list or an `any_of`, as `env_from_launch` writes it.
     fn write_with_brain(started: &StartedCoreNode, brain_variables: &str) -> Self {
         let directory = tempdir().unwrap();
         let probes = directory.path().join("probes");
@@ -503,18 +503,18 @@ async fn a_new_launch_after_a_reset_gives_its_own_value() {
     );
 }
 
-/// A brain that takes a `one_of`, the set of `OTHER_KEY` and `TOOL_KEY`,
+/// A brain that takes an `any_of`, the set of `OTHER_KEY` and `TOOL_KEY`,
 /// else `PROBE_KEY`: a launch that holds no set complete is refused before
 /// it builds anything, naming every set. A launch that holds both sets
 /// keeps them, and a join through the scope, which forwards nothing, gives
 /// the run of the brain the first set alone, and not the variable of the
 /// second.
 #[tokio::test]
-async fn a_join_through_the_scope_gives_the_brain_the_first_complete_set_of_its_one_of() {
+async fn a_join_through_the_scope_gives_the_brain_the_first_complete_set_of_its_any_of() {
     let started = start_core_node_with_mock_messenger().await;
     let fleet = Fleet::write_with_brain(
         &started,
-        &format!(r#"{{ one_of: [["{OTHER}", "{TOOL_KEY}"], ["{KEY}"]] }}"#),
+        &format!(r#"{{ any_of: [["{OTHER}", "{TOOL_KEY}"], ["{KEY}"]] }}"#),
     );
     let mut responders = answer_readiness(&started, "manager", MANAGER).await;
     responders.extend(answer_readiness(&started, "brain_probe", "alpha_brain_inst").await);
