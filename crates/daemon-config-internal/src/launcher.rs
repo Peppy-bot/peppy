@@ -32,9 +32,10 @@ pub use daemon_scopes::{
 };
 pub use joinable::{Joinable, JoinableNode, JoinableNodes};
 pub use launch_variables::{
-    ForwardedEnv, LaunchValues, LaunchVariable, LaunchVariables, MissingLaunchVariables,
-    RepeatedLaunchVariable, Starter, VariableChange, VariableGivenTwoValues, VariableNeed,
-    VariableNeeds, VariablesGivenTwoValues, refuse_peer_placements,
+    BrokenOneOf, ForwardedEnv, LaunchValues, LaunchVariable, LaunchVariables,
+    MissingLaunchVariables, RepeatedLaunchVariable, Starter, VariableChange,
+    VariableGivenTwoValues, VariableNeed, VariableNeeds, VariablesGivenTwoValues,
+    refuse_peer_placements,
 };
 pub use links::validate_link_plan;
 pub use observations::PlannedObservation;

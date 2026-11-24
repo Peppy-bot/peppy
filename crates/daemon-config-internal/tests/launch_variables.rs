@@ -7,7 +7,7 @@ use daemon_config::launcher::{
     AppliedChange, CompositionError, CopyMembership, Deployment, DeploymentInstance,
     DeploymentSource, DeploymentTargets, JoinRequest, Joinable, LaunchVariable, PeppyLauncher,
     PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck, Starter, VariableChange,
-    VariableNeed, check_daemon_scopes,
+    VariableNeed, check_composition, check_daemon_scopes,
 };
 use std::assert_matches;
 use std::path::Path;
@@ -770,4 +770,198 @@ fn set_env_from_launch_refuses_a_name_the_launch_environment_cannot_give() {
             "{list}: {refusal}"
         );
     }
+}
+
+// -- one_of --------------------------------------------------------------
+
+/// The `one_of` of the hosted brain: the two variables of an
+/// OpenAI-compatible API, else the key of the provider.
+const BRAIN_ONE_OF: &str = r#"{ one_of: [
+    ["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"],
+    ["GEMINI_API_KEY"],
+] }"#;
+
+/// A `one_of` parses on an instance and in an adjustment, and a broken one
+/// is refused naming the instance or the adjustment, and the set.
+#[test]
+fn a_one_of_is_held_to_its_rules_on_an_instance_and_in_an_adjustment() {
+    let flat = PeppyLauncherParser::from_content(&flat_with(BRAIN_ONE_OF)).expect("parses");
+    assert_eq!(
+        names(instance(&flat, "brain_inst")),
+        [
+            "GEMINI_API_KEY",
+            "OPENAI_COMPATIBLE_API_BASE",
+            "OPENAI_COMPATIBLE_API_KEY"
+        ]
+    );
+    for (written, expected) in [
+        (r#"{ one_of: [["A_KEY"]] }"#, "`one_of` names one set"),
+        (
+            r#"{ one_of: [["A_KEY"], []] }"#,
+            "set 2 of `one_of` is empty",
+        ),
+        (
+            r#"{ one_of: [["A_KEY", "A_KEY"], ["B_KEY"]] }"#,
+            "set 1 of `one_of` names `A_KEY` two times",
+        ),
+        (
+            r#"{ one_of: [["A_KEY"], ["A_KEY", "B_KEY"]] }"#,
+            "set 2 of `one_of` holds every variable of set 1",
+        ),
+        (
+            r#"{ one_of: [["PWD"], ["B_KEY"]] }"#,
+            "`PWD` is never forwarded by the CLI",
+        ),
+    ] {
+        let refusal = PeppyLauncherParser::from_content(&flat_with(written))
+            .expect_err(written)
+            .to_string();
+        assert!(
+            refusal.contains("instance `brain_inst`: ") && refusal.contains(expected),
+            "{written}: {refusal}"
+        );
+        let adjustment = format!(r#"{{ target: "brain_inst", set_env_from_launch: {written} }},"#);
+        let document = Demo {
+            adjustments: &adjustment,
+            ..Demo::default()
+        }
+        .document();
+        let refusal = PeppyLauncherParser::from_content(&document)
+            .expect_err(written)
+            .to_string();
+        assert!(
+            refusal.contains("adjustments[1].set_env_from_launch") && refusal.contains(expected),
+            "{written}: {refusal}"
+        );
+    }
+}
+
+/// A name of any set of a `one_of` that `env_vars` also gives is refused,
+/// as a name of a list is: whichever set is taken, no variable gets two
+/// values.
+#[test]
+fn a_name_of_a_one_of_that_env_vars_also_gives_is_refused() {
+    let document = flat_with(BRAIN_ONE_OF).replace(
+        r#"instance_id: "brain_inst","#,
+        r#"instance_id: "brain_inst", env_vars: { GEMINI_API_KEY: "a" },"#,
+    );
+    let refusal = PeppyLauncherParser::from_content(&document)
+        .expect_err("two values")
+        .to_string();
+    assert!(
+        refusal.contains(
+            "instance `brain_inst` takes `GEMINI_API_KEY` from the launch in `env_from_launch` \
+             and gives it a value in `env_vars`"
+        ),
+        "{refusal}"
+    );
+}
+
+/// `set_env_from_launch` with a `one_of` replaces the list of its target,
+/// the report gives the list before and the `one_of` after, and the flat
+/// file writes the `one_of` back.
+#[test]
+fn set_env_from_launch_with_a_one_of_replaces_the_list() {
+    let adjustment = format!(r#"{{ target: "brain_inst", set_env_from_launch: {BRAIN_ONE_OF} }},"#);
+    let prepared = load(
+        &Demo {
+            adjustments: &adjustment,
+            ..Demo::default()
+        }
+        .document(),
+    );
+    let composed = prepared
+        .launch(&[], &["demo_arm:alpha".parse().unwrap()])
+        .expect("composes");
+    let brain = instance(&composed.launcher, "alpha_brain_inst");
+    assert_eq!(brain.env_from_launch.required().count(), 0);
+    assert_eq!(brain.env_from_launch.sets().len(), 2);
+    let rendered = composed.report.render_lines().join("\n");
+    assert!(
+        rendered.contains(
+            r#"alpha_brain_inst.env_from_launch: ["GEMINI_API_KEY"] -> {"one_of":[["OPENAI_COMPATIBLE_API_BASE","OPENAI_COMPATIBLE_API_KEY"],["GEMINI_API_KEY"]]}"#
+        ),
+        "{rendered}"
+    );
+    let printed = serde_json5::to_string(&composed.launcher).expect("serializes");
+    let reparsed = PeppyLauncherParser::from_content(&printed).expect("the flat file parses");
+    assert_eq!(
+        instance(&reparsed, "alpha_brain_inst").env_from_launch,
+        brain.env_from_launch
+    );
+}
+
+/// Every name of every set of a `one_of` is a launch variable of the
+/// launcher: the launch keeps its value, and no instance that does not name
+/// it gets it from the forwarded environment.
+#[test]
+fn every_name_of_every_set_is_a_launch_variable() {
+    let prepared = load(
+        &Demo {
+            brain: &BRAIN.replace(r#"["GEMINI_API_KEY"]"#, BRAIN_ONE_OF),
+            ..Demo::default()
+        }
+        .document(),
+    );
+    assert_eq!(
+        prepared
+            .launch_variable_names()
+            .iter()
+            .map(LaunchVariable::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "GEMINI_API_KEY",
+            "OPENAI_COMPATIBLE_API_BASE",
+            "OPENAI_COMPATIBLE_API_KEY"
+        ]
+    );
+}
+
+/// A launcher of fourteen axes of two options each, above the ceiling of
+/// the cross-combination check, whose one instance takes `variables`.
+fn fourteen_axes_with(variables: &str) -> String {
+    let axes: Vec<String> = (1..=14)
+        .map(|index| {
+            format!(
+                r#"{{ name: "axis_{index}", cardinality: "one", options: {{ a: {{}}, b: {{}} }} }}"#
+            )
+        })
+        .collect();
+    let deployments: Vec<String> = (1..=14)
+        .map(|index| format!(r#"{{ axis_{index}: "a" }}"#))
+        .collect();
+    format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            description: ["A launcher of fourteen axes."],
+            components: [{}],
+            deployments: [
+                {},
+                {{ source: {{ name: "brain", tag: "v1" }}, instances: [
+                    {{ instance_id: "brain_inst", env_from_launch: {variables} }} ] }},
+            ],
+        }}"#,
+        axes.join(", "),
+        deployments.join(", ")
+    )
+}
+
+/// A `one_of` adds no axis and no combination: the check of a launcher above
+/// the ceiling names the same count with a list as with a `one_of`.
+#[test]
+fn a_one_of_adds_no_combination() {
+    let count = |variables: &str| {
+        let launcher = PeppyLauncherParser::from_content(&fourteen_axes_with(variables))
+            .expect("the launcher parses");
+        check_composition(&launcher, Path::new("fourteen.json5"))
+    };
+    let with_list = count(r#"["GEMINI_API_KEY"]"#);
+    let with_one_of = count(BRAIN_ONE_OF);
+    assert_eq!(with_list, with_one_of);
+    assert!(
+        with_list
+            .iter()
+            .any(|problem| problem.contains("the selection space has 16384 combinations")),
+        "{with_list:?}"
+    );
 }

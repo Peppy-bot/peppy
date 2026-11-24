@@ -103,10 +103,10 @@ pub mod peppy_config {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        AlreadyPairedSlots, AppliedChange, AxisRole, BindingValidationItem, ClockIncarnations,
-        ComponentAxis, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport,
-        CopyInstance, CopyMembership, CopyRecord, DaemonScopeError, DaemonScopeRefusals,
-        Deployment, DeploymentInstance, DeploymentSource, DeploymentTargets,
+        AlreadyPairedSlots, AppliedChange, AxisRole, BindingValidationItem, BrokenOneOf,
+        ClockIncarnations, ComponentAxis, ComposedJoin, ComposedLaunch, CompositionError,
+        CompositionReport, CopyInstance, CopyMembership, CopyRecord, DaemonScopeError,
+        DaemonScopeRefusals, Deployment, DeploymentInstance, DeploymentSource, DeploymentTargets,
         ExternallyCoveredSlots, ForwardedEnv, FrameworkOverrides, JoinRequest, Joinable,
         JoinableNode, JoinableNodes, LaunchValues, LaunchVariable, LaunchVariables,
         LauncherFragmentParser, LinkTargets, LinkValue, MemberAddressing, MissingLaunchVariables,

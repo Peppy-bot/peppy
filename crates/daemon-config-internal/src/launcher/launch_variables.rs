@@ -1,7 +1,8 @@
 //! Launch variables: the environment variables that an instance takes from
 //! the environment of the launch, by name. A launcher names them in the
 //! `env_from_launch` of an instance and with a `set_env_from_launch`
-//! adjustment, so no launcher file holds a value.
+//! adjustment, so no launcher file holds a value: a list, or a `one_of` of
+//! sets ([`LaunchVariables`]).
 //!
 //! A launch and a join parse the environment that the CLI forwarded with
 //! them against the launch variables of the launcher ([`ForwardedEnv`]): the
@@ -73,54 +74,240 @@ pub struct RepeatedLaunchVariable {
     pub variable: LaunchVariable,
 }
 
-/// The variables that one instance takes from the launch environment, each
-/// once. They are a set: two lists that name the same variables in another
-/// order are the same, and a list writes back in name order. An empty list
-/// is the same as no list.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "Vec<LaunchVariable>", into = "Vec<LaunchVariable>")]
-pub struct LaunchVariables(BTreeSet<LaunchVariable>);
+/// A `one_of` that names no set an instance can take, or a set that is never
+/// chosen. Each message names the set by its place in the list, from 1.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BrokenOneOf {
+    #[error(
+        "`one_of` names no set; an instance that takes no variable from the launch writes `[]`"
+    )]
+    NoSet,
+    #[error("`one_of` names one set; write that set as a list")]
+    OneSet,
+    #[error("set {set} of `one_of` is empty; each set names at least one variable")]
+    EmptySet { set: usize },
+    #[error("set {set} of `one_of` names `{variable}` two times; a set names each variable once")]
+    RepeatedInSet {
+        set: usize,
+        variable: LaunchVariable,
+    },
+    #[error(
+        "set {later} of `one_of` holds every variable of set {earlier}, which comes before it, so \
+         it is never chosen; take it out, or put it before set {earlier}"
+    )]
+    NeverChosen { earlier: usize, later: usize },
+}
+
+/// The key of the `one_of` form of a list of launch variables.
+const ONE_OF: &str = "one_of";
+
+/// The variables that one instance takes from the launch environment, in one
+/// of two forms.
+///
+/// A list, `["A", "B"]`, names variables that the instance takes each one
+/// of. It is a set: two lists that name the same variables in another order
+/// are the same, and a list writes back in name order. An empty list is the
+/// same as no list.
+///
+/// A `one_of`, `{ one_of: [["A", "B"], ["C"]] }`, names two sets or more, in
+/// order: of these, [`Self::taken`] gives the first set that the environment
+/// holds complete. A name can be in several sets. Each set writes back in
+/// name order, and the sets in the order written. The parse refuses a
+/// `one_of` that [`BrokenOneOf`] names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaunchVariables(Form);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Form {
+    /// A list: each variable is taken.
+    Each(BTreeSet<LaunchVariable>),
+    /// A `one_of`: the first complete set is taken.
+    OneOf(Vec<BTreeSet<LaunchVariable>>),
+}
+
+impl Default for Form {
+    fn default() -> Self {
+        Self::Each(BTreeSet::new())
+    }
+}
+
+/// The variables of `written` as a set, or the first variable that it names
+/// a second time.
+fn set_of(written: Vec<LaunchVariable>) -> Result<BTreeSet<LaunchVariable>, LaunchVariable> {
+    let mut variables = BTreeSet::new();
+    for variable in written {
+        if variables.contains(&variable) {
+            return Err(variable);
+        }
+        variables.insert(variable);
+    }
+    Ok(variables)
+}
 
 impl TryFrom<Vec<LaunchVariable>> for LaunchVariables {
     type Error = RepeatedLaunchVariable;
 
     fn try_from(written: Vec<LaunchVariable>) -> Result<Self, Self::Error> {
-        let mut variables = BTreeSet::new();
-        for variable in written {
-            if variables.contains(&variable) {
-                return Err(RepeatedLaunchVariable { variable });
-            }
-            variables.insert(variable);
-        }
-        Ok(Self(variables))
-    }
-}
-
-impl From<LaunchVariables> for Vec<LaunchVariable> {
-    fn from(variables: LaunchVariables) -> Self {
-        variables.0.into_iter().collect()
+        set_of(written)
+            .map(|variables| Self(Form::Each(variables)))
+            .map_err(|variable| RepeatedLaunchVariable { variable })
     }
 }
 
 impl LaunchVariables {
+    /// The `one_of` of `written`, its sets in order: two sets or more, none
+    /// empty, each naming a variable once, and none holding every variable
+    /// of a set before it, which would be complete first.
+    pub fn one_of(written: Vec<Vec<LaunchVariable>>) -> Result<Self, BrokenOneOf> {
+        match written.len() {
+            0 => return Err(BrokenOneOf::NoSet),
+            1 => return Err(BrokenOneOf::OneSet),
+            _ => {}
+        }
+        let mut sets: Vec<BTreeSet<LaunchVariable>> = Vec::with_capacity(written.len());
+        for (index, variables) in written.into_iter().enumerate() {
+            let set = index + 1;
+            if variables.is_empty() {
+                return Err(BrokenOneOf::EmptySet { set });
+            }
+            let variables = set_of(variables)
+                .map_err(|variable| BrokenOneOf::RepeatedInSet { set, variable })?;
+            if let Some(earlier) = sets.iter().position(|before| before.is_subset(&variables)) {
+                return Err(BrokenOneOf::NeverChosen {
+                    earlier: earlier + 1,
+                    later: set,
+                });
+            }
+            sets.push(variables);
+        }
+        Ok(Self(Form::OneOf(sets)))
+    }
+
+    /// Whether the instance takes no variable: an empty list.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        matches!(&self.0, Form::Each(variables) if variables.is_empty())
     }
 
-    /// The variables, in name order.
+    /// Every variable that the instance can take, each once, in name order:
+    /// each variable of a list, or the variables of every set of a `one_of`.
     pub fn iter(&self) -> impl Iterator<Item = &LaunchVariable> {
-        self.0.iter()
+        let names: BTreeSet<&LaunchVariable> = match &self.0 {
+            Form::Each(variables) => variables.iter().collect(),
+            Form::OneOf(sets) => sets.iter().flatten().collect(),
+        };
+        names.into_iter()
     }
 
-    /// The variables of the list that `env_vars` also gives a value, in name
-    /// order: each one would get two values.
+    /// The variables that the instance takes each one of, in name order: the
+    /// variables of a list, and none for a `one_of`.
+    pub fn required(&self) -> impl Iterator<Item = &LaunchVariable> {
+        let list = match &self.0 {
+            Form::Each(variables) => Some(variables),
+            Form::OneOf(_) => None,
+        };
+        list.into_iter().flatten()
+    }
+
+    /// The sets of a `one_of`, in order, and none for a list.
+    pub fn sets(&self) -> &[BTreeSet<LaunchVariable>] {
+        match &self.0 {
+            Form::Each(_) => &[],
+            Form::OneOf(sets) => sets,
+        }
+    }
+
+    /// The variables that the instance takes, in name order, when `holds`
+    /// tells which variables the environment holds: each variable of a list,
+    /// or the variables of the first set of a `one_of` that `holds` holds
+    /// complete, and none when no set is complete.
+    pub fn taken(&self, holds: impl Fn(&str) -> bool) -> Vec<&LaunchVariable> {
+        match &self.0 {
+            Form::Each(variables) => variables.iter().collect(),
+            Form::OneOf(sets) => sets
+                .iter()
+                .find(|set| set.iter().all(|variable| holds(variable.as_str())))
+                .map_or_default(|set| set.iter().collect()),
+        }
+    }
+
+    /// The variables as a message names them: a list as `` `A`, `B` ``, and
+    /// a `one_of` as "one set of `A` and `B`, or of `C`".
+    pub fn describe(&self) -> String {
+        match &self.0 {
+            Form::Each(variables) => crate::error::format_quoted_list(variables),
+            Form::OneOf(sets) => {
+                let sets: Vec<String> = sets
+                    .iter()
+                    .map(|set| quoted_series(&set.iter().collect::<Vec<_>>(), "and"))
+                    .collect();
+                format!("one set of {}", sets.join(", or of "))
+            }
+        }
+    }
+
+    /// Every variable that the instance can take ([`Self::iter`]) that
+    /// `env_vars` also gives a value, in name order: each one would get two
+    /// values.
     pub fn given_in<'a>(
         &'a self,
         env_vars: &'a BTreeMap<String, String>,
     ) -> impl Iterator<Item = &'a LaunchVariable> + 'a {
-        self.0
-            .iter()
+        self.iter()
             .filter(|variable| env_vars.contains_key(variable.as_str()))
+    }
+}
+
+/// A list writes as a list of names, and a `one_of` as an object with the
+/// one key `one_of`.
+impl Serialize for LaunchVariables {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match &self.0 {
+            Form::Each(variables) => serializer.collect_seq(variables),
+            Form::OneOf(sets) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(ONE_OF, sets)?;
+                map.end()
+            }
+        }
+    }
+}
+
+/// A list reads as [`LaunchVariables::try_from`], and an object as
+/// [`LaunchVariables::one_of`]. Each name is a [`LaunchVariable`], and every
+/// refusal keeps the text of its error.
+impl<'de> Deserialize<'de> for LaunchVariables {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(LaunchVariablesVisitor)
+    }
+}
+
+/// The object form as it is written: the key `one_of` and no other.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrittenOneOf {
+    one_of: Vec<Vec<LaunchVariable>>,
+}
+
+struct LaunchVariablesVisitor;
+
+impl<'de> serde::de::Visitor<'de> for LaunchVariablesVisitor {
+    type Value = LaunchVariables;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a list of variable names, or an object `{ one_of: [[...], [...]] }`")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+        let written =
+            Vec::<LaunchVariable>::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))?;
+        LaunchVariables::try_from(written).map_err(serde::de::Error::custom)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        let WrittenOneOf { one_of } =
+            WrittenOneOf::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+        LaunchVariables::one_of(one_of).map_err(serde::de::Error::custom)
     }
 }
 
@@ -524,7 +711,7 @@ pub fn refuse_peer_placements<'a>(
             (machine != coordinator).then(|| {
                 format!(
                     "`{id}` takes {} from the launch, and {change} places it on `{machine}`",
-                    crate::error::format_quoted_list(instance.env_from_launch.iter())
+                    instance.env_from_launch.describe()
                 )
             })
         })
@@ -1035,6 +1222,224 @@ mod tests {
         assert_eq!(
             format!("{parsed:?}"),
             r#"ForwardedEnv { common: ["PATH"], launch_values: LaunchValues(["GEMINI_API_KEY"]) }"#
+        );
+    }
+
+    /// The `one_of` of the hosted brain: the API's two variables, else the
+    /// key of the provider.
+    const BRAIN_ONE_OF: &str = r#"{ one_of: [
+        ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_API_BASE"],
+        ["GEMINI_API_KEY"],
+    ] }"#;
+
+    fn one_of(written: &str) -> LaunchVariables {
+        serde_json5::from_str(written).expect(written)
+    }
+
+    fn names<'a>(variables: impl IntoIterator<Item = &'a LaunchVariable>) -> Vec<&'a str> {
+        variables.into_iter().map(LaunchVariable::as_str).collect()
+    }
+
+    /// A `one_of` keeps its sets in the order written, each set in name
+    /// order, and writes back as an object with the one key `one_of`. Every
+    /// name of every set is a variable that the instance can take, and none
+    /// is one that it takes each time.
+    #[test]
+    fn a_one_of_keeps_its_sets_in_order_and_writes_back_as_an_object() {
+        let parsed = one_of(BRAIN_ONE_OF);
+        assert_eq!(
+            parsed.sets().iter().map(names).collect::<Vec<_>>(),
+            [
+                vec!["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"],
+                vec!["GEMINI_API_KEY"],
+            ]
+        );
+        assert_eq!(
+            serde_json5::to_string(&parsed).unwrap(),
+            r#"{"one_of":[["OPENAI_COMPATIBLE_API_BASE","OPENAI_COMPATIBLE_API_KEY"],["GEMINI_API_KEY"]]}"#
+        );
+        assert_eq!(
+            serde_json5::from_str::<LaunchVariables>(&serde_json5::to_string(&parsed).unwrap())
+                .unwrap(),
+            parsed
+        );
+        assert_eq!(
+            names(parsed.iter()),
+            [
+                "GEMINI_API_KEY",
+                "OPENAI_COMPATIBLE_API_BASE",
+                "OPENAI_COMPATIBLE_API_KEY"
+            ]
+        );
+        assert_eq!(parsed.required().count(), 0);
+        assert!(!parsed.is_empty());
+        let list: LaunchVariables = serde_json5::from_str(r#"["B_KEY", "A_KEY"]"#).unwrap();
+        assert_eq!(names(list.required()), ["A_KEY", "B_KEY"]);
+        assert!(list.sets().is_empty());
+    }
+
+    /// The same sets in another order are another `one_of`, and a `one_of`
+    /// is never the list of its names.
+    #[test]
+    fn the_order_of_the_sets_is_part_of_a_one_of() {
+        let first = one_of(r#"{ one_of: [["A_KEY"], ["B_KEY"]] }"#);
+        let second = one_of(r#"{ one_of: [["B_KEY"], ["A_KEY"]] }"#);
+        let list: LaunchVariables = serde_json5::from_str(r#"["A_KEY", "B_KEY"]"#).unwrap();
+        assert_ne!(first, second);
+        assert_ne!(first, list);
+        assert_eq!(first, one_of(r#"{ one_of: [["A_KEY"], ["B_KEY"]] }"#));
+    }
+
+    /// A name can be in several sets, and a set after a larger one that holds
+    /// it is chosen when the larger one is not complete.
+    #[test]
+    fn a_name_can_be_in_several_sets() {
+        let shared =
+            one_of(r#"{ one_of: [["TOOL_KEY", "A_KEY", "B_KEY"], ["TOOL_KEY", "C_KEY"]] }"#);
+        assert_eq!(
+            names(shared.iter()),
+            ["A_KEY", "B_KEY", "C_KEY", "TOOL_KEY"]
+        );
+        one_of(r#"{ one_of: [["A_KEY", "B_KEY"], ["A_KEY"]] }"#);
+    }
+
+    /// Each `one_of` that an instance cannot use is refused at the parse, and
+    /// the message names the set by its place, from 1.
+    #[test]
+    fn a_broken_one_of_is_refused_naming_the_set() {
+        for (written, expected) in [
+            (
+                r"{ one_of: [] }",
+                "`one_of` names no set; an instance that takes no variable from the launch \
+                 writes `[]`",
+            ),
+            (
+                r#"{ one_of: [["A_KEY"]] }"#,
+                "`one_of` names one set; write that set as a list",
+            ),
+            (
+                r#"{ one_of: [["A_KEY"], []] }"#,
+                "set 2 of `one_of` is empty; each set names at least one variable",
+            ),
+            (
+                r#"{ one_of: [["A_KEY", "B_KEY", "A_KEY"], ["C_KEY"]] }"#,
+                "set 1 of `one_of` names `A_KEY` two times; a set names each variable once",
+            ),
+            (
+                r#"{ one_of: [["A_KEY"], ["B_KEY", "A_KEY"]] }"#,
+                "set 2 of `one_of` holds every variable of set 1, which comes before it, so it \
+                 is never chosen; take it out, or put it before set 1",
+            ),
+            (
+                r#"{ one_of: [["C_KEY"], ["A_KEY", "B_KEY"], ["B_KEY", "A_KEY"]] }"#,
+                "set 3 of `one_of` holds every variable of set 2, which comes before it, so it \
+                 is never chosen; take it out, or put it before set 2",
+            ),
+            (
+                r#"{ one_of: [["has-dash"], ["B_KEY"]] }"#,
+                "`has-dash` is not a valid shell identifier",
+            ),
+            (
+                r#"{ one_of: [["TMPDIR"], ["B_KEY"]] }"#,
+                "`TMPDIR` is never forwarded by the CLI",
+            ),
+            (
+                r#"{ one_of: [["A_KEY"], ["B_KEY"]], all: ["C_KEY"] }"#,
+                "unknown field `all`",
+            ),
+            (r"{}", "missing field `one_of`"),
+            (r#""A_KEY""#, "a list of variable names, or an object"),
+        ] {
+            let error = serde_json5::from_str::<LaunchVariables>(written)
+                .expect_err(written)
+                .to_string();
+            assert!(error.contains(expected), "{written}: {error}");
+        }
+    }
+
+    /// The variables taken: each one of a list whatever the environment
+    /// holds, and of a `one_of` the first complete set alone, or none.
+    #[test]
+    fn the_first_complete_set_is_taken() {
+        let brain = one_of(BRAIN_ONE_OF);
+        let holding = |held: &'static [&'static str]| move |name: &str| held.contains(&name);
+        let api = ["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"];
+        for (held, expected) in [
+            (
+                &[
+                    "OPENAI_COMPATIBLE_API_BASE",
+                    "OPENAI_COMPATIBLE_API_KEY",
+                    "GEMINI_API_KEY",
+                ][..],
+                &api[..],
+            ),
+            (
+                &["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"][..],
+                &api[..],
+            ),
+            (
+                &["OPENAI_COMPATIBLE_API_KEY", "GEMINI_API_KEY"][..],
+                &["GEMINI_API_KEY"][..],
+            ),
+            (&["GEMINI_API_KEY"][..], &["GEMINI_API_KEY"][..]),
+            (&["OPENAI_COMPATIBLE_API_BASE"][..], &[][..]),
+            (&[][..], &[][..]),
+        ] {
+            assert_eq!(names(brain.taken(holding(held))), expected, "{held:?}");
+        }
+        let list: LaunchVariables = serde_json5::from_str(r#"["B_KEY", "A_KEY"]"#).unwrap();
+        assert_eq!(names(list.taken(|_| false)), ["A_KEY", "B_KEY"]);
+    }
+
+    /// A message names a list as today, and a `one_of` set by set.
+    #[test]
+    fn a_message_names_a_list_and_each_set_of_a_one_of() {
+        let list: LaunchVariables = serde_json5::from_str(r#"["B_KEY", "A_KEY"]"#).unwrap();
+        assert_eq!(list.describe(), "`A_KEY`, `B_KEY`");
+        assert_eq!(
+            one_of(BRAIN_ONE_OF).describe(),
+            "one set of `OPENAI_COMPATIBLE_API_BASE` and `OPENAI_COMPATIBLE_API_KEY`, or of \
+             `GEMINI_API_KEY`"
+        );
+        assert_eq!(
+            one_of(r#"{ one_of: [["A_KEY", "B_KEY", "C_KEY"], ["D_KEY"], ["E_KEY"]] }"#).describe(),
+            "one set of `A_KEY`, `B_KEY` and `C_KEY`, or of `D_KEY`, or of `E_KEY`"
+        );
+    }
+
+    /// A name of any set of a `one_of` that `env_vars` also gives is found:
+    /// whichever set is taken, no variable gets two values.
+    #[test]
+    fn a_name_of_any_set_that_env_vars_also_gives_is_found() {
+        let env_vars = BTreeMap::from([("GEMINI_API_KEY".to_owned(), "x".to_owned())]);
+        assert_eq!(
+            names(one_of(BRAIN_ONE_OF).given_in(&env_vars)),
+            ["GEMINI_API_KEY"]
+        );
+    }
+
+    /// An instance with a `one_of` on a peer is refused, and the refusal
+    /// names its sets.
+    #[test]
+    fn an_instance_with_a_one_of_is_refused_on_a_peer() {
+        let mut brain = DeploymentInstance::empty(name("brain_inst"));
+        brain.env_from_launch = one_of(BRAIN_ONE_OF);
+        let placements = Placements::new(
+            CoreNodeName::new("coordinator").unwrap(),
+            BTreeMap::from([(
+                "brain_inst".to_owned(),
+                CoreNodeName::new("peer_b").unwrap(),
+            )]),
+        );
+        let refusal = refuse_peer_placements([&brain], &placements, VariableChange::Launch)
+            .expect("the brain runs on a peer");
+        assert!(
+            refusal.contains(
+                "`brain_inst` takes one set of `OPENAI_COMPATIBLE_API_BASE` and \
+                 `OPENAI_COMPATIBLE_API_KEY`, or of `GEMINI_API_KEY` from the launch, and the \
+                 launch places it on `peer_b`"
+            ),
+            "{refusal}"
         );
     }
 }
