@@ -3786,6 +3786,65 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
     );
 }
 
+/// `peppy stack resolve` writes a `one_of` back in the flat file, its sets in
+/// order, and gives one report line for it, which names each set and the
+/// instance that takes a set of it.
+#[test]
+fn stack_resolve_reports_the_sets_of_a_one_of() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let launcher = dir.path().join("arm.json5");
+    fs::write(
+        &launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
+            deployments: [
+                { source: { name: "vlm_router_brain", tag: "v1" }, instances: [
+                    { instance_id: "brain_inst", env_from_launch: { one_of: [
+                        ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_API_BASE"],
+                        ["GEMINI_API_KEY"],
+                    ] } },
+                ] },
+            ],
+        }"#,
+    )
+    .expect("launcher");
+
+    let (dirs, _root) = empty_peppy_root();
+    let (document, report) = resolve_rendered(&dirs, launcher, &[], &[]).expect("resolves");
+    let flat = daemon_config::launcher::PeppyLauncherParser::from_content(&document)
+        .expect("the flat document parses");
+    let brain = &flat.deployments[0].instances[0];
+    assert_eq!(
+        brain
+            .env_from_launch
+            .sets()
+            .iter()
+            .map(|set| set.iter().map(LaunchVariable::as_str).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        [
+            vec!["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"],
+            vec!["GEMINI_API_KEY"],
+        ],
+        "{document}"
+    );
+    assert!(
+        report.contains(
+            &"launch variables: the launch needs one set of `OPENAI_COMPATIBLE_API_BASE` and \
+              `OPENAI_COMPATIBLE_API_KEY`, or of `GEMINI_API_KEY`, from the shell that launches: \
+              `brain_inst` takes the first complete set from the launch, and the launch starts it"
+                .to_owned()
+        ),
+        "{report:?}"
+    );
+    assert!(
+        !report
+            .iter()
+            .any(|line| line.starts_with("launch variables: the launch needs `")),
+        "a one_of is no list of required variables: {report:?}"
+    );
+}
+
 /// A constraint refusal reaches `stack resolve` through the same `compose`
 /// a launch runs, with no daemon involved; a legal sibling still flattens,
 /// and the flat document carries no composition keys.
