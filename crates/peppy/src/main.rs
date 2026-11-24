@@ -1099,17 +1099,26 @@ mod tests {
         assert!(force);
         assert!(yes);
 
-        for invalid in [
-            vec!["peppy", "update", "--check", "--force"],
-            vec!["peppy", "update", "--check", "--yes"],
-            vec!["peppy", "update", "--check", "--version", "v0.39.0"],
-            vec!["peppy", "update", "--version", "not-a-version"],
+        for (invalid, kind) in [
+            (
+                vec!["peppy", "update", "--check", "--force"],
+                clap::error::ErrorKind::ArgumentConflict,
+            ),
+            (
+                vec!["peppy", "update", "--check", "--yes"],
+                clap::error::ErrorKind::ArgumentConflict,
+            ),
+            (
+                vec!["peppy", "update", "--check", "--version", "v0.39.0"],
+                clap::error::ErrorKind::ArgumentConflict,
+            ),
+            (
+                vec!["peppy", "update", "--version", "not-a-version"],
+                clap::error::ErrorKind::ValueValidation,
+            ),
         ] {
             let err = Cli::try_parse_from(invalid.clone()).expect_err("should be refused");
-            assert!(
-                !err.to_string().is_empty(),
-                "{invalid:?} should return a clap error"
-            );
+            assert_eq!(err.kind(), kind, "{invalid:?}: {err}");
         }
     }
 }

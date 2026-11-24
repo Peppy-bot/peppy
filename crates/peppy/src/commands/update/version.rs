@@ -41,6 +41,14 @@ impl ReleaseVersion {
     pub fn tag(self) -> String {
         self.to_string()
     }
+
+    /// Parses what `peppy --version` writes (`peppy v0.39.0`), or returns
+    /// `None` when it names no release version (`peppy unknown` for a
+    /// development build).
+    pub(crate) fn from_version_output(output: &str) -> Option<Self> {
+        let version = output.trim().strip_prefix("peppy ")?;
+        Self::parse(version).ok()
+    }
 }
 
 impl fmt::Display for ReleaseVersion {
@@ -101,6 +109,9 @@ impl fmt::Display for CurrentVersion {
 /// Decision produced by comparing the current binary against the target release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UpdateDecision {
+    /// The current binary is a development build, which an update in place
+    /// cannot replace (even with `--force`).
+    DevelopmentBuild,
     /// Already running the target release (and `--force` was not passed).
     AlreadyUpToDate { current: ReleaseVersion },
     /// Running a release newer than latest (and neither `--version` nor `--force` was passed).
@@ -119,12 +130,14 @@ pub(crate) fn decide_update(
     explicit_version: bool,
     force: bool,
 ) -> UpdateDecision {
+    let installed = match current {
+        CurrentVersion::Development => return UpdateDecision::DevelopmentBuild,
+        CurrentVersion::TaggedOther(_) => return UpdateDecision::Install { target },
+        CurrentVersion::Release(installed) => *installed,
+    };
     if force {
         return UpdateDecision::Install { target };
     }
-    let CurrentVersion::Release(installed) = *current else {
-        return UpdateDecision::Install { target };
-    };
     if installed == target {
         return UpdateDecision::AlreadyUpToDate { current: installed };
     }
@@ -287,6 +300,27 @@ mod tests {
             ),
             UpdateDecision::Install { target: v39 }
         );
+        for force in [false, true] {
+            assert_eq!(
+                decide_update(&CurrentVersion::Development, v39, true, force),
+                UpdateDecision::DevelopmentBuild
+            );
+        }
+    }
+
+    #[test]
+    fn from_version_output_reads_the_release_of_peppy_version() {
+        assert_eq!(
+            ReleaseVersion::from_version_output("peppy v0.40.0\n"),
+            Some(ReleaseVersion::parse("v0.40.0").unwrap())
+        );
+        for output in ["peppy unknown\n", "v0.40.0", "zenohd v0.40.0", ""] {
+            assert_eq!(
+                ReleaseVersion::from_version_output(output),
+                None,
+                "{output:?}"
+            );
+        }
     }
 
     #[test]

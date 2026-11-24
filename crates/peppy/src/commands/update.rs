@@ -2,12 +2,13 @@
 
 mod archive;
 mod http;
+mod runner;
 mod version;
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,14 +19,12 @@ use daemon_config::consts::{PEPPY_GIT_TAG, PeppyDirs};
 use super::Command;
 use super::confirm::confirm_prompt;
 use super::platform::{daemon_has_user_nodes, read_daemon_state};
-use super::service::install::{
-    InstalledService, detect_installed_service, install_peppy_daemon, stop_peppy_daemon,
-    uninstall_peppy_daemon,
-};
+use super::service::install::{InstalledService, detect_installed_service};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::while_spinning;
 
+use runner::{ChildIo, FailedCommand, HostPeppyRunner, PeppyRunner, run_peppy};
 use version::{CurrentVersion, UpdateDecision, decide_update};
 pub use version::{InvalidReleaseVersion, ReleaseVersion};
 
@@ -34,6 +33,9 @@ const REPO_URL_ENV: &str = "PEPPY_REPOURL";
 const NO_SERVICE_INSTALL_ENV: &str = "PEPPY_NO_SERVICE_INSTALL";
 const NO_CONTAINER_SETUP_ENV: &str = "PEPPY_NO_CONTAINER_SETUP";
 const NO_ROOT_INSTALL_ENV: &str = "PEPPY_NO_ROOT_INSTALL";
+
+/// The command that installs a release of peppy without a peppy that runs.
+const INSTALL_SCRIPT_COMMAND: &str = "curl -fsSL https://peppy.bot/install.sh | sh";
 
 /// Overall deadline and poll cadence when waiting for the newly started daemon
 /// to answer `repo list` after `service install`.
@@ -62,38 +64,56 @@ impl Command for UpdateCommand {
             )));
         }
         let env = UpdateEnvironment::from_host()?;
-        let mut ops = HostServiceOps;
-        execute_update(&self, ctx, &env, &mut ops, None)
+        execute_update(&self, ctx, &env, &mut HostPeppyRunner, None)
     }
 }
 
-/// Policy for running `peppy container setup` after installing binaries on Linux.
+/// What `peppy update` does about the container prerequisites after it
+/// installs the binaries, as `install.sh` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContainerSetupPolicy {
-    /// Run `container status`, then `container setup` if checks fail.
-    RunIfNeeded,
-    /// Run `container status` and warn without invoking sudo (`PEPPY_NO_ROOT_INSTALL`).
-    WarnOnly,
-    /// Skip container checks completely (`PEPPY_NO_CONTAINER_SETUP`).
+    /// Run `peppy container setup`, which checks each prerequisite and fixes
+    /// what fails, with sudo when a fix needs it.
+    RunSetup,
+    /// Run `peppy container status --packages`, which uses no sudo and fails
+    /// when a package that each container build needs is missing
+    /// (`PEPPY_NO_ROOT_INSTALL`).
+    CheckPackagesOnly,
+    /// Do nothing: `PEPPY_NO_CONTAINER_SETUP` is set, or the host is not
+    /// Linux (on macOS, containers run inside a Lima VM).
     Skip,
 }
 
 impl ContainerSetupPolicy {
-    const fn from_flags(skip: bool, no_root: bool) -> Self {
-        if skip {
+    const fn for_host(is_linux: bool, skip: bool, no_root: bool) -> Self {
+        if !is_linux || skip {
             Self::Skip
         } else if no_root {
-            Self::WarnOnly
+            Self::CheckPackagesOnly
         } else {
-            Self::RunIfNeeded
+            Self::RunSetup
+        }
+    }
+
+    /// The arguments of the peppy command of this policy, or `None` when the
+    /// policy runs no command.
+    const fn command(self) -> Option<&'static [&'static str]> {
+        match self {
+            Self::RunSetup => Some(&["container", "setup"]),
+            Self::CheckPackagesOnly => Some(&["container", "status", "--packages"]),
+            Self::Skip => None,
         }
     }
 }
 
-/// Whether `peppy update` manages the OS background service.
+/// Whether `peppy update` syncs the default repositories and manages the OS
+/// background service, as `install.sh` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServicePolicy {
+    /// Sync the default repositories (`repo init`), and restart the
+    /// background service when it is installed at the level of the update.
     ManageIfInstalled,
+    /// Do neither (`PEPPY_NO_SERVICE_INSTALL`).
     Skip,
 }
 
@@ -109,12 +129,11 @@ enum TerminalMode {
 /// and mock server without mutating process-global state.
 struct UpdateEnvironment {
     current_version: CurrentVersion,
+    /// The binary that runs this update. It stops and uninstalls the
+    /// background service before the swap, and installs it again when the
+    /// swap rolls back.
+    current_peppy: PathBuf,
     peppy_dirs: PeppyDirs,
-    /// When set, passed explicitly as `PEPPY_HOME` to spawned child commands.
-    /// `None` in production so child processes inherit the caller's environment
-    /// unchanged (preserving whether `service install` writes `PEPPY_HOME` into
-    /// the unit file).
-    child_peppy_home: Option<PathBuf>,
     install_bin_dir: PathBuf,
     repo_url: String,
     archive_name: String,
@@ -134,13 +153,13 @@ impl UpdateEnvironment {
         let exe = std::env::current_exe().map_err(|e| {
             Error::ExecutionFailed(format!("Could not locate the current peppy binary: {e}"))
         })?;
-        let canonical = fs::canonicalize(&exe).unwrap_or(exe);
-        let install_bin_dir = canonical
+        let current_peppy = fs::canonicalize(&exe).unwrap_or(exe);
+        let install_bin_dir = current_peppy
             .parent()
             .ok_or_else(|| {
                 Error::ExecutionFailed(format!(
                     "Could not determine the installation directory of `{}`.",
-                    canonical.display()
+                    current_peppy.display()
                 ))
             })?
             .to_path_buf();
@@ -153,7 +172,8 @@ impl UpdateEnvironment {
         } else {
             ServicePolicy::ManageIfInstalled
         };
-        let container_setup = ContainerSetupPolicy::from_flags(
+        let container_setup = ContainerSetupPolicy::for_host(
+            cfg!(target_os = "linux"),
             env_flag_set(NO_CONTAINER_SETUP_ENV),
             env_flag_set(NO_ROOT_INSTALL_ENV),
         );
@@ -165,8 +185,8 @@ impl UpdateEnvironment {
 
         Ok(Self {
             current_version: CurrentVersion::from_git_tag(PEPPY_GIT_TAG),
+            current_peppy,
             peppy_dirs,
-            child_peppy_home: None,
             install_bin_dir,
             repo_url: resolve_repo_url(std::env::var(REPO_URL_ENV).ok()),
             archive_name: format!("peppy-{}.tgz", release_target_triple()?),
@@ -179,26 +199,6 @@ impl UpdateEnvironment {
             daemon_ready_deadline: DAEMON_READY_DEADLINE,
             daemon_ready_poll_interval: DAEMON_READY_POLL_INTERVAL,
         })
-    }
-}
-
-/// Service-manager side effects isolated behind a trait so tests can verify
-/// stop/uninstall/rollback ordering without touching systemd or launchd.
-trait ServiceOps {
-    fn stop_and_uninstall(&mut self);
-    fn restore_after_rollback(&mut self);
-}
-
-struct HostServiceOps;
-
-impl ServiceOps for HostServiceOps {
-    fn stop_and_uninstall(&mut self) {
-        let _ = stop_peppy_daemon();
-        let _ = uninstall_peppy_daemon();
-    }
-
-    fn restore_after_rollback(&mut self) {
-        let _ = install_peppy_daemon(None);
     }
 }
 
@@ -251,34 +251,32 @@ fn execute_update(
     cmd: &UpdateCommand,
     ctx: &Arc<AppContext>,
     env: &UpdateEnvironment,
-    service_ops: &mut dyn ServiceOps,
+    runner: &mut dyn PeppyRunner,
     confirm_reader: Option<&mut dyn BufRead>,
 ) -> Result<()> {
     let resolved = while_spinning("Checking for updates", || {
         http::probe_release(&env.repo_url, &env.archive_name, cmd.version)
     })?;
-
-    if cmd.check {
-        print_check_result(&env.current_version, resolved.version);
-        return Ok(());
-    }
-
-    if matches!(env.current_version, CurrentVersion::Development) {
-        return Err(Error::ExecutionFailed(format!(
-            "This peppy binary is a development build (version: unknown) and cannot be updated in \
-             place. The latest release is {}. Install a release with:\n  curl -fsSL \
-             https://peppy.bot/install.sh | sh",
-            resolved.version
-        )));
-    }
-
     let decision = decide_update(
         &env.current_version,
         resolved.version,
         cmd.version.is_some(),
         cmd.force,
     );
+
+    if cmd.check {
+        print_check_result(&env.current_version, resolved.version, &decision);
+        return Ok(());
+    }
     match decision {
+        UpdateDecision::DevelopmentBuild => {
+            return Err(Error::ExecutionFailed(format!(
+                "This peppy binary is a development build (version: unknown) and cannot be \
+                 updated in place. The latest release is {}. Install a release with:\n  \
+                 {INSTALL_SCRIPT_COMMAND}",
+                resolved.version
+            )));
+        }
         UpdateDecision::AlreadyUpToDate { current } => {
             println!("peppy is already up to date ({current}).");
             return Ok(());
@@ -295,6 +293,12 @@ fn execute_update(
 
     // Fail fast on directory permissions before downloading a large archive.
     archive::check_dir_writable(&env.install_bin_dir)?;
+    // Held until the update ends, so a second `peppy update` cannot change
+    // the installation or the service meanwhile.
+    let install_lock = archive::lock_install_dir(&env.install_bin_dir)?;
+    for problem in archive::recover_interrupted_updates(&env.install_bin_dir, &install_lock) {
+        eprintln!("Warning: {problem}");
+    }
 
     let manage_service = env.service_policy == ServicePolicy::ManageIfInstalled
         && matches!(env.installed_service, InstalledService::CurrentLevel(_));
@@ -316,7 +320,7 @@ fn execute_update(
     // Stage inside `install_bin_dir` so all renames stay on the same filesystem
     // and never spill into a size-limited `/tmp` tmpfs.
     let staging_dir = tempfile::Builder::new()
-        .prefix(".peppy-update-stage-")
+        .prefix(archive::STAGING_DIR_PREFIX)
         .tempdir_in(&env.install_bin_dir)
         .map_err(|e| {
             Error::ExecutionFailed(format!(
@@ -333,17 +337,22 @@ fn execute_update(
     )?;
 
     let staged_bin_dir = staging_dir.path().join("bin");
-    archive::verify_staged_binary(&staged_bin_dir.join("peppy"))?;
+    verify_staged_binary(
+        runner,
+        &staged_bin_dir.join("peppy"),
+        resolved.version,
+        &env.repo_url,
+    )?;
 
     if manage_service {
-        service_ops.stop_and_uninstall();
+        stop_service_for_swap(runner, env)?;
     }
 
-    if let Err(err) = archive::swap_installation(&staged_bin_dir, &env.install_bin_dir) {
-        if manage_service {
-            service_ops.restore_after_rollback();
+    if let Err(swap_error) = archive::swap_installation(&staged_bin_dir, &env.install_bin_dir) {
+        if !manage_service {
+            return Err(swap_error);
         }
-        return Err(err);
+        return Err(restart_previous_service(runner, env, swap_error));
     }
 
     // Release staging dir before post-update steps so temp space is freed now.
@@ -357,7 +366,7 @@ fn execute_update(
     }
 
     let new_peppy = env.install_bin_dir.join("peppy");
-    run_post_update(&new_peppy, resolved.version, manage_service, env)?;
+    run_post_update(runner, &new_peppy, resolved.version, manage_service, env)?;
 
     println!(
         "Updated peppy from {} to {}.",
@@ -368,26 +377,51 @@ fn execute_update(
     Ok(())
 }
 
-fn print_check_result(current: &CurrentVersion, latest: ReleaseVersion) {
+fn print_check_result(current: &CurrentVersion, latest: ReleaseVersion, decision: &UpdateDecision) {
     println!("Current version: {current}");
     println!("Latest release:  {latest}");
-    match current {
-        CurrentVersion::Release(installed) if *installed == latest => {
-            println!("peppy is up to date.");
-        }
-        CurrentVersion::Release(installed) if *installed > latest => {
+    match decision {
+        UpdateDecision::AlreadyUpToDate { .. } => println!("peppy is up to date."),
+        UpdateDecision::NewerThanLatest { .. } => {
             println!("Current version is newer than the latest published release.");
         }
-        CurrentVersion::Release(_) | CurrentVersion::TaggedOther(_) => {
+        UpdateDecision::Install { .. } => {
             println!("Update available. Run `peppy update` to install {latest}.");
         }
-        CurrentVersion::Development => {
+        UpdateDecision::DevelopmentBuild => {
             println!(
-                "This is a development build. Install {latest} with:\n  curl -fsSL \
-                 https://peppy.bot/install.sh | sh"
+                "This is a development build. Install {latest} with:\n  {INSTALL_SCRIPT_COMMAND}"
             );
         }
     }
+}
+
+/// Runs `<staged peppy> --version` before the installation or the daemon
+/// changes: the downloaded binary must run on this machine and be the
+/// release that the update installs.
+fn verify_staged_binary(
+    runner: &mut dyn PeppyRunner,
+    staged_peppy: &Path,
+    expected: ReleaseVersion,
+    repo_url: &str,
+) -> Result<()> {
+    let output =
+        run_peppy(runner, staged_peppy, &["--version"], ChildIo::Captured).map_err(|failure| {
+            Error::ExecutionFailed(format!(
+                "The downloaded peppy binary does not run on this machine, so nothing changed. \
+                 {failure}"
+            ))
+        })?;
+    let reported = String::from_utf8_lossy(&output.stdout);
+    if ReleaseVersion::from_version_output(&reported) == Some(expected) {
+        return Ok(());
+    }
+    Err(Error::ExecutionFailed(format!(
+        "The archive of release {expected} from {} holds a peppy binary that reports `{}`, so \
+         nothing changed.",
+        http::redact_url(repo_url),
+        reported.trim()
+    )))
 }
 
 /// Confirms stopping the background daemon when it currently holds active user
@@ -418,191 +452,195 @@ fn confirm_stopping_active_stack(
     )
 }
 
-fn new_peppy_command(new_peppy: &Path, env: &UpdateEnvironment) -> ProcessCommand {
-    let mut cmd = ProcessCommand::new(new_peppy);
-    if let Some(home) = &env.child_peppy_home {
-        cmd.env(config::consts::PEPPY_HOME_ENV, home);
+/// Stops and uninstalls the background service with the binary that runs,
+/// as `install.sh` does before it replaces the binaries.
+///
+/// When the daemon runs, a failed stop ends the update before anything
+/// changes: the swap must not happen under a daemon that keeps running. Any
+/// other failure is a warning, because `service install` after the swap
+/// replaces the service definition.
+fn stop_service_for_swap(runner: &mut dyn PeppyRunner, env: &UpdateEnvironment) -> Result<()> {
+    let stopped = run_peppy(
+        runner,
+        &env.current_peppy,
+        &["service", "stop"],
+        ChildIo::Captured,
+    );
+    if let Err(failure) = stopped {
+        if env.daemon_running {
+            return Err(Error::ExecutionFailed(format!(
+                "Could not stop the background service, so nothing changed. {failure}"
+            )));
+        }
+        eprintln!("Warning: {failure}");
     }
-    cmd
+    let uninstalled = run_peppy(
+        runner,
+        &env.current_peppy,
+        &["service", "uninstall"],
+        ChildIo::Captured,
+    );
+    if let Err(failure) = uninstalled {
+        eprintln!("Warning: {failure}");
+    }
+    Ok(())
 }
 
-/// Runs post-install steps through the newly installed `peppy` binary so that
-/// container prerequisites, default repositories, the background service, and
-/// repository indexes match the new release.
+/// Installs and starts the background service again with the previous
+/// binary, which the rollback of the swap put back, and adds to `swap_error`
+/// when that fails.
+fn restart_previous_service(
+    runner: &mut dyn PeppyRunner,
+    env: &UpdateEnvironment,
+    swap_error: Error,
+) -> Error {
+    let restarted = run_peppy(
+        runner,
+        &env.current_peppy,
+        &["service", "install"],
+        ChildIo::Captured,
+    );
+    let Err(failure) = restarted else {
+        return swap_error;
+    };
+    Error::ExecutionFailed(format!(
+        "{swap_error}\nThe background service did not start again: {failure}\nStart it with: \
+         `{} service install`",
+        env.current_peppy.display()
+    ))
+}
+
+/// A set-up step after the installation that did not complete, with the
+/// commands that complete it.
+struct IncompleteStep {
+    failure: FailedCommand,
+    /// The arguments of each peppy command that completes the step, in order.
+    completed_by: Vec<String>,
+}
+
+impl IncompleteStep {
+    /// A step that the run of its failed command again completes.
+    fn retry(failure: FailedCommand) -> Self {
+        let completed_by = vec![failure.args.clone()];
+        Self {
+            failure,
+            completed_by,
+        }
+    }
+}
+
+/// Runs the set-up commands of `install.sh` with the new binary, so that the
+/// container prerequisites, the default repositories, the background service,
+/// and the repository indexes match the new release.
+///
+/// A failed step does not stop the steps after it, so the background service
+/// that the update stopped always gets its `service install`. The error names
+/// each step that did not complete and the commands that complete it.
 fn run_post_update(
+    runner: &mut dyn PeppyRunner,
     new_peppy: &Path,
     target: ReleaseVersion,
     manage_service: bool,
     env: &UpdateEnvironment,
 ) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    if env.container_setup != ContainerSetupPolicy::Skip {
-        run_container_setup_if_needed(new_peppy, target, manage_service, env)?;
+    let mut incomplete = Vec::new();
+    if let Some(args) = env.container_setup.command() {
+        let container = run_peppy(runner, new_peppy, args, ChildIo::Terminal);
+        incomplete.extend(container.err().map(IncompleteStep::retry));
     }
-
-    let restart_hint = if manage_service {
-        format!(
-            " Then run `{} service install` to restart the background service.",
-            new_peppy.display()
-        )
-    } else {
-        String::new()
-    };
-
-    let init_output = new_peppy_command(new_peppy, env)
-        .args(["repo", "init"])
-        .output()
-        .map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "peppy {target} was installed, but running `peppy repo init` failed: {e}.{restart_hint}"
-            ))
-        })?;
-    if !init_output.status.success() {
-        let stderr = String::from_utf8_lossy(&init_output.stderr);
-        return Err(Error::ExecutionFailed(format!(
-            "peppy {target} was installed, but `peppy repo init` failed: {}. Retry manually: \
-             `{} repo init`.{restart_hint}",
-            stderr.trim(),
-            new_peppy.display()
-        )));
+    if env.service_policy == ServicePolicy::ManageIfInstalled {
+        let init = run_peppy(runner, new_peppy, &["repo", "init"], ChildIo::Captured);
+        incomplete.extend(init.err().map(IncompleteStep::retry));
     }
-
-    if !manage_service {
-        return Ok(());
+    if manage_service {
+        incomplete.extend(restart_service_and_refresh_indexes(runner, new_peppy, env).err());
     }
+    post_update_result(target, new_peppy, &incomplete)
+}
 
-    let install_output = new_peppy_command(new_peppy, env)
-        .args(["service", "install"])
-        .output()
-        .map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "peppy {target} was installed, but starting the background service failed: {e}. \
-                 Retry manually: `{} service install`",
-                new_peppy.display()
-            ))
-        })?;
-    if !install_output.status.success() {
-        let stderr = String::from_utf8_lossy(&install_output.stderr);
-        return Err(Error::ExecutionFailed(format!(
-            "peppy {target} was installed, but `peppy service install` failed: {}. Retry \
-             manually: `{} service install`",
-            stderr.trim(),
-            new_peppy.display()
-        )));
-    }
-
-    wait_for_daemon_ready(new_peppy, target, env)?;
-
-    let refresh_status = new_peppy_command(new_peppy, env)
-        .args(["repo", "update"])
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "peppy {target} was installed, but running `peppy repo update` failed: {e}. \
-                 Retry manually: `{} repo update`",
-                new_peppy.display()
-            ))
-        })?;
-    if !refresh_status.success() {
-        return Err(Error::ExecutionFailed(format!(
-            "peppy {target} was installed, but `peppy repo update` exited with {refresh_status}. \
-             Retry manually: `{} repo update`",
-            new_peppy.display()
-        )));
-    }
-
+/// Installs and starts the background service with the new binary, waits
+/// for the daemon, and refreshes the repository indexes.
+fn restart_service_and_refresh_indexes(
+    runner: &mut dyn PeppyRunner,
+    new_peppy: &Path,
+    env: &UpdateEnvironment,
+) -> std::result::Result<(), IncompleteStep> {
+    run_peppy(
+        runner,
+        new_peppy,
+        &["service", "install"],
+        ChildIo::Captured,
+    )
+    .map_err(|failure| IncompleteStep {
+        failure,
+        completed_by: vec!["service install".to_owned(), "repo update".to_owned()],
+    })?;
+    wait_for_daemon_ready(runner, new_peppy, env).map_err(IncompleteStep::retry)?;
+    run_peppy(runner, new_peppy, &["repo", "update"], ChildIo::Terminal)
+        .map_err(IncompleteStep::retry)?;
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn run_container_setup_if_needed(
-    new_peppy: &Path,
+fn post_update_result(
     target: ReleaseVersion,
-    manage_service: bool,
-    env: &UpdateEnvironment,
+    new_peppy: &Path,
+    incomplete: &[IncompleteStep],
 ) -> Result<()> {
-    let restart_hint = if manage_service {
-        format!(
-            " Then run `{} service install` to restart the background service.",
-            new_peppy.display()
-        )
-    } else {
-        String::new()
-    };
-    let status = new_peppy_command(new_peppy, env)
-        .args(["container", "status"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "peppy {target} was installed, but checking container prerequisites failed: \
-                 {e}.{restart_hint}"
-            ))
-        })?;
-    if status.success() {
+    if incomplete.is_empty() {
         return Ok(());
     }
-
-    if env.container_setup == ContainerSetupPolicy::WarnOnly {
-        eprintln!(
-            "Warning: container prerequisites need attention. Run `peppy container status` to \
-             inspect."
+    let mut message =
+        format!("peppy {target} is installed, but these set-up steps did not complete:");
+    for step in incomplete {
+        let commands: Vec<String> = step
+            .completed_by
+            .iter()
+            .map(|args| format!("`{} {args}`", new_peppy.display()))
+            .collect();
+        let _ = write!(
+            message,
+            "\n  {}\n    Complete it with: {}",
+            step.failure,
+            commands.join(", then ")
         );
-        return Ok(());
     }
+    Err(Error::ExecutionFailed(message))
+}
 
-    let setup_status = new_peppy_command(new_peppy, env)
-        .args(["container", "setup"])
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "peppy {target} was installed, but running `peppy container setup` failed: {e}. \
-                 Retry manually: `{} container setup`.{restart_hint}",
-                new_peppy.display()
-            ))
-        })?;
-    if !setup_status.success() {
-        return Err(Error::ExecutionFailed(format!(
-            "peppy {target} was installed, but `peppy container setup` failed. Retry manually: \
-             `{} container setup`.{restart_hint}",
-            new_peppy.display()
-        )));
-    }
-    Ok(())
+/// Whether the restarted daemon answers a request.
+enum Readiness {
+    Ready,
+    /// Not yet, with the stderr of the last probe.
+    NotReady(String),
 }
 
 /// Polls `<new_peppy> repo list` until the restarted daemon accepts requests or
-/// `env.daemon_ready_deadline` expires.
+/// `env.daemon_ready_deadline` expires. The failure names `repo update`, the
+/// command that the wait is for.
 fn wait_for_daemon_ready(
+    runner: &mut dyn PeppyRunner,
     new_peppy: &Path,
-    target: ReleaseVersion,
     env: &UpdateEnvironment,
-) -> Result<()> {
-    let probe = || -> Result<()> {
+) -> std::result::Result<(), FailedCommand> {
+    let did_not_run = |reason: String| FailedCommand {
+        args: "repo update".to_owned(),
+        reason: format!("it did not run, because {reason}"),
+    };
+    let probe = || {
         let start = Instant::now();
         poll_until_ready(
             env.daemon_ready_deadline,
             || start.elapsed(),
             || thread::sleep(env.daemon_ready_poll_interval),
-            || probe_daemon_once(new_peppy, target, env),
+            || probe_daemon_once(runner, new_peppy).map_err(&did_not_run),
             |last_error| {
                 let detail = if last_error.is_empty() {
                     String::new()
                 } else {
                     format!(" ({last_error})")
                 };
-                Error::ExecutionFailed(format!(
-                    "peppy {target} was installed, but the peppy daemon did not become ready in \
-                     time{detail}. Run `{} repo update` once it is running.",
-                    new_peppy.display()
+                did_not_run(format!(
+                    "the peppy daemon did not become ready in time{detail}"
                 ))
             },
         )
@@ -611,43 +649,35 @@ fn wait_for_daemon_ready(
     while_spinning("Waiting for the peppy daemon to start", probe)
 }
 
+/// Runs `<new_peppy> repo list` once. Fails only when the probe cannot start.
 fn probe_daemon_once(
+    runner: &mut dyn PeppyRunner,
     new_peppy: &Path,
-    target: ReleaseVersion,
-    env: &UpdateEnvironment,
-) -> Result<std::result::Result<(), String>> {
-    let output = new_peppy_command(new_peppy, env)
-        .args(["repo", "list"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "peppy {target} was installed, but probing the daemon failed: {e}"
-            ))
-        })?;
+) -> std::result::Result<Readiness, String> {
+    let output = runner
+        .run(new_peppy, &["repo", "list"], ChildIo::Captured)
+        .map_err(|e| format!("the daemon probe `peppy repo list` could not start: {e}"))?;
     if output.status.success() {
-        return Ok(Ok(()));
+        return Ok(Readiness::Ready);
     }
-    Ok(Err(String::from_utf8_lossy(&output.stderr)
-        .trim()
-        .to_owned()))
+    Ok(Readiness::NotReady(
+        String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    ))
 }
 
 /// Deterministic poll loop parameterized over elapsed-time and sleep hooks so
 /// readiness retries and timeouts can be tested without real wall-clock waits.
-fn poll_until_ready(
+fn poll_until_ready<E>(
     deadline: Duration,
     mut elapsed: impl FnMut() -> Duration,
     mut sleep: impl FnMut(),
-    mut probe: impl FnMut() -> Result<std::result::Result<(), String>>,
-    on_timeout: impl FnOnce(&str) -> Error,
-) -> Result<()> {
+    mut probe: impl FnMut() -> std::result::Result<Readiness, E>,
+    on_timeout: impl FnOnce(&str) -> E,
+) -> std::result::Result<(), E> {
     loop {
         match probe()? {
-            Ok(()) => return Ok(()),
-            Err(last_error) => {
+            Readiness::Ready => return Ok(()),
+            Readiness::NotReady(last_error) => {
                 if elapsed() >= deadline {
                     return Err(on_timeout(&last_error));
                 }
@@ -684,98 +714,158 @@ fn print_post_update_notes(target: ReleaseVersion, manage_service: bool, env: &U
 mod tests {
     use super::*;
     use httpmock::Method::{GET, HEAD};
-    use httpmock::MockServer;
+    use httpmock::{Mock, MockServer};
+    use runner::test_support::ScriptedRunner;
     use std::io::Cursor;
-    use std::os::unix::fs::PermissionsExt;
 
     const TEST_ARCHIVE: &str = "peppy-x86_64-unknown-linux-gnu.tgz";
 
-    #[derive(Default)]
-    struct RecordingServiceOps {
-        stops: usize,
-        restores: usize,
+    /// The commands of an update that installs and restarts the service.
+    const FULL_UPDATE_COMMANDS: [&str; 8] = [
+        "--version",
+        "service stop",
+        "service uninstall",
+        "container setup",
+        "repo init",
+        "service install",
+        "repo list",
+        "repo update",
+    ];
+
+    /// The mocks of a release server whose latest release is `tag`.
+    struct ReleaseMocks<'a> {
+        head_latest: Mock<'a>,
+        head_asset: Mock<'a>,
+        get_asset: Mock<'a>,
     }
 
-    impl ServiceOps for RecordingServiceOps {
-        fn stop_and_uninstall(&mut self) {
-            self.stops += 1;
-        }
-
-        fn restore_after_rollback(&mut self) {
-            self.restores += 1;
-        }
-    }
-
-    fn fake_peppy_script(version: &str, log_path: &Path, container_status_exit: i32) -> Vec<u8> {
-        format!(
-            "#!/bin/sh\n\
-             echo \"$*\" >> \"{}\"\n\
-             case \"$1\" in\n\
-               --version) echo \"peppy {version}\"; exit 0 ;;\n\
-               container)\n\
-                 if [ \"$2\" = \"status\" ]; then exit {container_status_exit}; fi\n\
-                 exit 0 ;;\n\
-               *) exit 0 ;;\n\
-             esac\n",
-            log_path.display()
-        )
-        .into_bytes()
-    }
-
-    fn mock_latest_release(server: &MockServer, tag: &str, tgz: Vec<u8>) {
+    fn mock_release<'a>(server: &'a MockServer, tag: &str, tgz: Vec<u8>) -> ReleaseMocks<'a> {
         let base = server.base_url();
-        server.mock(|when, then| {
+        let length = tgz.len().to_string();
+        let head_latest = server.mock(|when, then| {
             when.method(HEAD).path(format!("/latest/{TEST_ARCHIVE}"));
             then.status(302).header(
                 "Location",
                 format!("{base}/releases/download/{tag}/{TEST_ARCHIVE}"),
             );
         });
-        server.mock(|when, then| {
+        let head_asset = server.mock(|when, then| {
             when.method(HEAD)
                 .path(format!("/releases/download/{tag}/{TEST_ARCHIVE}"));
-            then.status(200)
-                .header("Content-Length", tgz.len().to_string());
+            then.status(200).header("Content-Length", length.clone());
         });
         server.mock(|when, then| {
             when.method(HEAD).path(format!("/{tag}/{TEST_ARCHIVE}"));
-            then.status(200)
-                .header("Content-Length", tgz.len().to_string());
+            then.status(200).header("Content-Length", length.clone());
         });
-        server.mock(|when, then| {
+        let get_asset = server.mock(|when, then| {
             when.method(GET).path(format!("/{tag}/{TEST_ARCHIVE}"));
             then.status(200)
-                .header("Content-Length", tgz.len().to_string())
+                .header("Content-Length", length.clone())
                 .body(tgz);
         });
-    }
-
-    fn make_env(
-        server_url: String,
-        peppy_home: &Path,
-        install_bin_dir: &Path,
-        current_tag: Option<&str>,
-    ) -> UpdateEnvironment {
-        UpdateEnvironment {
-            current_version: CurrentVersion::from_git_tag(current_tag),
-            peppy_dirs: PeppyDirs::new(peppy_home),
-            child_peppy_home: Some(peppy_home.to_path_buf()),
-            install_bin_dir: install_bin_dir.to_path_buf(),
-            repo_url: server_url,
-            archive_name: TEST_ARCHIVE.to_owned(),
-            service_policy: ServicePolicy::ManageIfInstalled,
-            container_setup: ContainerSetupPolicy::RunIfNeeded,
-            terminal_mode: TerminalMode::NonInteractive,
-            installed_service: InstalledService::None,
-            daemon_running: false,
-            daemon_has_user_nodes_override: Some(false),
-            daemon_ready_deadline: Duration::from_secs(5),
-            daemon_ready_poll_interval: Duration::from_millis(10),
+        ReleaseMocks {
+            head_latest,
+            head_asset,
+            get_asset,
         }
     }
 
-    fn test_ctx(dir: &Path) -> Arc<AppContext> {
-        Arc::new(AppContext::new(dir))
+    /// The archive of a release with `bin/peppy` and `bin/zenohd`.
+    fn release_tgz(peppy: &[u8]) -> Vec<u8> {
+        archive::test_support::build_tgz(&[
+            ("./bin/peppy", peppy, 0o755),
+            ("./bin/zenohd", b"new-zenohd", 0o755),
+        ])
+    }
+
+    /// An installation directory `<tmp>/bin` with an old `peppy` and
+    /// `zenohd`, and an unmanaged `capnp`.
+    struct Installation {
+        tmp: tempfile::TempDir,
+        bin_dir: PathBuf,
+    }
+
+    impl Installation {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let bin_dir = tmp.path().join("bin");
+            fs::create_dir_all(&bin_dir).unwrap();
+            fs::write(bin_dir.join("peppy"), "old-peppy").unwrap();
+            fs::write(bin_dir.join("zenohd"), "old-zenohd").unwrap();
+            fs::write(bin_dir.join("capnp"), "keep-me").unwrap();
+            Self { tmp, bin_dir }
+        }
+
+        fn env(&self, server: &MockServer, current_tag: Option<&str>) -> UpdateEnvironment {
+            UpdateEnvironment {
+                current_version: CurrentVersion::from_git_tag(current_tag),
+                current_peppy: self.bin_dir.join("peppy"),
+                peppy_dirs: PeppyDirs::new(self.tmp.path()),
+                install_bin_dir: self.bin_dir.clone(),
+                repo_url: server.base_url(),
+                archive_name: TEST_ARCHIVE.to_owned(),
+                service_policy: ServicePolicy::ManageIfInstalled,
+                container_setup: ContainerSetupPolicy::RunSetup,
+                terminal_mode: TerminalMode::NonInteractive,
+                installed_service: InstalledService::None,
+                daemon_running: false,
+                daemon_has_user_nodes_override: Some(false),
+                daemon_ready_deadline: Duration::from_secs(5),
+                daemon_ready_poll_interval: Duration::from_millis(10),
+            }
+        }
+
+        /// The environment of a host whose user-level service runs.
+        fn env_with_running_service(
+            &self,
+            server: &MockServer,
+            current_tag: Option<&str>,
+        ) -> UpdateEnvironment {
+            UpdateEnvironment {
+                installed_service: InstalledService::CurrentLevel(
+                    self.tmp.path().join("peppy.service"),
+                ),
+                daemon_running: true,
+                ..self.env(server, current_tag)
+            }
+        }
+
+        fn ctx(&self) -> Arc<AppContext> {
+            Arc::new(AppContext::new(self.tmp.path()))
+        }
+
+        fn read(&self, name: &str) -> String {
+            fs::read_to_string(self.bin_dir.join(name)).unwrap()
+        }
+
+        /// The names in the installation directory, in order.
+        fn names(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(&self.bin_dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    const fn update() -> UpdateCommand {
+        UpdateCommand {
+            check: false,
+            version: None,
+            force: false,
+            yes: false,
+        }
+    }
+
+    fn run(
+        installation: &Installation,
+        cmd: &UpdateCommand,
+        env: &UpdateEnvironment,
+        runner: &mut ScriptedRunner,
+    ) -> Result<()> {
+        execute_update(cmd, &installation.ctx(), env, runner, None)
     }
 
     #[test]
@@ -786,9 +876,7 @@ mod tests {
         )));
         let cmd = UpdateCommand {
             check: true,
-            version: None,
-            force: false,
-            yes: false,
+            ..update()
         };
         let err = cmd.execute(&ctx).expect_err("--core-node must be refused");
         assert!(err.to_string().contains("--core-node robot-1"), "{err}");
@@ -796,346 +884,479 @@ mod tests {
 
     #[test]
     fn check_mode_probes_latest_without_downloading_or_modifying_files() {
+        let installation = Installation::new();
         let server = MockServer::start();
-        let base = server.base_url();
-        let head_latest = server.mock(|when, then| {
-            when.method(HEAD).path(format!("/latest/{TEST_ARCHIVE}"));
-            then.status(302).header(
-                "Location",
-                format!("{base}/releases/download/v0.40.0/{TEST_ARCHIVE}"),
-            );
-        });
-        let head_asset = server.mock(|when, then| {
-            when.method(HEAD)
-                .path(format!("/releases/download/v0.40.0/{TEST_ARCHIVE}"));
-            then.status(200);
-        });
-        let get_asset = server.mock(|when, then| {
-            when.method(GET).path(format!("/v0.40.0/{TEST_ARCHIVE}"));
-            then.status(200);
-        });
+        let mocks = mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = installation.env(&server, Some("v0.39.0"));
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0");
 
-        let tmp = tempfile::tempdir().unwrap();
-        let bin_dir = tmp.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-        fs::write(bin_dir.join("peppy"), "existing").unwrap();
-
-        let env = make_env(base, tmp.path(), &bin_dir, Some("v0.39.0"));
         let cmd = UpdateCommand {
             check: true,
-            version: None,
-            force: false,
-            yes: false,
+            ..update()
         };
-        let mut ops = RecordingServiceOps::default();
-        execute_update(&cmd, &test_ctx(tmp.path()), &env, &mut ops, None).unwrap();
+        run(&installation, &cmd, &env, &mut runner).unwrap();
 
-        head_latest.assert_calls(1);
-        head_asset.assert_calls(1);
-        get_asset.assert_calls(0);
-        assert_eq!(ops.stops, 0);
-        assert_eq!(
-            fs::read_to_string(bin_dir.join("peppy")).unwrap(),
-            "existing"
-        );
+        mocks.head_latest.assert_calls(1);
+        mocks.head_asset.assert_calls(1);
+        mocks.get_asset.assert_calls(0);
+        assert!(runner.calls.is_empty(), "{:?}", runner.calls);
+        assert_eq!(installation.read("peppy"), "old-peppy");
     }
 
     #[test]
     fn already_up_to_date_skips_download_and_service_restart() {
+        let installation = Installation::new();
         let server = MockServer::start();
-        let base = server.base_url();
-        server.mock(|when, then| {
-            when.method(HEAD).path(format!("/latest/{TEST_ARCHIVE}"));
-            then.status(302).header(
-                "Location",
-                format!("{base}/releases/download/v0.39.0/{TEST_ARCHIVE}"),
-            );
-        });
-        server.mock(|when, then| {
-            when.method(HEAD)
-                .path(format!("/releases/download/v0.39.0/{TEST_ARCHIVE}"));
-            then.status(200);
-        });
-        let get_asset = server.mock(|when, then| {
-            when.method(GET).path(format!("/v0.39.0/{TEST_ARCHIVE}"));
-            then.status(200);
-        });
+        let mocks = mock_release(&server, "v0.39.0", release_tgz(b"new-peppy"));
+        let env = installation.env_with_running_service(&server, Some("v0.39.0"));
+        let mut runner = ScriptedRunner::reporting("peppy v0.39.0");
 
-        let tmp = tempfile::tempdir().unwrap();
-        let bin_dir = tmp.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-        let mut env = make_env(base, tmp.path(), &bin_dir, Some("v0.39.0"));
-        env.installed_service = InstalledService::CurrentLevel(tmp.path().join("peppy.service"));
-        env.daemon_running = true;
+        run(&installation, &update(), &env, &mut runner).unwrap();
 
-        let cmd = UpdateCommand {
-            check: false,
-            version: None,
-            force: false,
-            yes: false,
-        };
-        let mut ops = RecordingServiceOps::default();
-        execute_update(&cmd, &test_ctx(tmp.path()), &env, &mut ops, None).unwrap();
-
-        get_asset.assert_calls(0);
-        assert_eq!(ops.stops, 0);
+        mocks.get_asset.assert_calls(0);
+        assert!(runner.calls.is_empty(), "{:?}", runner.calls);
     }
 
     #[test]
     fn development_build_refuses_in_place_update_but_allows_check() {
+        let installation = Installation::new();
         let server = MockServer::start();
-        mock_latest_release(&server, "v0.40.0", Vec::new());
-
-        let tmp = tempfile::tempdir().unwrap();
-        let bin_dir = tmp.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-        let env = make_env(server.base_url(), tmp.path(), &bin_dir, None);
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = installation.env(&server, None);
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0");
 
         let check_cmd = UpdateCommand {
             check: true,
-            version: None,
-            force: false,
-            yes: false,
+            ..update()
         };
-        let mut ops = RecordingServiceOps::default();
-        execute_update(&check_cmd, &test_ctx(tmp.path()), &env, &mut ops, None)
+        run(&installation, &check_cmd, &env, &mut runner)
             .expect("--check works on development builds");
 
-        let update_cmd = UpdateCommand {
-            check: false,
-            version: None,
-            force: false,
-            yes: false,
+        let force_cmd = UpdateCommand {
+            force: true,
+            ..update()
         };
-        let err = execute_update(&update_cmd, &test_ctx(tmp.path()), &env, &mut ops, None)
-            .expect_err("dev build must refuse in-place update");
+        let err = run(&installation, &force_cmd, &env, &mut runner)
+            .expect_err("dev build must refuse in-place update, even with --force");
         assert!(err.to_string().contains("development build"), "{err}");
+        assert!(err.to_string().contains(INSTALL_SCRIPT_COMMAND), "{err}");
+        assert!(runner.calls.is_empty(), "{:?}", runner.calls);
     }
 
     #[test]
     fn full_update_downloads_verifies_swaps_and_restarts_service() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin_dir = tmp.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-        fs::write(bin_dir.join("peppy"), "old-peppy").unwrap();
-        fs::write(bin_dir.join("zenohd"), "old-zenohd").unwrap();
-        fs::write(bin_dir.join("capnp"), "keep-me").unwrap();
-
-        let log_path = tmp.path().join("invocations.log");
-        let new_peppy = fake_peppy_script("v0.40.0", &log_path, 0);
+        let installation = Installation::new();
+        // What an update that a Ctrl-C stopped left behind.
+        let leftover = installation
+            .bin_dir
+            .join(format!("{}old", archive::STAGING_DIR_PREFIX));
+        fs::create_dir_all(leftover.join("bin")).unwrap();
         let tgz = archive::test_support::build_tgz(&[
-            ("./bin/peppy", &new_peppy, 0o755),
+            ("./bin/peppy", b"new-peppy", 0o755),
             ("./bin/zenohd", b"new-zenohd", 0o755),
             ("./bin/lima/bin/limactl", b"limactl", 0o755),
         ]);
-
         let server = MockServer::start();
-        mock_latest_release(&server, "v0.40.0", tgz);
+        mock_release(&server, "v0.40.0", tgz);
+        let env = installation.env_with_running_service(&server, Some("v0.39.0"));
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0\n");
 
-        let mut env = make_env(server.base_url(), tmp.path(), &bin_dir, Some("v0.39.0"));
-        env.installed_service = InstalledService::CurrentLevel(tmp.path().join("peppy.service"));
-        env.daemon_running = true;
+        run(&installation, &update(), &env, &mut runner).expect("full update should succeed");
 
-        let cmd = UpdateCommand {
-            check: false,
-            version: None,
-            force: false,
-            yes: false,
-        };
-        let mut ops = RecordingServiceOps::default();
-        execute_update(&cmd, &test_ctx(tmp.path()), &env, &mut ops, None)
-            .expect("full update should succeed");
-
-        assert_eq!(
-            ops.stops, 1,
-            "installed service must be stopped before swap"
+        assert_eq!(runner.commands(), FULL_UPDATE_COMMANDS);
+        let staged_peppy = &runner.calls[0].0;
+        assert!(
+            staged_peppy.starts_with(&installation.bin_dir)
+                && staged_peppy.ends_with("bin/peppy")
+                && *staged_peppy != env.current_peppy,
+            "the staged binary is verified: {staged_peppy:?}"
         );
-        assert_eq!(ops.restores, 0);
+        for (program, args) in &runner.calls[1..] {
+            assert_eq!(program, &installation.bin_dir.join("peppy"), "{args}");
+        }
+        assert_eq!(installation.read("peppy"), "new-peppy");
+        assert_eq!(installation.read("zenohd"), "new-zenohd");
+        assert_eq!(installation.read("capnp"), "keep-me");
         assert_eq!(
-            fs::read_to_string(bin_dir.join("zenohd")).unwrap(),
-            "new-zenohd"
-        );
-        assert_eq!(
-            fs::read_to_string(bin_dir.join("capnp")).unwrap(),
-            "keep-me"
+            installation.names(),
+            ["capnp", "lima", "peppy", "zenohd"],
+            "no staging, backup, or leftover directory stays"
         );
         assert!(
-            tmp.path().join("lima-data").is_dir(),
+            installation.tmp.path().join("lima-data").is_dir(),
             "lima-data should be created when lima is shipped"
         );
-
-        let calls: Vec<String> = fs::read_to_string(&log_path)
-            .unwrap()
-            .lines()
-            .map(ToOwned::to_owned)
-            .collect();
-        assert_eq!(calls[0], "--version");
-        #[cfg(target_os = "linux")]
-        assert!(
-            calls.iter().any(|line| line == "container status"),
-            "{calls:?}"
-        );
-        assert!(calls.iter().any(|line| line == "repo init"), "{calls:?}");
-        assert!(
-            calls.iter().any(|line| line == "service install"),
-            "{calls:?}"
-        );
-        assert!(calls.iter().any(|line| line == "repo list"), "{calls:?}");
-        assert!(calls.iter().any(|line| line == "repo update"), "{calls:?}");
     }
 
-    #[cfg(target_os = "linux")]
+    /// A step after the swap that fails does not leave the service
+    /// uninstalled: the service still restarts, and the error tells each
+    /// step to complete.
     #[test]
-    fn failed_container_status_triggers_container_setup() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin_dir = tmp.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let log_path = tmp.path().join("invocations.log");
-        let new_peppy = fake_peppy_script("v0.40.0", &log_path, 1);
-        let tgz = archive::test_support::build_tgz(&[("./bin/peppy", &new_peppy, 0o755)]);
-
+    fn failed_container_setup_and_repo_init_still_restart_the_service() {
+        let installation = Installation::new();
         let server = MockServer::start();
-        mock_latest_release(&server, "v0.40.0", tgz);
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = installation.env_with_running_service(&server, Some("v0.39.0"));
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0")
+            .failing("container setup", 1)
+            .failing("repo init", 2);
 
-        let env = make_env(server.base_url(), tmp.path(), &bin_dir, Some("v0.39.0"));
-        let cmd = UpdateCommand {
-            check: false,
-            version: None,
-            force: false,
-            yes: false,
+        let err = run(&installation, &update(), &env, &mut runner)
+            .expect_err("the failed steps are reported");
+
+        assert_eq!(runner.commands(), FULL_UPDATE_COMMANDS);
+        let message = err.to_string();
+        let new_peppy = installation.bin_dir.join("peppy").display().to_string();
+        assert!(message.contains("peppy v0.40.0 is installed"), "{message}");
+        assert!(
+            message.contains("`peppy container setup`: it ended with")
+                && message.contains("container setup broke"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("Complete it with: `{new_peppy} container setup`")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("Complete it with: `{new_peppy} repo init`")),
+            "{message}"
+        );
+        assert_eq!(installation.read("peppy"), "new-peppy");
+    }
+
+    #[test]
+    fn failed_service_install_tells_to_install_it_then_refresh_the_indexes() {
+        let installation = Installation::new();
+        let server = MockServer::start();
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = installation.env_with_running_service(&server, Some("v0.39.0"));
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0").failing("service install", 1);
+
+        let err = run(&installation, &update(), &env, &mut runner)
+            .expect_err("the failed service install is reported");
+
+        assert_eq!(runner.commands(), &FULL_UPDATE_COMMANDS[..6]);
+        let new_peppy = installation.bin_dir.join("peppy").display().to_string();
+        assert!(
+            err.to_string().contains(&format!(
+                "Complete it with: `{new_peppy} service install`, then `{new_peppy} repo update`"
+            )),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn daemon_that_does_not_become_ready_skips_repo_update_and_says_so() {
+        let installation = Installation::new();
+        let server = MockServer::start();
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = UpdateEnvironment {
+            daemon_ready_deadline: Duration::ZERO,
+            ..installation.env_with_running_service(&server, Some("v0.39.0"))
         };
-        let mut ops = RecordingServiceOps::default();
-        execute_update(&cmd, &test_ctx(tmp.path()), &env, &mut ops, None).unwrap();
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0").failing("repo list", 1);
 
-        let calls = fs::read_to_string(&log_path).unwrap();
-        assert!(calls.contains("container status"), "{calls}");
-        assert!(calls.contains("container setup"), "{calls}");
+        let err =
+            run(&installation, &update(), &env, &mut runner).expect_err("the daemon is not ready");
+
+        assert_eq!(runner.commands(), &FULL_UPDATE_COMMANDS[..7]);
+        let message = err.to_string();
+        assert!(
+            message.contains(
+                "`peppy repo update`: it did not run, because the peppy daemon did \
+                              not become ready in time (repo list broke)"
+            ),
+            "{message}"
+        );
+    }
+
+    /// `PEPPY_NO_ROOT_INSTALL` checks the packages with no sudo, and
+    /// `PEPPY_NO_SERVICE_INSTALL` leaves the repositories and the service
+    /// alone, as in `install.sh`.
+    #[test]
+    fn no_root_and_no_service_policies_check_packages_only() {
+        let installation = Installation::new();
+        let server = MockServer::start();
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = UpdateEnvironment {
+            container_setup: ContainerSetupPolicy::CheckPackagesOnly,
+            service_policy: ServicePolicy::Skip,
+            ..installation.env_with_running_service(&server, Some("v0.39.0"))
+        };
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0");
+
+        run(&installation, &update(), &env, &mut runner).unwrap();
+
+        assert_eq!(
+            runner.commands(),
+            ["--version", "container status --packages"]
+        );
+        assert_eq!(installation.read("peppy"), "new-peppy");
+    }
+
+    #[test]
+    fn missing_packages_under_no_root_policy_fail_the_update() {
+        let installation = Installation::new();
+        let server = MockServer::start();
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = UpdateEnvironment {
+            container_setup: ContainerSetupPolicy::CheckPackagesOnly,
+            ..installation.env(&server, Some("v0.39.0"))
+        };
+        let mut runner =
+            ScriptedRunner::reporting("peppy v0.40.0").failing("container status --packages", 1);
+
+        let err = run(&installation, &update(), &env, &mut runner)
+            .expect_err("missing packages fail the update");
+
+        assert!(
+            err.to_string()
+                .contains("`peppy container status --packages`: it ended with"),
+            "{err}"
+        );
+        assert_eq!(
+            runner.commands(),
+            ["--version", "container status --packages", "repo init"]
+        );
+    }
+
+    #[test]
+    fn container_setup_policy_follows_the_host_and_the_installer_variables() {
+        for (is_linux, skip, no_root, expected) in [
+            (true, false, false, ContainerSetupPolicy::RunSetup),
+            (true, false, true, ContainerSetupPolicy::CheckPackagesOnly),
+            (true, true, true, ContainerSetupPolicy::Skip),
+            (true, true, false, ContainerSetupPolicy::Skip),
+            (false, false, false, ContainerSetupPolicy::Skip),
+            (false, false, true, ContainerSetupPolicy::Skip),
+        ] {
+            assert_eq!(
+                ContainerSetupPolicy::for_host(is_linux, skip, no_root),
+                expected,
+                "linux {is_linux}, skip {skip}, no root {no_root}"
+            );
+        }
     }
 
     #[test]
     fn active_user_nodes_prompt_and_abort_when_declined() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin_dir = tmp.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-        fs::write(bin_dir.join("peppy"), "old-peppy").unwrap();
-
+        let installation = Installation::new();
         let server = MockServer::start();
-        let base = server.base_url();
-        server.mock(|when, then| {
-            when.method(HEAD).path(format!("/latest/{TEST_ARCHIVE}"));
-            then.status(302).header(
-                "Location",
-                format!("{base}/releases/download/v0.40.0/{TEST_ARCHIVE}"),
-            );
-        });
-        server.mock(|when, then| {
-            when.method(HEAD)
-                .path(format!("/releases/download/v0.40.0/{TEST_ARCHIVE}"));
-            then.status(200);
-        });
-        let get_asset = server.mock(|when, then| {
-            when.method(GET).path(format!("/v0.40.0/{TEST_ARCHIVE}"));
-            then.status(200);
-        });
-
-        let mut env = make_env(base, tmp.path(), &bin_dir, Some("v0.39.0"));
-        env.installed_service = InstalledService::CurrentLevel(tmp.path().join("peppy.service"));
-        env.daemon_running = true;
-        env.daemon_has_user_nodes_override = Some(true);
-        env.terminal_mode = TerminalMode::Interactive;
-
-        let cmd = UpdateCommand {
-            check: false,
-            version: None,
-            force: false,
-            yes: false,
+        let mocks = mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = UpdateEnvironment {
+            daemon_has_user_nodes_override: Some(true),
+            terminal_mode: TerminalMode::Interactive,
+            ..installation.env_with_running_service(&server, Some("v0.39.0"))
         };
-        let mut ops = RecordingServiceOps::default();
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0");
+
         let mut decline = Cursor::new(b"n\n".to_vec());
         execute_update(
-            &cmd,
-            &test_ctx(tmp.path()),
+            &update(),
+            &installation.ctx(),
             &env,
-            &mut ops,
+            &mut runner,
             Some(&mut decline),
         )
         .unwrap();
 
-        get_asset.assert_calls(0);
-        assert_eq!(ops.stops, 0);
-        assert_eq!(
-            fs::read_to_string(bin_dir.join("peppy")).unwrap(),
-            "old-peppy"
-        );
+        mocks.get_asset.assert_calls(0);
+        assert!(runner.calls.is_empty(), "{:?}", runner.calls);
+        assert_eq!(installation.read("peppy"), "old-peppy");
+    }
+
+    #[test]
+    fn active_user_nodes_proceed_when_confirmed_interactively() {
+        let installation = Installation::new();
+        let server = MockServer::start();
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = UpdateEnvironment {
+            daemon_has_user_nodes_override: Some(true),
+            terminal_mode: TerminalMode::Interactive,
+            ..installation.env_with_running_service(&server, Some("v0.39.0"))
+        };
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0");
+
+        let mut accept = Cursor::new(b"y\n".to_vec());
+        execute_update(
+            &update(),
+            &installation.ctx(),
+            &env,
+            &mut runner,
+            Some(&mut accept),
+        )
+        .unwrap();
+
+        assert_eq!(runner.commands(), FULL_UPDATE_COMMANDS);
+        assert_eq!(installation.read("peppy"), "new-peppy");
     }
 
     #[test]
     fn active_user_nodes_non_interactive_without_yes_fails_fast() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin_dir = tmp.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-
+        let installation = Installation::new();
         let server = MockServer::start();
-        mock_latest_release(&server, "v0.40.0", Vec::new());
-
-        let mut env = make_env(server.base_url(), tmp.path(), &bin_dir, Some("v0.39.0"));
-        env.installed_service = InstalledService::CurrentLevel(tmp.path().join("peppy.service"));
-        env.daemon_running = true;
-        env.daemon_has_user_nodes_override = Some(true);
-        env.terminal_mode = TerminalMode::NonInteractive;
-
-        let cmd = UpdateCommand {
-            check: false,
-            version: None,
-            force: false,
-            yes: false,
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = UpdateEnvironment {
+            daemon_has_user_nodes_override: Some(true),
+            ..installation.env_with_running_service(&server, Some("v0.39.0"))
         };
-        let mut ops = RecordingServiceOps::default();
-        let err = execute_update(&cmd, &test_ctx(tmp.path()), &env, &mut ops, None)
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0");
+
+        let err = run(&installation, &update(), &env, &mut runner)
             .expect_err("non-interactive update with active nodes must require --yes");
+
         assert!(err.to_string().contains("--yes"), "{err}");
-        assert_eq!(ops.stops, 0);
+        assert!(runner.calls.is_empty(), "{:?}", runner.calls);
     }
 
     #[test]
     fn broken_downloaded_binary_aborts_before_stopping_service_or_swapping() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin_dir = tmp.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-        fs::write(bin_dir.join("peppy"), "working-old-peppy").unwrap();
-        fs::set_permissions(bin_dir.join("peppy"), fs::Permissions::from_mode(0o755)).unwrap();
-
-        let tgz = archive::test_support::build_tgz(&[(
-            "./bin/peppy",
-            b"#!/bin/sh\necho 'glibc mismatch' >&2\nexit 1\n",
-            0o755,
-        )]);
+        let installation = Installation::new();
         let server = MockServer::start();
-        mock_latest_release(&server, "v0.40.0", tgz);
-
-        let mut env = make_env(server.base_url(), tmp.path(), &bin_dir, Some("v0.39.0"));
-        env.installed_service = InstalledService::CurrentLevel(tmp.path().join("peppy.service"));
-        env.daemon_running = true;
-
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = installation.env_with_running_service(&server, Some("v0.39.0"));
+        let mut runner = ScriptedRunner::reporting("").failing("--version", 1);
         let cmd = UpdateCommand {
-            check: false,
-            version: None,
-            force: false,
             yes: true,
+            ..update()
         };
-        let mut ops = RecordingServiceOps::default();
-        let err = execute_update(&cmd, &test_ctx(tmp.path()), &env, &mut ops, None)
+
+        let err = run(&installation, &cmd, &env, &mut runner)
             .expect_err("broken downloaded binary must abort");
 
-        assert!(err.to_string().contains("glibc mismatch"), "{err}");
-        assert_eq!(
-            ops.stops, 0,
-            "daemon must never be stopped for a broken archive"
+        assert!(
+            err.to_string().contains("does not run on this machine"),
+            "{err}"
         );
+        assert!(err.to_string().contains("--version broke"), "{err}");
+        assert_eq!(runner.commands(), ["--version"]);
+        assert_eq!(installation.read("peppy"), "old-peppy");
+        assert_eq!(installation.names(), ["capnp", "peppy", "zenohd"]);
+    }
+
+    #[test]
+    fn downloaded_binary_of_another_release_is_refused() {
+        let installation = Installation::new();
+        let server = MockServer::start();
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = installation.env_with_running_service(&server, Some("v0.39.0"));
+        // A mirror serves the archive of v0.39.0 under v0.40.0.
+        let mut runner = ScriptedRunner::reporting("peppy v0.39.0\n");
+
+        let err = run(&installation, &update(), &env, &mut runner)
+            .expect_err("a binary of another release must abort");
+
+        assert!(
+            err.to_string()
+                .contains("holds a peppy binary that reports `peppy v0.39.0`"),
+            "{err}"
+        );
+        assert_eq!(runner.commands(), ["--version"]);
+        assert_eq!(installation.read("peppy"), "old-peppy");
+    }
+
+    #[test]
+    fn failed_stop_of_a_running_daemon_ends_the_update_before_any_change() {
+        let installation = Installation::new();
+        let server = MockServer::start();
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = installation.env_with_running_service(&server, Some("v0.39.0"));
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0").failing("service stop", 1);
+
+        let err =
+            run(&installation, &update(), &env, &mut runner).expect_err("the daemon still runs");
+
+        assert!(
+            err.to_string()
+                .contains("Could not stop the background service"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("service stop broke"), "{err}");
+        assert_eq!(runner.commands(), ["--version", "service stop"]);
+        assert_eq!(installation.read("peppy"), "old-peppy");
+    }
+
+    /// With no daemon that runs, the stop has nothing to stop: its failure
+    /// (`launchctl stop` of a service that is not loaded) is a warning.
+    #[test]
+    fn failed_stop_without_a_running_daemon_continues_the_update() {
+        let installation = Installation::new();
+        let server = MockServer::start();
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = UpdateEnvironment {
+            daemon_running: false,
+            ..installation.env_with_running_service(&server, Some("v0.39.0"))
+        };
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0")
+            .failing("service stop", 1)
+            .failing("service uninstall", 1);
+
+        run(&installation, &update(), &env, &mut runner).expect("the update continues");
+
+        assert_eq!(runner.commands(), FULL_UPDATE_COMMANDS);
+        assert_eq!(installation.read("peppy"), "new-peppy");
+    }
+
+    /// The installation holds a directory where the release holds the file
+    /// `zenohd`: the swap fails after it replaced `peppy`, the rollback puts
+    /// the old `peppy` back, and the previous binary starts the service again.
+    fn installation_whose_swap_fails() -> Installation {
+        let installation = Installation::new();
+        fs::remove_file(installation.bin_dir.join("zenohd")).unwrap();
+        fs::create_dir_all(installation.bin_dir.join("zenohd")).unwrap();
+        fs::write(installation.bin_dir.join("zenohd/keep"), "a directory").unwrap();
+        installation
+    }
+
+    #[test]
+    fn failed_swap_restores_the_previous_binaries_and_restarts_the_service() {
+        let installation = installation_whose_swap_fails();
+        let server = MockServer::start();
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = installation.env_with_running_service(&server, Some("v0.39.0"));
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0");
+
+        let err = run(&installation, &update(), &env, &mut runner).expect_err("the swap fails");
+
+        assert!(err.to_string().contains("is a directory"), "{err}");
+        assert!(err.to_string().contains("back in place"), "{err}");
         assert_eq!(
-            fs::read_to_string(bin_dir.join("peppy")).unwrap(),
-            "working-old-peppy"
+            runner.commands(),
+            [
+                "--version",
+                "service stop",
+                "service uninstall",
+                "service install"
+            ]
+        );
+        assert_eq!(runner.calls[3].0, env.current_peppy);
+        assert_eq!(installation.read("peppy"), "old-peppy");
+        assert_eq!(installation.names(), ["capnp", "peppy", "zenohd"]);
+    }
+
+    #[test]
+    fn failed_swap_with_a_failed_restart_tells_how_to_start_the_service() {
+        let installation = installation_whose_swap_fails();
+        let server = MockServer::start();
+        mock_release(&server, "v0.40.0", release_tgz(b"new-peppy"));
+        let env = installation.env_with_running_service(&server, Some("v0.39.0"));
+        let mut runner = ScriptedRunner::reporting("peppy v0.40.0").failing("service install", 1);
+
+        let err = run(&installation, &update(), &env, &mut runner).expect_err("the swap fails");
+
+        let message = err.to_string();
+        assert!(message.contains("is a directory"), "{message}");
+        assert!(
+            message.contains("The background service did not start again")
+                && message.contains("service install broke"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "Start it with: `{} service install`",
+                env.current_peppy.display()
+            )),
+            "{message}"
         );
     }
 
@@ -1152,111 +1373,42 @@ mod tests {
 
     #[test]
     fn pinned_version_allows_downgrade_and_force_allows_reinstall() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin_dir = tmp.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-        fs::write(bin_dir.join("peppy"), "v39-peppy").unwrap();
-
-        let log_path = tmp.path().join("downgrade.log");
-        let v38_script = fake_peppy_script("v0.38.0", &log_path, 0);
-        let tgz = archive::test_support::build_tgz(&[("./bin/peppy", &v38_script, 0o755)]);
-
+        let installation = Installation::new();
         let server = MockServer::start();
-        mock_latest_release(&server, "v0.38.0", tgz);
-
-        let env = make_env(server.base_url(), tmp.path(), &bin_dir, Some("v0.39.0"));
-        let mut ops = RecordingServiceOps::default();
+        mock_release(&server, "v0.38.0", release_tgz(b"v38-peppy"));
+        let env = installation.env(&server, Some("v0.39.0"));
 
         // Without --version or --force, newer-than-latest leaves installation untouched.
-        let latest_cmd = UpdateCommand {
-            check: false,
-            version: None,
-            force: false,
-            yes: false,
-        };
-        execute_update(&latest_cmd, &test_ctx(tmp.path()), &env, &mut ops, None).unwrap();
-        assert_eq!(
-            fs::read_to_string(bin_dir.join("peppy")).unwrap(),
-            "v39-peppy"
-        );
+        let mut runner = ScriptedRunner::reporting("peppy v0.38.0");
+        run(&installation, &update(), &env, &mut runner).unwrap();
+        assert_eq!(installation.read("peppy"), "old-peppy");
+        assert!(runner.calls.is_empty(), "{:?}", runner.calls);
 
         // With explicit --version v0.38.0, downgrade proceeds.
         let downgrade_cmd = UpdateCommand {
-            check: false,
             version: Some(ReleaseVersion::parse("v0.38.0").unwrap()),
-            force: false,
-            yes: false,
+            ..update()
         };
-        execute_update(&downgrade_cmd, &test_ctx(tmp.path()), &env, &mut ops, None).unwrap();
+        run(&installation, &downgrade_cmd, &env, &mut runner).unwrap();
         assert_eq!(
-            fs::read(bin_dir.join("peppy")).unwrap(),
-            v38_script,
+            installation.read("peppy"),
+            "v38-peppy",
             "pinned version should replace installed binary"
         );
 
         // With --force when already at the target version, reinstall proceeds.
-        fs::write(bin_dir.join("peppy"), "modified-v38").unwrap();
-        let at_v38_env = make_env(server.base_url(), tmp.path(), &bin_dir, Some("v0.38.0"));
+        fs::write(installation.bin_dir.join("peppy"), "modified-v38").unwrap();
+        let at_v38_env = installation.env(&server, Some("v0.38.0"));
         let force_cmd = UpdateCommand {
-            check: false,
-            version: None,
             force: true,
-            yes: false,
+            ..update()
         };
-        execute_update(
-            &force_cmd,
-            &test_ctx(tmp.path()),
-            &at_v38_env,
-            &mut ops,
-            None,
-        )
-        .unwrap();
+        run(&installation, &force_cmd, &at_v38_env, &mut runner).unwrap();
         assert_eq!(
-            fs::read(bin_dir.join("peppy")).unwrap(),
-            v38_script,
+            installation.read("peppy"),
+            "v38-peppy",
             "--force should reinstall even when already at latest"
         );
-    }
-
-    #[test]
-    fn active_user_nodes_proceed_when_confirmed_interactively() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin_dir = tmp.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-        fs::write(bin_dir.join("peppy"), "old-peppy").unwrap();
-
-        let log_path = tmp.path().join("confirm.log");
-        let new_peppy = fake_peppy_script("v0.40.0", &log_path, 0);
-        let tgz = archive::test_support::build_tgz(&[("./bin/peppy", &new_peppy, 0o755)]);
-
-        let server = MockServer::start();
-        mock_latest_release(&server, "v0.40.0", tgz);
-
-        let mut env = make_env(server.base_url(), tmp.path(), &bin_dir, Some("v0.39.0"));
-        env.installed_service = InstalledService::CurrentLevel(tmp.path().join("peppy.service"));
-        env.daemon_running = true;
-        env.daemon_has_user_nodes_override = Some(true);
-        env.terminal_mode = TerminalMode::Interactive;
-
-        let cmd = UpdateCommand {
-            check: false,
-            version: None,
-            force: false,
-            yes: false,
-        };
-        let mut ops = RecordingServiceOps::default();
-        let mut accept = Cursor::new(b"y\n".to_vec());
-        execute_update(
-            &cmd,
-            &test_ctx(tmp.path()),
-            &env,
-            &mut ops,
-            Some(&mut accept),
-        )
-        .unwrap();
-
-        assert_eq!(ops.stops, 1);
-        assert_eq!(fs::read(bin_dir.join("peppy")).unwrap(), new_peppy);
     }
 
     #[test]
@@ -1272,12 +1424,12 @@ mod tests {
             || {
                 attempts += 1;
                 if attempts < 3 {
-                    Ok(Err("not ready".to_owned()))
+                    Ok::<_, String>(Readiness::NotReady("not ready".to_owned()))
                 } else {
-                    Ok(Ok(()))
+                    Ok(Readiness::Ready)
                 }
             },
-            |msg| Error::ExecutionFailed(format!("timed out: {msg}")),
+            |msg| format!("timed out: {msg}"),
         )
         .expect("third attempt should succeed");
         assert_eq!(attempts, 3);
@@ -1288,11 +1440,21 @@ mod tests {
             Duration::from_secs(3),
             || Duration::from_secs(ticks.get()),
             || ticks.set(ticks.get() + 1),
-            || Ok(Err("connection refused".to_owned())),
-            |msg| Error::ExecutionFailed(format!("timed out: {msg}")),
+            || Ok(Readiness::NotReady("connection refused".to_owned())),
+            |msg| format!("timed out: {msg}"),
         )
         .expect_err("reaching deadline must fail");
-        assert_eq!(err.to_string(), "timed out: connection refused");
+        assert_eq!(err, "timed out: connection refused");
         assert_eq!(ticks.get(), 3);
+
+        let err = poll_until_ready(
+            Duration::from_secs(3),
+            || Duration::ZERO,
+            || {},
+            || Err::<Readiness, _>("could not start".to_owned()),
+            |msg| format!("timed out: {msg}"),
+        )
+        .expect_err("a probe that cannot start fails at once");
+        assert_eq!(err, "could not start");
     }
 }

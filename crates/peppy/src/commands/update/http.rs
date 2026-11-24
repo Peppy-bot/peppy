@@ -3,6 +3,8 @@
 
 use std::io::{self, IsTerminal, Read};
 use std::path::Path;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -24,6 +26,14 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// off prematurely.
 const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The longest time that the download waits for its next bytes before it
+/// stops: the connection stalled. A slow download that still moves never
+/// waits that long.
+const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Size of the chunks that the download thread reads from the response body.
+const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Resolved release metadata from probing the download endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,6 +250,7 @@ pub(crate) fn probe_release(
 
 /// Downloads the release `.tgz` archive at `url` and streams it directly into
 /// `staging_dir` with safe tar extraction and gzip checksum verification.
+/// The download fails when no byte arrives for [`DOWNLOAD_IDLE_TIMEOUT`].
 pub(crate) fn download_and_extract(
     url: &str,
     archive_name: &str,
@@ -247,7 +258,7 @@ pub(crate) fn download_and_extract(
     staging_dir: &Path,
 ) -> Result<()> {
     let agent = build_agent(None);
-    let (mut response, _) = follow_redirects(&agent, HttpMethod::Get, url, archive_name)?;
+    let (response, _) = follow_redirects(&agent, HttpMethod::Get, url, archive_name)?;
 
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
@@ -258,10 +269,14 @@ pub(crate) fn download_and_extract(
     }
 
     let total_bytes = content_length_header(&response).or(expected_length);
+    let body = IdleTimeoutReader::spawn(response.into_body().into_reader(), DOWNLOAD_IDLE_TIMEOUT)
+        .map_err(|e| {
+            Error::ExecutionFailed(format!("Could not start the download of the release: {e}"))
+        })?;
     let progress = download_progress_bar(total_bytes);
-    let reader = ProgressReader::new(response.body_mut().as_reader(), progress.clone());
+    let reader = ProgressReader::new(body, progress.clone());
 
-    let extract_result = archive::extract_tgz_safely(reader, staging_dir);
+    let extract_result = archive::extract_release_archive(reader, archive_name, staging_dir);
     if let Some(pb) = progress {
         pb.finish_and_clear();
     }
@@ -315,6 +330,91 @@ impl<R: Read> Read for ProgressReader<R> {
         {
             pb.inc(count as u64);
         }
+        Ok(count)
+    }
+}
+
+/// A reader that reads its source on a thread of its own, and fails a read
+/// that waits more than `idle_timeout` for the next bytes.
+///
+/// A blocking socket read cannot be interrupted, so after a stall the thread
+/// stays blocked in its read until the connection closes or the process
+/// ends; the update stops at once and cleans up without it.
+struct IdleTimeoutReader {
+    chunks: Receiver<io::Result<Vec<u8>>>,
+    idle_timeout: Duration,
+    chunk: Vec<u8>,
+    position: usize,
+    ended: bool,
+}
+
+impl IdleTimeoutReader {
+    fn spawn(source: impl Read + Send + 'static, idle_timeout: Duration) -> io::Result<Self> {
+        let (sender, chunks) = mpsc::sync_channel(4);
+        thread::Builder::new()
+            .name("peppy-update-download".to_owned())
+            .spawn(move || forward_chunks(source, &sender))?;
+        Ok(Self {
+            chunks,
+            idle_timeout,
+            chunk: Vec::new(),
+            position: 0,
+            ended: false,
+        })
+    }
+
+    /// Waits for the next chunk. An empty chunk marks the end of the source.
+    fn next_chunk(&mut self) -> io::Result<()> {
+        match self.chunks.recv_timeout(self.idle_timeout) {
+            Ok(Ok(chunk)) => {
+                self.ended = chunk.is_empty();
+                self.chunk = chunk;
+                self.position = 0;
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e),
+            Err(RecvTimeoutError::Timeout) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "the download received no data for {} seconds",
+                    self.idle_timeout.as_secs()
+                ),
+            )),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(io::Error::other("the download thread stopped"))
+            }
+        }
+    }
+}
+
+/// Reads `source` to its end and sends each chunk, then an empty chunk; or
+/// sends the read error. Stops when the reader side is gone.
+fn forward_chunks(mut source: impl Read, sender: &mpsc::SyncSender<io::Result<Vec<u8>>>) {
+    let mut buffer = vec![0u8; DOWNLOAD_CHUNK_BYTES];
+    loop {
+        let message = match source.read(&mut buffer) {
+            Ok(count) => Ok(buffer[..count].to_vec()),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => Err(e),
+        };
+        let last = !matches!(&message, Ok(chunk) if !chunk.is_empty());
+        if sender.send(message).is_err() || last {
+            return;
+        }
+    }
+}
+
+impl Read for IdleTimeoutReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.position == self.chunk.len() {
+            if self.ended {
+                return Ok(0);
+            }
+            self.next_chunk()?;
+        }
+        let count = buf.len().min(self.chunk.len() - self.position);
+        buf[..count].copy_from_slice(&self.chunk[self.position..self.position + count]);
+        self.position += count;
         Ok(count)
     }
 }
@@ -457,6 +557,71 @@ mod tests {
         .expect("archive should download and extract");
 
         assert!(staging.path().join("bin/peppy").is_file());
+    }
+
+    #[test]
+    fn idle_timeout_reader_passes_each_byte_of_its_source() {
+        let source: Vec<u8> = (0..=255u8)
+            .cycle()
+            .take(3 * DOWNLOAD_CHUNK_BYTES + 7)
+            .collect();
+        let mut reader =
+            IdleTimeoutReader::spawn(io::Cursor::new(source.clone()), DOWNLOAD_IDLE_TIMEOUT)
+                .expect("the download thread starts");
+
+        let mut read = Vec::new();
+        reader.read_to_end(&mut read).expect("the source ends");
+
+        assert_eq!(read, source);
+        assert_eq!(
+            reader.read(&mut [0u8; 8]).unwrap(),
+            0,
+            "the end stays the end"
+        );
+    }
+
+    #[test]
+    fn idle_timeout_reader_passes_the_error_of_its_source() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "reset by peer",
+                ))
+            }
+        }
+        let mut reader = IdleTimeoutReader::spawn(Broken, DOWNLOAD_IDLE_TIMEOUT)
+            .expect("the download thread starts");
+
+        let err = reader.read(&mut [0u8; 8]).expect_err("the source fails");
+
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+    }
+
+    /// The source never gives a byte, so the read fails after the idle
+    /// timeout whatever the speed of the host.
+    #[test]
+    fn idle_timeout_reader_fails_when_its_source_stalls() {
+        struct Stalled(Receiver<()>);
+        impl Read for Stalled {
+            fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+                // Blocks until the test drops the sender.
+                let _ = self.0.recv();
+                Err(io::Error::other("released"))
+            }
+        }
+        let (release, stall) = mpsc::channel::<()>();
+        let mut reader = IdleTimeoutReader::spawn(Stalled(stall), Duration::from_millis(20))
+            .expect("the download thread starts");
+
+        let err = reader
+            .read(&mut [0u8; 8])
+            .expect_err("a stalled source fails");
+
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(err.to_string().contains("received no data"), "{err}");
+        drop(release);
     }
 
     #[test]
