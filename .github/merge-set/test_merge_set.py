@@ -5289,17 +5289,77 @@ class WaitSyncs(unittest.TestCase):
         self.github.open_pull_request(CONTRACTS_HUB, 3, head_branch="feat/other")
         self.assertEqual(self.waiting(), ["peppy#512", "contracts-hub#3"])
 
-    def test_a_set_gets_syncs_until_a_margin_after_the_end_of_its_wait(self):
+    def test_a_set_gets_syncs_until_a_sync_after_the_end_of_its_wait(self):
+        nodes = self.github.open_pull_request(NODES_HUB, 88)
+        sync(self.github)
+        self.assertIn(merge_set.WAIT_MARKER, self.github.dashboard_body(nodes))
+        # The first run of the wait syncs after the end of the wait is hours
+        # late: its sync still gives the box to the authors and tells them.
+        self.github.clock = WAIT_ENDS_AT + timedelta(hours=5)
+        self.assertEqual(self.waiting(), ["nodes-hub#88"])
+        sync(self.github)
+        self.assertNotIn(merge_set.WAIT_MARKER, self.github.dashboard_body(nodes))
+        self.assertEqual(len(self.github.reports_on(nodes)), 1)
+        self.assertIn("so Claude can review it now", self.github.reports_on(nodes)[0])
+        self.assertEqual(self.waiting(), [])
+
+    def test_a_set_whose_wait_ended_without_a_dashboard_gets_no_sync(self):
+        # No dashboard counts down, so the wait syncs have none to correct:
+        # the sync of the event that opens a set writes its dashboard, and
+        # the wait syncs keep its countdown until the wait ends.
         self.github.open_pull_request(NODES_HUB, 88)
-        margin_end = WAIT_ENDS_AT + merge_set.WAIT_SYNC_MARGIN
-        for clock, waiting in (
-            (WAIT_ENDS_AT, ["nodes-hub#88"]),
-            (margin_end - timedelta(minutes=1), ["nodes-hub#88"]),
-            (margin_end, []),
-        ):
-            with self.subTest(clock=clock):
-                self.github.clock = clock
-                self.assertEqual(self.waiting(), waiting)
+        self.github.clock = WAIT_ENDS_AT
+        self.assertEqual(self.waiting(), [])
+
+    def test_a_set_that_waits_reads_no_dashboard(self):
+        self.github.open_pull_request(NODES_HUB, 88)
+        unread = AssertionError("a set that waits gets a sync without a read")
+        with patch.object(self.github, "dashboard", side_effect=unread):
+            self.assertEqual(self.waiting(), ["nodes-hub#88"])
+
+    def test_a_countdown_on_any_dashboard_of_the_set_gets_a_sync(self):
+        peppy = self.github.open_pull_request(PEPPY, 512)
+        self.github.open_pull_request(NODES_HUB, 88)
+        sync(self.github)
+        self.github.clock = WAIT_ENDS_AT
+        dashboard = next(
+            comment
+            for comment in self.github.comments_on(peppy)
+            if comment.body.startswith(merge_set.DASHBOARD_MARKER)
+        )
+        dashboard.body = dashboard.body.replace(merge_set.WAIT_MARKER, "")
+        self.assertEqual(self.waiting(), ["peppy#512"])
+
+    def assert_a_sync_ends_the_stale_countdown(self, pr):
+        """The dashboard of `pr` counts down a wait that an event ended, and
+        the sync of that event did not run."""
+        self.assertEqual(self.waiting(), [pr.label])
+        sync(self.github)
+        self.assertNotIn(merge_set.WAIT_MARKER, self.github.dashboard_body(pr))
+        self.assertEqual(self.waiting(), [])
+
+    def test_a_countdown_that_a_review_of_a_person_ended_gets_a_sync(self):
+        nodes = self.github.open_pull_request(NODES_HUB, 88)
+        sync(self.github)
+        self.github.reviews_of[nodes.label] = [
+            review(2, nodes.head_commit, author="bob", submitted_at=OPENED_AT)
+        ]
+        self.assert_a_sync_ends_the_stale_countdown(nodes)
+
+    def test_a_countdown_that_a_draft_ended_gets_a_sync(self):
+        nodes = self.github.open_pull_request(NODES_HUB, 88)
+        sync(self.github)
+        pulls = self.github.pulls[NODES_HUB.name]
+        pulls[pulls.index(nodes)] = replace(nodes, draft=True)
+        self.assert_a_sync_ends_the_stale_countdown(nodes)
+
+    def test_a_countdown_that_a_review_of_claude_ended_gets_a_sync(self):
+        nodes = self.github.open_pull_request(NODES_HUB, 88)
+        sync(self.github)
+        self.github.reviews_of[nodes.label] = [
+            review(1, nodes.head_commit, state="COMMENTED")
+        ]
+        self.assert_a_sync_ends_the_stale_countdown(nodes)
 
     def test_a_set_that_a_person_reviewed_in_its_wait_gets_no_sync(self):
         nodes = self.github.open_pull_request(NODES_HUB, 88)
@@ -6441,23 +6501,12 @@ class RepositoryFacts(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIn(line, lines)
 
-    def test_the_wait_workflow_runs_at_the_interval_that_the_dashboard_names(self):
-        (cron,) = [
-            line
-            for line in workflow_lines(merge_set.WAIT_SYNC_WORKFLOW)
-            if line.startswith("- cron:")
-        ]
-        minute_field, *every = cron.removeprefix("- cron:").strip(' "').split()
-        self.assertEqual(every, ["*"] * 4)
-        minutes = [int(minute) for minute in minute_field.split(",")]
-        interval = int(merge_set.WAIT_SYNC_INTERVAL.total_seconds() // 60)
-        self.assertEqual(
-            [
-                (later - earlier) % 60
-                for earlier, later in zip(minutes, minutes[1:] + minutes[:1])
-            ],
-            [interval] * len(minutes),
-        )
+    def test_the_wait_workflow_runs_only_when_the_webhook_function_starts_it(self):
+        # A schedule of GitHub Actions starts runs late or drops them; the
+        # schedule of the webhook function starts this workflow (webhook.py).
+        text = (WORKFLOWS / merge_set.WAIT_SYNC_WORKFLOW).read_text()
+        self.assertIn("\non:\n  workflow_dispatch:\n\n", text)
+        self.assertNotIn("schedule:", text)
 
     def test_the_wait_workflow_reads_and_starts_the_syncs_with_two_tokens(self):
         text = (WORKFLOWS / merge_set.WAIT_SYNC_WORKFLOW).read_text()
@@ -6470,7 +6519,6 @@ class RepositoryFacts(unittest.TestCase):
         )
         self.assertEqual(text.count("permission-"), 3)
         self.assertIn("    environment:\n      name: merge-set\n", text)
-        self.assertIn("  schedule:\n", text)
 
     def test_the_wait_workflow_ends_within_the_limit_of_its_runner(self):
         assert_ends_within_its_slim_runner(self, merge_set.WAIT_SYNC_WORKFLOW)
