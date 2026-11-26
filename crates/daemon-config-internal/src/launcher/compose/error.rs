@@ -387,6 +387,12 @@ pub enum CompositionError {
     #[error("{0}")]
     VariablesGivenTwoValues(super::super::launch_variables::VariablesGivenTwoValues),
 
+    /// A variable of a set of two variables or more of an `any_of` that
+    /// another `env_from_launch` or `set_env_from_launch` of the launcher
+    /// names in a list, or in another set.
+    #[error("{0}")]
+    VariableOutsideItsSet(Box<super::super::launch_variables::VariableOutsideItsSet>),
+
     #[error(
         "{origin} writes `framework.restart` at its root, which only the launcher's own root \
          takes; write `framework: {{ restart: ... }}` on its instance entries, or move it to the \

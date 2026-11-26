@@ -21,18 +21,25 @@ use serde_json::json;
 const MANAGER: &str = "manager_inst";
 /// The variable the brain of each arm takes from the launch.
 const KEY: &str = "PROBE_KEY";
-/// A variable of the launch environment that no instance names.
+/// A variable of the launch environment that no list names. The brain of
+/// the `any_of` tests takes it in the first set of its `any_of`.
 const OTHER: &str = "OTHER_KEY";
 /// The variable the tool of an arm takes, a part only a CLI word selects.
 const TOOL_KEY: &str = "TOOL_KEY";
+/// The variable that the brain of the `any_of` tests takes beside
+/// `OTHER_KEY`, in the first set of its `any_of`.
+const PAIRED: &str = "PAIRED_KEY";
+/// The `any_of` of the brain of the `any_of` tests: `OTHER_KEY` and
+/// `PAIRED_KEY`, else `PROBE_KEY`.
+const BRAIN_ANY_OF: &str = r#"{ any_of: [["OTHER_KEY", "PAIRED_KEY"], ["PROBE_KEY"]] }"#;
 
 /// The fleet of these tests: its directory, its launcher, and the files the
 /// probes append to, one line per process.
 struct Fleet {
     _directory: tempfile::TempDir,
     launcher: PathBuf,
-    /// `<PROBE_KEY>|<OTHER_KEY>|<TOOL_KEY>` of each run of a brain, `unset`
-    /// for a variable its environment does not hold.
+    /// `<PROBE_KEY>|<OTHER_KEY>|<TOOL_KEY>|<PAIRED_KEY>` of each run of a
+    /// brain, `unset` for a variable its environment does not hold.
     brain_runs: PathBuf,
     /// `<PROBE_KEY>` of each build of the brain node.
     brain_builds: PathBuf,
@@ -49,6 +56,12 @@ impl Fleet {
     /// own axis `tool` deploys, under `gripper`, the tool `tool_inst`, which
     /// takes `TOOL_KEY`. The scope offers `arm` with no feature.
     fn write(started: &StartedCoreNode) -> Self {
+        Self::write_with_brain(started, &format!(r#"["{KEY}"]"#))
+    }
+
+    /// The fleet of [`Self::write`], whose brain takes `brain_variables`
+    /// from the launch: a list or an `any_of`, as `env_from_launch` writes it.
+    fn write_with_brain(started: &StartedCoreNode, brain_variables: &str) -> Self {
         let directory = tempdir().unwrap();
         let probes = directory.path().join("probes");
         fs::create_dir_all(&probes).unwrap();
@@ -74,8 +87,8 @@ impl Fleet {
             },
         );
         let brain_run = format!(
-            "printf '%s|%s|%s\\n' \"${{{KEY}-unset}}\" \"${{{OTHER}-unset}}\" \"${{{TOOL_KEY}-unset}}\" \
-             >> {}; exec sleep 300",
+            "printf '%s|%s|%s|%s\\n' \"${{{KEY}-unset}}\" \"${{{OTHER}-unset}}\" \"${{{TOOL_KEY}-unset}}\" \
+             \"${{{PAIRED}-unset}}\" >> {}; exec sleep 300",
             brain_runs.display()
         );
         let brain_build = format!(
@@ -122,7 +135,7 @@ impl Fleet {
                 {{ name: "robot", cardinality: "zero_or_more", options: {{
                     arm: {{
                         deployments: [{{ source: {{ name: "brain_probe", tag: "v1" }}, instances: [
-                            {{ instance_id: "brain_inst", env_from_launch: ["{KEY}"] }}
+                            {{ instance_id: "brain_inst", env_from_launch: {brain_variables} }}
                         ] }}],
                         components: [{{ name: "tool", cardinality: "zero_or_one", options: {{
                             gripper: {{ deployments: [{{ source: {{ name: "tool_probe", tag: "v1" }}, instances: [
@@ -199,16 +212,35 @@ async fn join_through_the_scope(started: &StartedCoreNode, name: &str) -> GoalOu
     manager.end_of(&goal).await
 }
 
+/// A CLI join of a copy `name` of `arm`, whose forwarded environment is
+/// `env`.
+fn cli_join(name: &str, env: &[(&str, &str)]) -> StackJoinGoal {
+    StackJoinGoal::new(
+        format!("arm:{name}").parse().unwrap(),
+        unreached_budgets().with_env_vars(entries(env)),
+    )
+}
+
 /// A CLI join of a copy `name` of `arm` with the tool, whose forwarded
 /// environment is `env`.
 fn cli_join_with_the_tool(name: &str, env: &[(&str, &str)]) -> StackJoinGoal {
     StackJoinGoal {
         selections: vec!["tool=gripper".parse().unwrap()],
-        ..StackJoinGoal::new(
-            format!("arm:{name}").parse().unwrap(),
-            unreached_budgets().with_env_vars(entries(env)),
-        )
+        ..cli_join(name, env)
     }
+}
+
+/// A launch of `fleet` with `control=none`, which no scope serves, under
+/// `launch_id`, whose forwarded environment is `env`.
+fn launch_without_scope(fleet: &Fleet, launch_id: &str, env: &[(&str, &str)]) -> LaunchGoal {
+    fleet
+        .launch(launch_id, env)
+        .with_layout(
+            PlacementSpec::default(),
+            vec!["control=none".parse::<LaunchWord>().unwrap()],
+            Vec::new(),
+        )
+        .unwrap()
 }
 
 /// The names of the copies on the stack.
@@ -278,7 +310,7 @@ async fn a_join_through_the_scope_gives_the_run_of_the_brain_the_kept_value() {
 
     assert_eq!(
         probe_lines(&fleet.brain_runs, 1).await,
-        [format!("{SENTINEL}|unset|unset")],
+        [format!("{SENTINEL}|unset|unset|unset")],
         "the run takes the kept value of the variable it names, and no other"
     );
     assert_eq!(
@@ -365,7 +397,10 @@ async fn a_launch_without_the_key_is_refused_and_the_running_stack_keeps_its_val
     );
     assert_eq!(
         probe_lines(&fleet.brain_runs, 2).await,
-        ["first-value|unset|unset", "first-value|unset|unset"]
+        [
+            "first-value|unset|unset|unset",
+            "first-value|unset|unset|unset"
+        ]
     );
 }
 
@@ -377,15 +412,9 @@ async fn a_launch_that_no_join_can_add_a_brain_to_and_a_build_need_no_key() {
     let fleet = Fleet::write(&started);
     let _responders = answer_readiness(&started, "manager", MANAGER).await;
 
-    let without_scope = fleet
-        .launch("no-scope", &[])
-        .with_layout(
-            PlacementSpec::default(),
-            vec!["control=none".parse::<LaunchWord>().unwrap()],
-            Vec::new(),
-        )
-        .unwrap();
-    execute(&started, &without_scope).await.assert_completed();
+    execute(&started, &launch_without_scope(&fleet, "no-scope", &[]))
+        .await
+        .assert_completed();
 
     let build = StackBuildGoal::from(fleet.launch("build", &[]));
     execute(&started, &build).await.assert_completed();
@@ -435,7 +464,7 @@ async fn a_cli_join_reads_its_own_value_then_the_one_the_launch_kept() {
     assert_eq!(probe_lines(&fleet.tool_runs, 1).await, ["joined-value"]);
     assert_eq!(
         probe_lines(&fleet.brain_runs, 1).await,
-        ["brain-value|other|unset"],
+        ["brain-value|other|unset|unset"],
         "the brain of the CLI join takes the kept value and the other entries of the join, \
          and not the launch variable of the tool"
     );
@@ -493,6 +522,181 @@ async fn a_new_launch_after_a_reset_gives_its_own_value() {
     );
     assert_eq!(
         probe_lines(&fleet.brain_runs, 1).await,
-        ["new-value|unset|unset"]
+        ["new-value|unset|unset|unset"]
+    );
+}
+
+/// A brain that takes an `any_of`, the set of `OTHER_KEY` and `PAIRED_KEY`,
+/// else `PROBE_KEY`: a launch that holds no set complete, and a launch that
+/// holds the first set in part beside the complete second set, are refused
+/// before they build anything. The first refusal names every set, the
+/// second names the variable that the set held in part lacks. A launch that
+/// holds both sets keeps them, and a join through the scope, which forwards
+/// nothing, gives the run of the brain the first set alone, and not the
+/// variable of the second.
+#[tokio::test]
+async fn a_join_through_the_scope_gives_the_brain_the_first_complete_set_of_its_any_of() {
+    let started = start_core_node_with_mock_messenger().await;
+    let fleet = Fleet::write_with_brain(&started, BRAIN_ANY_OF);
+    let mut responders = answer_readiness(&started, "manager", MANAGER).await;
+    responders.extend(answer_readiness(&started, "brain_probe", "alpha_brain_inst").await);
+
+    execute(&started, &fleet.launch("none", &[]))
+        .await
+        .assert_failed(
+            PeppyFailureKind::Rejected,
+            "the launch needs one set of `OTHER_KEY` and `PAIRED_KEY`, or of `PROBE_KEY`, and the \
+             launch environment holds no set complete, or holds a variable of it empty or with \
+             characters that a node cannot receive: `brain_inst` of option `arm` takes the \
+             first complete set from the launch, and stack.join through `manager_inst` can add \
+             a copy of `arm`. Export every variable of one set in the shell that launches",
+        );
+    execute(
+        &started,
+        &fleet.launch("part", &[(OTHER, "api-base"), (KEY, "provider-key")]),
+    )
+    .await
+    .assert_failed(
+        PeppyFailureKind::Rejected,
+        "the launch needs one set of `OTHER_KEY` and `PAIRED_KEY`, or of `PROBE_KEY`, and the \
+         launch environment holds the set of `OTHER_KEY` and `PAIRED_KEY` in part, as it does \
+         not hold `PAIRED_KEY`, or holds it empty or with characters that a node cannot \
+         receive: `brain_inst` of option `arm` takes the first complete set from the launch, \
+         and stack.join through `manager_inst` can add a copy of `arm`. A launch and a join \
+         refuse a set that their own environment holds in part, also when another set is \
+         complete",
+    );
+    assert!(
+        !fleet.brain_builds.exists(),
+        "the refused launches build nothing"
+    );
+
+    execute(
+        &started,
+        &fleet.launch(
+            "both",
+            &[
+                (KEY, "provider-key"),
+                (OTHER, "api-base"),
+                (PAIRED, "api-key"),
+            ],
+        ),
+    )
+    .await
+    .assert_completed();
+    assert_eq!(
+        join_through_the_scope(&started, "alpha").await,
+        GoalOutcome::Completed(json!({}))
+    );
+    assert_eq!(
+        probe_lines(&fleet.brain_runs, 1).await,
+        ["unset|api-base|unset|api-key"],
+        "the run takes the kept values of the first set, and not the variable of the second"
+    );
+}
+
+/// A CLI join takes a set whole from one source. A join shell that holds a
+/// set in part is refused, also when the launch kept another set, and the
+/// refusal says to export every variable of the set, or none of them, in
+/// the shell that joins. A join shell that holds the first set complete
+/// gives it to the brain, before the second set that the launch kept.
+#[tokio::test]
+async fn a_cli_join_takes_a_set_of_its_own_shell_whole_before_the_kept_set() {
+    let started = start_core_node_with_mock_messenger().await;
+    let fleet = Fleet::write_with_brain(&started, BRAIN_ANY_OF);
+    let mut responders = answer_readiness(&started, "manager", MANAGER).await;
+    responders.extend(answer_readiness(&started, "brain_probe", "bravo_brain_inst").await);
+
+    execute(&started, &fleet.launch("provider", &[(KEY, "kept-key")]))
+        .await
+        .assert_completed();
+    execute(&started, &cli_join("alpha", &[(OTHER, "joined-base")]))
+        .await
+        .assert_failed(
+            PeppyFailureKind::Rejected,
+            "the join needs one set of `OTHER_KEY` and `PAIRED_KEY`, or of `PROBE_KEY`, and the \
+             join environment holds the set of `OTHER_KEY` and `PAIRED_KEY` in part, as it does \
+             not hold `PAIRED_KEY`, or holds it empty or with characters that a node cannot \
+             receive: `alpha_brain_inst` takes the first complete set from the launch, and the \
+             join starts it. A launch and a join refuse a set that their own environment holds \
+             in part, also when another set is complete, so that an instance never takes another \
+             set in its place: export every variable of such a set, or none of them, in the \
+             shell that joins",
+        );
+    assert_eq!(copies_on_the_stack(&started).await, Vec::<String>::new());
+
+    execute(
+        &started,
+        &cli_join("bravo", &[(OTHER, "joined-base"), (PAIRED, "joined-key")]),
+    )
+    .await
+    .assert_completed();
+    assert_eq!(
+        probe_lines(&fleet.brain_runs, 1).await,
+        ["unset|joined-base|unset|joined-key"],
+        "the brain takes the complete set of the join shell, and not the kept key"
+    );
+}
+
+/// A launch that no join through a scope can add a brain to still keeps
+/// its values for a CLI join, so it is refused when it holds a set of the
+/// `any_of` of the brain in part, also beside the complete second set: the
+/// refusal names the set, its missing variable and where the launcher
+/// writes the `any_of`. With the second set alone, it starts.
+#[tokio::test]
+async fn a_launch_refuses_a_set_held_in_part_that_it_would_keep_for_a_cli_join() {
+    let started = start_core_node_with_mock_messenger().await;
+    let fleet = Fleet::write_with_brain(&started, BRAIN_ANY_OF);
+
+    let refused = execute(
+        &started,
+        &launch_without_scope(
+            &fleet,
+            "part",
+            &[(OTHER, "stray-base"), (KEY, "provider-key")],
+        ),
+    )
+    .await;
+    refused.assert_failed(
+        PeppyFailureKind::Rejected,
+        "the launch environment holds the set of `OTHER_KEY` and `PAIRED_KEY` in part, as it \
+         does not hold `PAIRED_KEY`, or holds it empty or with characters that a node cannot \
+         receive: the `env_from_launch` of `brain_inst` in ",
+    );
+    refused.assert_failed(
+        PeppyFailureKind::Rejected,
+        " names it in one set of `OTHER_KEY` and `PAIRED_KEY`, or of `PROBE_KEY`, and the launch \
+         keeps the value of each launch variable of its launcher for the joins",
+    );
+
+    execute(
+        &started,
+        &launch_without_scope(&fleet, "provider", &[(KEY, "provider-key")]),
+    )
+    .await
+    .assert_completed();
+}
+
+/// A launcher whose tool takes, in a list, a variable of the set of two
+/// variables of the `any_of` of the brain is refused before the launch
+/// builds anything: a shell that holds the variable for the tool would hold
+/// the set of the brain in part, or give the value of the tool to the brain.
+#[tokio::test]
+async fn a_launcher_whose_tool_takes_a_variable_of_a_set_of_the_brain_is_refused() {
+    let started = start_core_node_with_mock_messenger().await;
+    let fleet = Fleet::write_with_brain(
+        &started,
+        r#"{ any_of: [["OTHER_KEY", "TOOL_KEY"], ["PROBE_KEY"]] }"#,
+    );
+
+    execute(&started, &fleet.launch("shared", &[(KEY, "provider-key")]))
+        .await
+        .assert_failed(
+            PeppyFailureKind::Rejected,
+            "`TOOL_KEY` is in the set of `OTHER_KEY` and `TOOL_KEY` of an `any_of`",
+        );
+    assert!(
+        !fleet.brain_builds.exists(),
+        "the refused launch builds nothing"
     );
 }

@@ -103,6 +103,7 @@ test-support = [
     "core-node/test-support",
     "node-stack/test-support",
     "auth/test-support",
+    "daemon-config/test-support",
 ]
 # Docker black-box coverage for two daemons sharing one real zenohd. Opting in
 # also builds pmi's bundled router support used by the test host.

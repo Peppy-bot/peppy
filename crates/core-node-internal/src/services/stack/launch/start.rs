@@ -21,15 +21,21 @@ use std::collections::{BTreeMap, HashMap};
 /// on the coordinator's own machine, then the value of each launch variable
 /// the instance takes, then the instance's own `env_vars`, so a deployment
 /// can pin what differs per instance (a device path, a board id) without
-/// depending on whoever ran the launch. A launch variable that the instance
-/// does not name does not reach it: the launcher states which instances
+/// depending on whoever ran the launch. The instance takes each variable of
+/// its list, or the first set of its `any_of` that the forwarded environment
+/// holds complete, else the first set that the kept values hold complete
+/// ([`daemon_config::launcher::LaunchVariables::values_taken`]). A launch
+/// variable that the instance does not take does not reach it, a variable of
+/// another set of its `any_of` included: the launcher states which instances
 /// take each one. An instance placed on a peer starts from an empty forwarded
 /// set and no kept value, because the caller's environment describes the
 /// caller's machine and no other; a launch and a join refuse to place an
 /// instance with launch variables there.
 ///
-/// The forwarded value of a launch variable wins over the kept one: the
-/// caller of a join gives the newer value. A key declared by the instance
+/// The forwarded value of a launch variable wins over the kept one, for a
+/// variable of a list and for a set of an `any_of`: the caller of a join
+/// gives the newer value, and every value of a set comes from the one
+/// source that holds the set complete. A key declared by the instance
 /// replaces the forwarded one rather than appearing twice: the spawn paths
 /// differ on duplicates (a process node's `Command::env` keeps the last,
 /// apptainer's `--env` flags are order-dependent in their own way), so the
@@ -46,14 +52,11 @@ fn instance_environment(
     kept: &LaunchValues,
     instance: &DeploymentInstance,
 ) -> Vec<(String, String)> {
-    let from_launch = instance.env_from_launch.iter().filter_map(|variable| {
-        let name = variable.as_str();
-        forwarded
-            .launch_values()
-            .value_of(name)
-            .or_else(|| kept.value_of(name))
-            .map(|value| (name.to_owned(), value.to_owned()))
-    });
+    let from_launch = instance
+        .env_from_launch
+        .values_taken(forwarded.launch_values(), kept)
+        .into_iter()
+        .map(|(variable, value)| (variable.as_str().to_owned(), value.to_owned()));
     forwarded
         .common()
         .iter()
@@ -456,6 +459,7 @@ async fn start_remotely(
 mod tests {
     use super::*;
     use config::runtime::Name;
+    use daemon_config::launcher::hosted_brain::{self, API_KEY, BASE, PROVIDER_KEY};
     use daemon_config::launcher::{LaunchVariable, LaunchVariables};
     use std::collections::BTreeSet;
 
@@ -610,6 +614,135 @@ mod tests {
         assert_eq!(
             instance_environment(&forwarded(&[("GEMINI_API_KEY", "")]), &kept, &brain),
             entries(&[("GEMINI_API_KEY", "kept-key")])
+        );
+    }
+
+    /// With both sets in the shell of the launch, the brain takes the first
+    /// set alone: the key of the provider reaches neither the brain nor an
+    /// instance that names no launch variable.
+    #[test]
+    fn an_instance_takes_the_first_complete_set_of_its_any_of_alone() {
+        let launch = hosted_brain::forwarded(&[
+            ("PATH", "/usr/bin"),
+            (BASE, "http://127.0.0.1:8000/v1"),
+            (API_KEY, "api-key"),
+            (PROVIDER_KEY, "provider-key"),
+        ]);
+        let kept = launch.launch_values().clone();
+
+        assert_eq!(
+            instance_environment(&launch, &kept, &hosted_brain::brain("brain_inst")),
+            entries(&[
+                ("PATH", "/usr/bin"),
+                (BASE, "http://127.0.0.1:8000/v1"),
+                (API_KEY, "api-key"),
+            ])
+        );
+        assert_eq!(
+            instance_environment(&launch, &kept, &instance(&[], &[])),
+            entries(&[("PATH", "/usr/bin")])
+        );
+    }
+
+    /// With the second set alone in the shell of the launch, the brain takes
+    /// the second set.
+    #[test]
+    fn an_instance_takes_the_second_set_when_it_is_the_one_complete() {
+        let launch =
+            hosted_brain::forwarded(&[("PATH", "/usr/bin"), (PROVIDER_KEY, "provider-key")]);
+
+        assert_eq!(
+            instance_environment(
+                &launch,
+                launch.launch_values(),
+                &hosted_brain::brain("brain_inst")
+            ),
+            entries(&[("PATH", "/usr/bin"), (PROVIDER_KEY, "provider-key")])
+        );
+    }
+
+    /// A join through `robot_membership:v1` forwards nothing, so the brain
+    /// it starts takes the set that the kept values complete: the set that
+    /// the launch took.
+    #[test]
+    fn a_join_through_a_scope_takes_the_set_of_the_kept_values() {
+        for (launch_shell, expected) in [
+            (
+                &[
+                    (BASE, "base"),
+                    (API_KEY, "api-key"),
+                    (PROVIDER_KEY, "provider-key"),
+                ][..],
+                &[(BASE, "base"), (API_KEY, "api-key")][..],
+            ),
+            (
+                &[(PROVIDER_KEY, "provider-key")][..],
+                &[(PROVIDER_KEY, "provider-key")][..],
+            ),
+        ] {
+            let kept = hosted_brain::values(launch_shell);
+            assert_eq!(
+                instance_environment(
+                    &ForwardedEnv::default(),
+                    &kept,
+                    &hosted_brain::brain("brain_inst")
+                ),
+                entries(expected)
+            );
+        }
+    }
+
+    /// A CLI join takes the first set that its own shell holds complete,
+    /// before a set of the kept values, also an earlier one: a join shell
+    /// with the key of the provider alone gives the brain that key, and not
+    /// the API that the launch kept.
+    #[test]
+    fn a_cli_join_takes_a_complete_set_of_its_own_shell_before_the_kept_values() {
+        let kept_api = hosted_brain::values(&[(BASE, "kept-base"), (API_KEY, "kept-key")]);
+        assert_eq!(
+            instance_environment(
+                &hosted_brain::forwarded(&[(PROVIDER_KEY, "joined-provider-key")]),
+                &kept_api,
+                &hosted_brain::brain("brain_inst")
+            ),
+            entries(&[(PROVIDER_KEY, "joined-provider-key")])
+        );
+
+        let kept_provider_key = hosted_brain::values(&[(PROVIDER_KEY, "kept-provider-key")]);
+        assert_eq!(
+            instance_environment(
+                &hosted_brain::forwarded(&[(BASE, "joined-base"), (API_KEY, "joined-key")]),
+                &kept_provider_key,
+                &hosted_brain::brain("brain_inst")
+            ),
+            entries(&[(BASE, "joined-base"), (API_KEY, "joined-key")])
+        );
+    }
+
+    /// Every value of a set comes from one source: a join shell that holds
+    /// one variable of the set of the kept values adds nothing to it, so a
+    /// key never reaches a base address that it was not given with. The
+    /// join check refuses such a join shell before anything starts.
+    #[test]
+    fn a_set_never_takes_its_values_from_two_sources() {
+        let kept_api = hosted_brain::values(&[(BASE, "kept-base"), (API_KEY, "kept-key")]);
+        assert_eq!(
+            instance_environment(
+                &hosted_brain::forwarded(&[(API_KEY, "joined-key")]),
+                &kept_api,
+                &hosted_brain::brain("brain_inst")
+            ),
+            entries(&[(BASE, "kept-base"), (API_KEY, "kept-key")])
+        );
+
+        let kept_base = hosted_brain::values(&[(BASE, "kept-base")]);
+        assert_eq!(
+            instance_environment(
+                &hosted_brain::forwarded(&[(API_KEY, "joined-key")]),
+                &kept_base,
+                &hosted_brain::brain("brain_inst")
+            ),
+            entries(&[])
         );
     }
 }
