@@ -1,6 +1,6 @@
-//! Support for tests: the records a queue holds, and an OTLP/HTTP receiver
-//! that decodes each export request it gets and keeps the records, the path
-//! and the headers of the request.
+//! Support for tests: the records a queue holds, the `otlp_endpoint` of a
+//! loopback port, and an OTLP/HTTP receiver that decodes each export request
+//! it gets and keeps the records, the path and the headers of the request.
 
 use crate::exporter::LogRecordReceiver;
 use crate::otlp::messages::{AnyValue, ExportLogsServiceRequest, KeyValue, any_value};
@@ -15,6 +15,12 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+/// The `otlp_endpoint` of `port` on the loopback address, for a client on
+/// this machine.
+pub fn loopback_endpoint(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
+}
 
 /// The records `receiver` holds now, in the order they were exported.
 pub fn drain_records(receiver: &mut LogRecordReceiver) -> Vec<LogRecord> {
@@ -131,7 +137,7 @@ impl OtlpReceiver {
 
     /// The `otlp_endpoint` of the receiver for a client on this machine.
     pub fn endpoint(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port())
+        loopback_endpoint(self.port())
     }
 
     /// Answers the next requests with `statuses`, in order.

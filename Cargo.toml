@@ -76,6 +76,7 @@ mcp-test-support = { path = "crates/mcp-test-support" }
 mcp-server = { path = "crates/mcp-server-internal" }
 latency-report = { path = "crates/latency-report" }
 log-export = { path = "crates/log-export-internal" }
+loopback-test-support = { path = "crates/loopback-test-support" }
 node-stack = { path = "crates/node-stack-internal" }
 oci-registry = { path = "crates/oci-registry-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }

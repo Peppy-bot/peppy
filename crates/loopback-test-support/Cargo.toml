@@ -1,0 +1,18 @@
+# A loopback port that refuses each connection, for the tests that check what
+# a client does when nothing listens at its endpoint.
+[package]
+name = "loopback-test-support"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The socket that binds the port and never listens. Its constructor and its
+# bind use no runtime, so a test that runs no tokio runtime can hold a port.
+tokio = { version = "1", features = ["net"] }

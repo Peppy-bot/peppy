@@ -43,6 +43,9 @@ test-support = ["dep:axum", "tokio/net", "tokio/rt"]
 
 [dev-dependencies]
 log-export = { path = ".", features = ["test-support"] }
+# A port that refuses each connection, for the tests of an endpoint that
+# nothing listens on.
+loopback-test-support = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt", "test-util"] }
 tempfile = "3"
 # The official OTLP messages, to prove the local ones encode the same wire
