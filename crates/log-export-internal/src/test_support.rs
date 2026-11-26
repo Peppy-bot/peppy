@@ -1,6 +1,7 @@
-//! Support for tests: the records a queue holds, and an OTLP/HTTP receiver
-//! that decodes each export request it gets and keeps the records, the path
-//! and the headers of the request.
+//! Support for tests: the records a queue holds, an OTLP/HTTP receiver that
+//! decodes each export request it gets and keeps the records, the path and
+//! the headers of the request, and a loopback port that refuses each
+//! connection.
 
 use crate::exporter::LogRecordReceiver;
 use crate::otlp::messages::{AnyValue, ExportLogsServiceRequest, KeyValue, any_value};
@@ -11,8 +12,9 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use prost::Message;
 use std::collections::{BTreeMap, VecDeque};
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use tokio::net::TcpSocket;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -131,7 +133,7 @@ impl OtlpReceiver {
 
     /// The `otlp_endpoint` of the receiver for a client on this machine.
     pub fn endpoint(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port())
+        loopback_endpoint(self.port())
     }
 
     /// Answers the next requests with `statuses`, in order.
@@ -180,6 +182,49 @@ impl Drop for OtlpReceiver {
     fn drop(&mut self) {
         self.server.abort();
     }
+}
+
+/// A loopback port that refuses each connection while the value lives.
+///
+/// A socket binds the port and never listens, so the kernel refuses each
+/// connection to the port. The socket does not set `SO_REUSEADDR`, so no
+/// other socket can bind the port on the loopback address while the value
+/// lives: a bind that names the port fails with `EADDRINUSE`, and the kernel
+/// gives the port to no automatic bind (port 0) and to no connection as its
+/// source port. A port that a test binds and then frees has no such guard: a
+/// test that runs in parallel can listen on it, and a connection to it then
+/// gets an answer.
+#[derive(Debug)]
+pub struct ClosedPort {
+    socket: TcpSocket,
+}
+
+impl ClosedPort {
+    /// Binds a free loopback port, and holds it until the value drops.
+    pub fn hold() -> Self {
+        let socket = TcpSocket::new_v4().expect("a TCP socket opens");
+        socket
+            .bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .expect("a free loopback port binds");
+        Self { socket }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.socket
+            .local_addr()
+            .expect("the held port has an address")
+            .port()
+    }
+
+    /// The `otlp_endpoint` of the port for a client on this machine.
+    pub fn endpoint(&self) -> String {
+        loopback_endpoint(self.port())
+    }
+}
+
+/// The `otlp_endpoint` of `port` on the loopback address.
+fn loopback_endpoint(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
 }
 
 async fn receive(
@@ -257,5 +302,47 @@ fn text(value: AnyValue) -> String {
         Some(any_value::Value::StringValue(text)) => text,
         Some(any_value::Value::BoolValue(flag)) => flag.to_string(),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::ErrorKind;
+    use tokio::net::{TcpListener, TcpStream};
+
+    #[tokio::test]
+    async fn a_closed_port_refuses_a_connection() {
+        let closed = ClosedPort::hold();
+
+        let error = TcpStream::connect((Ipv4Addr::LOCALHOST, closed.port()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::ConnectionRefused, "{error}");
+    }
+
+    /// `TcpListener::bind` of tokio and of std sets `SO_REUSEADDR` on Unix.
+    /// The bind fails also with this option.
+    #[tokio::test]
+    async fn no_listener_can_bind_a_closed_port() {
+        let closed = ClosedPort::hold();
+
+        let error = TcpListener::bind((Ipv4Addr::LOCALHOST, closed.port()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::AddrInUse, "{error}");
+    }
+
+    /// The e2e tests hold a closed port in a test that runs no tokio runtime.
+    #[test]
+    fn a_closed_port_is_held_without_a_runtime() {
+        let closed = ClosedPort::hold();
+
+        assert_eq!(
+            closed.endpoint(),
+            format!("http://127.0.0.1:{}", closed.port())
+        );
     }
 }

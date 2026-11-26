@@ -37,8 +37,9 @@ tracing = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"], optional = true }
 
 [features]
-# `test_support::OtlpReceiver`, an OTLP/HTTP server for the tests of this
-# crate and of downstream crates.
+# `test_support::OtlpReceiver`, an OTLP/HTTP server, and
+# `test_support::ClosedPort`, a loopback port that refuses each connection,
+# for the tests of this crate and of downstream crates.
 test-support = ["dep:axum", "tokio/net", "tokio/rt"]
 
 [dev-dependencies]

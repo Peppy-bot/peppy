@@ -137,7 +137,7 @@ mod tests {
     use crate::otlp::encode::RequestBuilder;
     use crate::record::{LogIdentity, LogKind};
     use crate::test_fixtures::{headers_file, resource};
-    use crate::test_support::OtlpReceiver;
+    use crate::test_support::{ClosedPort, OtlpReceiver};
     use daemon_config::peppy_config::Severity;
     use std::sync::Arc;
     use std::time::SystemTime;
@@ -225,11 +225,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_nothing_listens_on_gives_no_answer() {
-        let port = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap().port()
-        };
-        let endpoint = OtlpEndpoint::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+        let closed = ClosedPort::hold();
+        let endpoint = OtlpEndpoint::parse(&closed.endpoint()).unwrap();
         let transport = HttpTransport::new(&endpoint).unwrap();
 
         let TransportError(reason) = transport

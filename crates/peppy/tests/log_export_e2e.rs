@@ -18,9 +18,9 @@
 )]
 mod common;
 
-use common::{ZenohDaemon, free_port};
+use common::ZenohDaemon;
 use daemon_config::consts::PeppyDirs;
-use log_export::test_support::{OtlpReceiver, ReceivedRecord};
+use log_export::test_support::{ClosedPort, OtlpReceiver, ReceivedRecord};
 use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -433,7 +433,8 @@ fn assert_every_command_takes_its_course_without(endpoint: &str) {
 
 #[test]
 fn every_command_takes_its_course_while_nothing_listens_at_the_endpoint() {
-    assert_every_command_takes_its_course_without(&format!("http://127.0.0.1:{}", free_port()));
+    let closed = ClosedPort::hold();
+    assert_every_command_takes_its_course_without(&closed.endpoint());
 }
 
 #[test]
