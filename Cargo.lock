@@ -3001,6 +3001,7 @@ dependencies = [
  "bytes",
  "daemon-config",
  "log-export",
+ "loopback-test-support",
  "opentelemetry-proto",
  "prost",
  "rand 0.10.4",
@@ -3012,6 +3013,13 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "loopback-test-support"
+version = "0.0.1"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]
@@ -3509,6 +3517,7 @@ dependencies = [
  "daemon-config",
  "futures-util",
  "httpmock",
+ "loopback-test-support",
  "peppy-config-model",
  "reqwest",
  "serde",
@@ -3777,6 +3786,7 @@ dependencies = [
  "json5-pretty",
  "latency-report",
  "log-export",
+ "loopback-test-support",
  "mcp-server",
  "mcp-test-support",
  "names-generator2",

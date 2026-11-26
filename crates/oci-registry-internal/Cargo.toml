@@ -46,6 +46,9 @@ registry_e2e = ["test-support"]
 
 [dev-dependencies]
 httpmock = "0.9"
+# A port that refuses each connection, the address of a registry that
+# nothing listens at.
+loopback-test-support = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [[test]]

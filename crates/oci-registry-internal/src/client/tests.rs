@@ -4,6 +4,7 @@
 
 use super::*;
 use httpmock::prelude::*;
+use loopback_test_support::ClosedPort;
 // The method of the client, which the glob of httpmock also names.
 use reqwest::Method;
 use std::assert_matches;
@@ -641,14 +642,9 @@ async fn a_manifest_is_put_under_its_tag_with_the_image_manifest_media_type() {
 
 #[tokio::test]
 async fn an_unreachable_registry_names_itself_and_the_cause() {
-    // Bind and drop a listener so the port refuses connections.
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind")
-        .local_addr()
-        .expect("address")
-        .port();
-    let repository =
-        OciRepository::parse(&format!("oci://127.0.0.1:{port}/acme/nodes")).expect("repository");
+    let closed = ClosedPort::hold();
+    let repository = OciRepository::parse(&format!("oci://{}/acme/nodes", closed.address()))
+        .expect("repository");
     let client = RegistryClient::new(
         &repository,
         CredentialStore::new("/nonexistent".into(), OsString::new()),
@@ -660,7 +656,7 @@ async fn an_unreachable_registry_names_itself_and_the_cause() {
 
     assert_matches!(error, RegistryError::Unreachable { .. }, "{error}");
     assert!(
-        error.to_string().contains(&format!("127.0.0.1:{port}")),
+        error.to_string().contains(&closed.address().to_string()),
         "{error}"
     );
 }

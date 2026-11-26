@@ -137,8 +137,9 @@ mod tests {
     use crate::otlp::encode::RequestBuilder;
     use crate::record::{LogIdentity, LogKind};
     use crate::test_fixtures::{headers_file, resource};
-    use crate::test_support::OtlpReceiver;
+    use crate::test_support::{OtlpReceiver, loopback_endpoint};
     use daemon_config::peppy_config::Severity;
+    use loopback_test_support::ClosedPort;
     use std::sync::Arc;
     use std::time::SystemTime;
 
@@ -225,13 +226,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_nothing_listens_on_gives_no_answer() {
-        // The socket holds the port for the whole test and never listens on
-        // it: no other test can bind the port, and a connection to it is
-        // refused.
-        let unlistened = tokio::net::TcpSocket::new_v4().unwrap();
-        unlistened.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-        let port = unlistened.local_addr().unwrap().port();
-        let endpoint = OtlpEndpoint::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+        let closed = ClosedPort::hold();
+        let endpoint = OtlpEndpoint::parse(&loopback_endpoint(closed.address().port())).unwrap();
         let transport = HttpTransport::new(&endpoint).unwrap();
 
         let TransportError(reason) = transport
