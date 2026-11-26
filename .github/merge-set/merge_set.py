@@ -237,7 +237,7 @@ PEPPY = Repository("peppy", resolve.PEPPY_DEV_BRANCH, None)
 # The libraries that the nodes of the hubs build on. No hub CI reads its branch
 # of a set.
 PUBLIC_PEPPY_LIBS = Repository("public-peppy-libs", "main", None)
-# The platform, whose simulation chat drives a stack through the MCP endpoints
+# The platform, whose studio chat drives a stack through the MCP endpoints
 # that peppy and the hubs serve and shows the viewer page of the simulation. No
 # hub CI reads it. Each commit of its `main` is one squashed pull request, so
 # that a deploy names one change.
