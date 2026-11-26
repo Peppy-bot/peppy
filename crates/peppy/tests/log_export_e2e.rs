@@ -18,11 +18,11 @@
 )]
 mod common;
 
-use common::{ZenohDaemon, free_port};
+use common::ZenohDaemon;
 use daemon_config::consts::PeppyDirs;
 use log_export::test_support::{OtlpReceiver, ReceivedRecord};
 use std::collections::BTreeMap;
-use std::net::TcpListener;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -433,7 +433,14 @@ fn assert_every_command_takes_its_course_without(endpoint: &str) {
 
 #[test]
 fn every_command_takes_its_course_while_nothing_listens_at_the_endpoint() {
-    assert_every_command_takes_its_course_without(&format!("http://127.0.0.1:{}", free_port()));
+    // The socket holds the port for the whole test and never listens on it:
+    // no other test can listen there, and the daemon cannot connect to it.
+    let unlistened = tokio::net::TcpSocket::new_v4().expect("a loopback socket");
+    unlistened
+        .bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .expect("hold a loopback port");
+    let port = unlistened.local_addr().expect("local address").port();
+    assert_every_command_takes_its_course_without(&format!("http://127.0.0.1:{port}"));
 }
 
 #[test]
