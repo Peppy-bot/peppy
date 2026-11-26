@@ -14,6 +14,7 @@ pub mod repo;
 pub mod service;
 pub mod stack;
 mod table;
+pub mod update;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
