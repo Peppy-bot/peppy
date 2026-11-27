@@ -1,0 +1,169 @@
+name: OpenCodeReview
+
+# A second review of each pull request of peppy, in the delegation mode of
+# OpenCodeReview (OCR, https://github.com/alibaba/open-code-review), next to
+# the Claude review of a set. The OCR CLI selects the files to review and
+# gives the rules of each, the Claude CLI reviews them by the skill
+# `open-code-review-delegate` of OCR with the Claude login of the
+# subscription, and the poster of the OCR GitHub Action posts the findings:
+# inline comments, and one summary comment that each run updates. The run
+# never approves and never requests changes, and no ruleset requires its
+# check. .github/open-code-review/open_code_review.py gives the design.
+#
+# A run starts on each push of a pull request, and on a comment that starts
+# with `/open-code-review` from a member or a collaborator of the repository.
+#
+# Nothing of a pull request can change what the job runs. A
+# `pull_request_target` run and a comment run take this file and the reviewer
+# from the base branch, and OCR from a pinned release. The job reads the
+# pull request as data: it runs none of its code.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+# One review at a time for each pull request: a new push or a new command
+# cancels the review in progress, which reads a head that is no longer the
+# head. GitHub evaluates the group before the condition of the job, so a
+# comment that starts no review goes to a group of its own run and cancels
+# nothing.
+concurrency:
+  group: >-
+    ${{
+      (
+        github.event_name == 'pull_request_target'
+        || (
+          github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && github.event.issue.state == 'open'
+          && github.event.comment.user.type != 'Bot'
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+          && startsWith(github.event.comment.body, '/open-code-review')
+        )
+      )
+      && format('open-code-review-{0}', github.event.pull_request.number || github.event.issue.number)
+      || format('open-code-review-noop-{0}', github.run_id)
+    }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  review:
+    # The same condition as the group above. A bot never starts a review, and
+    # only a member or a collaborator spends the usage of the Claude login
+    # with a comment.
+    if: >-
+      github.event_name == 'pull_request_target'
+      || (
+        github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && github.event.issue.state == 'open'
+        && github.event.comment.user.type != 'Bot'
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+        && startsWith(github.event.comment.body, '/open-code-review')
+      )
+    # A small RunsOn runner: Claude reads and the job builds nothing.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    # The Claude CLI has 45 minutes (claude_review.REVIEW_TIMEOUT_SECONDS).
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      # The release of OCR whose CLI, skill and poster the job runs: the
+      # commit of its tag, and the sha256 of its CLI for linux/amd64, as the
+      # sha256sum.txt of the release gives it. Change the three together.
+      OCR_VERSION: 1.14.3
+      OCR_COMMIT: f6379f71edba1e59dbc056e8f455df1f84396498
+      OCR_SHA256: 17ee32cdf0af6c006a199d758defb6c2abe05ec5b4d164df3a703c0208d5155e
+      # The version of the Claude CLI is pinned, as the model and the effort
+      # are in claude_review.py, so that a new release does not change the
+      # reviewer. It is the version of the Claude review of a set.
+      CLAUDE_CLI_VERSION: 2.1.327
+
+    steps:
+      # The reviewer, its imports and the installer, at the commit of this
+      # workflow: the tip of the base branch of the pull request for a push,
+      # and of the default branch for a comment.
+      - name: Check out the reviewer of peppy
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: |
+            /.github/open-code-review/
+            /.github/merge-set/
+            /.github/actions/hub-ci-peppy/
+            /scripts/run_installer.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The skill that Claude follows and the poster of the OCR GitHub Action.
+      - name: Check out the skill and the poster of OCR
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: alibaba/open-code-review
+          ref: ${{ env.OCR_COMMIT }}
+          path: open-code-review
+          sparse-checkout: |
+            /skills/open-code-review-delegate/SKILL.md
+            /scripts/github-actions/post-review-comments.js
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The curl options are those of every download of a release
+      # (scripts/functions/download.py).
+      - name: Install the OCR CLI
+        run: |
+          dir="$RUNNER_TEMP/ocr"
+          mkdir -p "$dir"
+          curl --fail --silent --show-error --location \
+            --retry 10 --retry-max-time 180 --retry-connrefused \
+            --output "$dir/ocr" \
+            "https://github.com/alibaba/open-code-review/releases/download/v${OCR_VERSION}/opencodereview-linux-amd64"
+          echo "${OCR_SHA256}  $dir/ocr" | sha256sum -c -
+          chmod +x "$dir/ocr"
+
+      - name: Install the Claude CLI
+        run: |
+          ./scripts/run_installer.sh https://claude.ai/install.sh "$CLAUDE_CLI_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Every value reaches the script through the environment rather than a
+      # `${{ }}` expansion in its source, so it is data the script parses.
+      - name: Review the pull request
+        id: review
+        env:
+          REVIEW_TOKEN: ${{ github.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          REVIEW_OCR: ${{ runner.temp }}/ocr/ocr
+          REVIEW_SKILL: ${{ github.workspace }}/open-code-review/skills/open-code-review-delegate/SKILL.md
+          REVIEW_WORKSPACE: ${{ runner.temp }}/open-code-review
+        run: python3 .github/open-code-review/open_code_review.py review --result "$RUNNER_TEMP/ocr-result.json" --errors "$RUNNER_TEMP/ocr-errors.log"
+
+      # The poster posts the result, or the cause of a review that did not
+      # complete. Incremental: a comment that overlaps an inline comment of
+      # an earlier run is not posted again.
+      - name: Post the review
+        if: ${{ !cancelled() && steps.review.outcome != 'skipped' }}
+        uses: actions/github-script@v9.0.0
+        env:
+          REVIEW_PULL_REQUEST: ${{ github.event.pull_request.number || github.event.issue.number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { runPostReviewComments } = require(
+              `${process.env.GITHUB_WORKSPACE}/open-code-review/scripts/github-actions/post-review-comments.js`
+            );
+            await runPostReviewComments({
+              github,
+              context,
+              core,
+              fs,
+              prNumber: Number(process.env.REVIEW_PULL_REQUEST),
+              resultPath: `${process.env.RUNNER_TEMP}/ocr-result.json`,
+              stderrPath: `${process.env.RUNNER_TEMP}/ocr-errors.log`,
+              stickySummary: true,
+              incremental: true,
+              appSlug: 'github-actions',
+            });

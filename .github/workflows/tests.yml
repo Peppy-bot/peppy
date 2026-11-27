@@ -175,6 +175,18 @@ jobs:
             --start-directory .github/merge-set \
             --pattern 'test_*.py' --verbose
 
+      # The OpenCodeReview review (open-code-review.yml) runs from the base
+      # branch of each pull request, with the Claude run and the checkouts of
+      # the Claude review of a set. Its cases hold its workflow to the names
+      # its script reads and run the git of the runner on local repositories,
+      # so they run on every change, as a change of the merge-set bot can
+      # break them.
+      - name: Test the OpenCodeReview review
+        run: |
+          python3 -m unittest discover \
+            --start-directory .github/open-code-review \
+            --pattern 'test_*.py' --verbose
+
       - name: Detect changed test inputs
         id: changes
         uses: $/.github/actions/changed-test-inputs
