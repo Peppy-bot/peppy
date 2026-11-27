@@ -97,6 +97,10 @@ from merge_set import (
 # an alias that follows the newest model.
 CLAUDE_MODEL = "claude-opus-5-5"
 CLAUDE_EFFORT = "xhigh"
+# The version of the CLI, which each workflow that runs this reviewer installs
+# (its WORKFLOW_LINES hold the line), so that a new release does not change
+# the reviewer.
+CLAUDE_CLI_VERSION = "2.1.327"
 # The tools of each run: they read, and nothing else.
 CLAUDE_TOOLS = "Read Grep Glob"
 # The most runs that confirm a blocking finding at the same time.
@@ -490,10 +494,17 @@ def is_relative_path(text: str) -> bool:
     return not path.is_absolute() and ".." not in path.parts and str(path) == text
 
 
-def nonempty_text(item: Mapping, key: str, where: str) -> str:
+def nonempty_text(
+    item: Mapping,
+    key: str,
+    where: str,
+    fail: Callable[[str], ReviewFailure] = InvalidAnswer,
+) -> str:
+    """The text at `key` of a document; `fail` makes the exception of a
+    document that does not agree with its schema, from the detail."""
     value = item.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise InvalidAnswer(f"{where} has no `{key}` text")
+        raise fail(f"{where} has no `{key}` text")
     return value
 
 
@@ -1777,6 +1788,7 @@ WORKFLOW_LINES = (
     "permission-contents: read",
     "permission-pull-requests: write",
     "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    f"CLAUDE_CLI_VERSION: {CLAUDE_CLI_VERSION}",
     "repositories: ${{ steps.repositories.outputs.repositories }}",
     "run: python3 peppy/.github/merge-set/claude_review.py repositories",
     f"run: {REVIEW_COMMAND}",

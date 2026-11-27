@@ -933,6 +933,12 @@ class WorkflowContract(unittest.TestCase):
             with self.subTest(input=name):
                 self.assertIn(f"{name}:", claude_review.WORKFLOW_LINES)
 
+    def test_the_workflow_installs_the_cli_of_the_script(self):
+        self.assertIn(
+            f"CLAUDE_CLI_VERSION: {claude_review.CLAUDE_CLI_VERSION}",
+            claude_review.WORKFLOW_LINES,
+        )
+
     def test_the_outcome_is_the_artifact_that_the_bot_reads(self):
         self.assertIn(
             f"name: {merge_set.REVIEW_OUTCOME_ARTIFACT}", claude_review.WORKFLOW_LINES

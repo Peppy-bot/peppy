@@ -12,17 +12,23 @@ name: OpenCodeReview
 #
 # A run starts on each push of a pull request whose author is an owner, a
 # member or a collaborator of the repository, and on a comment that starts
-# with `/open-code-review` from such a user: each run spends the usage of the
-# Claude login, which the Claude review of a set also uses. No bot starts a
-# run. A member reviews a pull request of another author with the comment.
+# with `/open-code-review` from such a user. No bot starts a run. A member
+# reviews a pull request of another author with the comment. Each run spends
+# the usage of the Claude login, which the Claude review of a set and the
+# release also use, so a push to a draft starts no run: the review starts when
+# the pull request is ready for review. A push whose head differs from the
+# head of the last complete review by a clean merge of the base branch alone
+# keeps that review, and Claude does not run.
 #
 # Nothing of a pull request can change what the job runs. A
-# `pull_request_target` run and a comment run take this file and the reviewer
-# from the default branch, and OCR from a pinned release. The job reads the
-# pull request as data: it runs none of its code.
+# `pull_request_target` run takes this file and the reviewer from the base
+# branch of the pull request, and a comment run from the default branch:
+# branches of the repository, which only a user with write access changes. OCR
+# comes from a pinned release. The job reads the pull request as data: it runs
+# none of its code.
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
   issue_comment:
     types: [created]
 
@@ -37,6 +43,7 @@ concurrency:
       (
         (
           github.event_name == 'pull_request_target'
+          && !github.event.pull_request.draft
           && github.event.pull_request.user.type != 'Bot'
           && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
         )
@@ -63,6 +70,7 @@ jobs:
     if: >-
       (
         github.event_name == 'pull_request_target'
+        && !github.event.pull_request.draft
         && github.event.pull_request.user.type != 'Bot'
         && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
       )
@@ -76,8 +84,11 @@ jobs:
       )
     # A small RunsOn runner: Claude reads and the job builds nothing.
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
-    # The Claude CLI has 45 minutes (claude_review.REVIEW_TIMEOUT_SECONDS).
-    timeout-minutes: 60
+    # Each step has a time limit, and the job outlasts their sum: a step at
+    # its limit fails, and the post step then posts the cause. The job at its
+    # limit is cancelled, which skips the post step.
+    # (test_open_code_review.py checks the limits.)
+    timeout-minutes: 120
     permissions:
       contents: read
       pull-requests: write
@@ -89,14 +100,17 @@ jobs:
       OCR_COMMIT: f6379f71edba1e59dbc056e8f455df1f84396498
       OCR_SHA256: 17ee32cdf0af6c006a199d758defb6c2abe05ec5b4d164df3a703c0208d5155e
       # The version of the Claude CLI is pinned, as the model and the effort
-      # are in claude_review.py, so that a new release does not change the
-      # reviewer. It is the version of the Claude review of a set.
+      # are, so that a new release does not change the reviewer: the
+      # CLAUDE_CLI_VERSION of claude_review.py, which the tests check here and
+      # in the workflow of the Claude review of a set.
       CLAUDE_CLI_VERSION: 2.1.327
 
     steps:
       # The reviewer, its imports and the installer, at the commit of this
-      # workflow: the tip of the default branch, for a push and for a comment.
+      # workflow: the tip of the base branch of the pull request for a push,
+      # and of the default branch for a comment.
       - name: Check out the reviewer of peppy
+        timeout-minutes: 5
         uses: actions/checkout@v7.0.1
         with:
           sparse-checkout: |
@@ -109,6 +123,7 @@ jobs:
 
       # The skill that Claude follows and the poster of the OCR GitHub Action.
       - name: Check out the skill and the poster of OCR
+        timeout-minutes: 5
         uses: actions/checkout@v7.0.1
         with:
           repository: alibaba/open-code-review
@@ -123,6 +138,7 @@ jobs:
       # The curl options are those of every download of a release
       # (scripts/functions/download.py).
       - name: Install the OCR CLI
+        timeout-minutes: 5
         run: |
           dir="$RUNNER_TEMP/ocr"
           mkdir -p "$dir"
@@ -134,27 +150,34 @@ jobs:
           chmod +x "$dir/ocr"
 
       - name: Install the Claude CLI
+        timeout-minutes: 10
         run: |
           ./scripts/run_installer.sh https://claude.ai/install.sh "$CLAUDE_CLI_VERSION"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # Every value reaches the script through the environment rather than a
-      # `${{ }}` expansion in its source, so it is data the script parses.
+      # `${{ }}` expansion in its source, so it is data the script parses. The
+      # limit holds the Claude run, the two OCR commands and the git commands.
       - name: Review the pull request
         id: review
+        timeout-minutes: 80
         env:
           REVIEW_TOKEN: ${{ github.token }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           REVIEW_OCR: ${{ runner.temp }}/ocr/ocr
           REVIEW_SKILL: ${{ github.workspace }}/open-code-review/skills/open-code-review-delegate/SKILL.md
           REVIEW_WORKSPACE: ${{ runner.temp }}/open-code-review
-        run: python3 .github/open-code-review/open_code_review.py review --result "$RUNNER_TEMP/ocr-result.json" --errors "$RUNNER_TEMP/ocr-errors.log"
+        run: python3 .github/open-code-review/open_code_review.py review --result "$RUNNER_TEMP/ocr-result.json" --errors "$RUNNER_TEMP/ocr-errors.log" --poster "$RUNNER_TEMP/ocr-poster.json"
 
       # The poster posts the result, or the cause of a review that did not
-      # complete. Incremental: a comment that overlaps an inline comment of
-      # an earlier run is not posted again.
+      # complete, with the options that the review step chose
+      # (open_code_review.py gives them). Incremental: a comment that overlaps
+      # an inline comment of an earlier run is not posted again. A run that
+      # stopped before the review step wrote the options (a step that failed
+      # or reached its time limit) gets a cause in a new comment.
       - name: Post the review
-        if: ${{ !cancelled() && steps.review.outcome != 'skipped' }}
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
         uses: actions/github-script@v9.0.0
         env:
           REVIEW_PULL_REQUEST: ${{ github.event.pull_request.number || github.event.issue.number }}
@@ -164,15 +187,27 @@ jobs:
             const { runPostReviewComments } = require(
               `${process.env.GITHUB_WORKSPACE}/open-code-review/scripts/github-actions/post-review-comments.js`
             );
+            const resultPath = `${process.env.RUNNER_TEMP}/ocr-result.json`;
+            const stderrPath = `${process.env.RUNNER_TEMP}/ocr-errors.log`;
+            const posterPath = `${process.env.RUNNER_TEMP}/ocr-poster.json`;
+            let options = { stickySummary: false };
+            if (fs.existsSync(posterPath)) {
+              options = JSON.parse(fs.readFileSync(posterPath, 'utf8'));
+            } else {
+              fs.writeFileSync(
+                stderrPath,
+                'The run stopped before the review completed: the log of the run gives the cause.\n'
+              );
+            }
             await runPostReviewComments({
               github,
               context,
               core,
               fs,
               prNumber: Number(process.env.REVIEW_PULL_REQUEST),
-              resultPath: `${process.env.RUNNER_TEMP}/ocr-result.json`,
-              stderrPath: `${process.env.RUNNER_TEMP}/ocr-errors.log`,
-              stickySummary: true,
+              resultPath,
+              stderrPath,
               incremental: true,
               appSlug: 'github-actions',
+              ...options,
             });

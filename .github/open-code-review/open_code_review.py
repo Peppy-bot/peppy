@@ -2,9 +2,9 @@
 """The OpenCodeReview review of a pull request of peppy.
 
 The workflow `OpenCodeReview` (.github/workflows/open-code-review.yml) runs
-`review` on each push of a pull request of a member or a collaborator, and on
-a comment of a member or a collaborator that starts with `/open-code-review`.
-The review is the delegation mode of OpenCodeReview (OCR,
+`review` on each push of a pull request of a member or a collaborator that is
+not a draft, and on a comment of a member or a collaborator that starts with
+`/open-code-review`. The review is the delegation mode of OpenCodeReview (OCR,
 https://github.com/alibaba/open-code-review):
 
 1. The OCR CLI selects the files of the pull request to review
@@ -16,17 +16,30 @@ https://github.com/alibaba/open-code-review):
 3. The script writes the findings in the JSON form of `ocr review --format
    json`, and the poster of the OCR GitHub Action posts them on the pull
    request: inline comments, and one summary comment that each run updates.
+   The behavior changes, the findings on a file that is not to review and the
+   files that the review does not read are the warnings of the summary.
 
 OCR runs no model of its own: its native mode sends its prompts to a model
 provider with an API token, and the Claude login of a subscription is for
 Claude Code alone.
 
+Each run spends the usage of the Claude login, which the Claude review of a set
+and the release also use, so a push that brings nothing new to review starts
+no Claude run. A review that posts each of its findings records its head in the
+checkpoint of the poster, a marker in the summary comment. A push whose head
+differs from that head by a clean merge of the base branch alone (the rule of
+merge_set for a commit that a hub run tested) keeps that review. A comment, and
+a pull request that opens, reopens or becomes ready for review, gets a review
+in full.
+
 Nothing of a pull request runs, and a pull request cannot change the rules,
 the skill, the prompt or the poster of its review:
 
-- The workflow runs from the default branch. This script, the skill and the
-  poster come from trusted checkouts: peppy at the commit of the workflow, and
-  OCR at a pinned commit.
+- The workflow runs from the base branch of the pull request for a push, and
+  from the default branch for a comment: branches of the repository, which
+  only a user with write access changes. This script, the skill and the poster
+  come from trusted checkouts: peppy at the commit of the workflow, and OCR at
+  a pinned commit.
 - The OCR CLI runs in a checkout of the base branch, from which it reads the
   rules of the project (`.opencodereview/rule.json`). Its environment holds no
   token, and the objects it reads are already local.
@@ -41,20 +54,25 @@ the skill, the prompt or the poster of its review:
   Claude login alone.
 - The title and the body of the pull request reach the prompt as one JSON
   document that the prompt marks as data. Each text of Claude that the poster
-  posts goes through claude_review.without_mentions, and the location of a
-  behavior change is a changed file.
+  posts, and each path of a warning, goes through claude_review.without_mentions.
 
 A review that does not complete writes its cause to the error file, which the
-poster posts in the summary comment, and fails. The decisions are pure
-functions of their inputs, tested in test_open_code_review.py. Standard
-library only: the run uses the python3 and the git of its runner.
+poster posts, and fails. The cause replaces a summary comment that holds the
+cause of an earlier run, and goes to a new comment else: the summary of the
+last review stays, with its warnings and the findings that GitHub could not
+take inline. The decisions are pure functions of their inputs, tested in
+test_open_code_review.py. Standard library only: the run uses the python3 and
+the git of its runner.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import traceback
@@ -74,9 +92,18 @@ from claude_review import (
     ReviewFailure,
     Workspace,
     is_relative_path,
+    nonempty_text,
     without_mentions,
 )
-from merge_set import PEPPY, ApiError, GitHubApi, MergeSetError, PullRequest
+from merge_set import (
+    PEPPY,
+    ApiError,
+    GitError,
+    GitHubApi,
+    GitMerges,
+    MergeSetError,
+    PullRequest,
+)
 
 # The skill of OCR that the review follows; the workflow checks it out at the
 # commit of the OCR release that it pins.
@@ -86,9 +113,11 @@ DELEGATE_SCHEMA_VERSION = "1"
 OCR_TIMEOUT_SECONDS = 10 * 60
 # The command that starts a review in a comment on a pull request.
 COMMENT_COMMAND = "/open-code-review"
-# The files of the review step, which the post step reads.
+# The files of the review step, which the post step reads: the result, the
+# cause of a review that does not complete, and the options of the poster.
 RESULT_FILE = "ocr-result.json"
 ERRORS_FILE = "ocr-errors.log"
+POSTER_FILE = "ocr-poster.json"
 # The cause that the pull request gets for an error that is not a failure of
 # the review: the log of the run gives the error.
 STOPPED_CAUSE = "The review run stopped on an error: the log of the run gives it."
@@ -96,6 +125,7 @@ STOPPED_CAUSE = "The review run stopped on an error: the log of the run gives it
 # A function that makes the exception of a document that does not agree with
 # its schema, from the detail of the problem.
 Failure = Callable[[str], ReviewFailure]
+COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 def object_list(item: Mapping, key: str, fail: Failure) -> list[Mapping]:
@@ -107,11 +137,11 @@ def object_list(item: Mapping, key: str, fail: Failure) -> list[Mapping]:
     return entries
 
 
-def text_field(item: Mapping, key: str, where: str, fail: Failure) -> str:
-    value = item.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise fail(f"{where} has no `{key}` text")
-    return value
+def relative_path_of(item: Mapping, where: str, fail: Failure) -> str:
+    path = nonempty_text(item, "path", where, fail)
+    if not is_relative_path(path):
+        raise fail(f"the path of {where} is not relative to the repository")
+    return path
 
 
 # The pull request ---------------------------------------------------------------
@@ -133,6 +163,12 @@ def pull_request_number(event_name: str, event: Mapping) -> int:
     return number
 
 
+def is_push(event_name: str, event: Mapping) -> bool:
+    """Whether the event is a push to the pull request, which can keep the
+    review of an earlier head."""
+    return event_name == "pull_request_target" and event.get("action") == "synchronize"
+
+
 @dataclass(frozen=True)
 class ReviewedPullRequest:
     pull_request: PullRequest
@@ -145,6 +181,119 @@ def fetch_pull_request(api: GitHubApi, number: int) -> ReviewedPullRequest:
     item = api.request("GET", f"/repos/{PEPPY.full_name}/pulls/{number}")
     return ReviewedPullRequest(
         merge_set.parse_pull_request(PEPPY, item), item.get("body") or ""
+    )
+
+
+# The summary comment of the poster ----------------------------------------------
+
+
+# What the poster of the OCR release that the workflow pins writes: the marker
+# at the start of each of its summary comments, the heading of the summary of
+# a run that did not complete, and the checkpoint, an HTML comment that holds
+# a JSON document in base64.
+SUMMARY_MARKER = "<!-- ocr-summary -->"
+ERROR_HEADING = "⚠️ **OpenCodeReview** encountered an error:"
+CHECKPOINT_MARKER = re.compile(r"<!-- ocr-checkpoint:v1 ([A-Za-z0-9+/]+={0,2}) -->")
+CHECKPOINT_VERSION = 1
+# The GitHub App of the token of the job (github.token), which writes the
+# summary comments.
+POSTER_APP = "github-actions"
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    """The record of a review that posted each of its findings: the head and
+    the base branch that it read, and the fingerprint of its reviewer."""
+
+    head: str
+    base_branch: str
+    fingerprint: str
+
+
+@dataclass(frozen=True)
+class SummaryComment:
+    """The newest summary comment of the poster on the pull request."""
+
+    holds_error: bool
+    checkpoint: Checkpoint | None
+
+
+def writer_app(item: Mapping) -> str | None:
+    """The GitHub App that wrote a comment, as the poster reads it: the App
+    that the API names, else the login of the bot. None for a comment of a
+    user, whatever App it went through."""
+    user = item.get("user")
+    if not isinstance(user, Mapping) or user.get("type") == "User":
+        return None
+    app = item.get("performed_via_github_app")
+    if isinstance(app, Mapping) and isinstance(app.get("slug"), str) and app["slug"]:
+        return app["slug"]
+    login = user.get("login")
+    if isinstance(login, str) and login.endswith("[bot]"):
+        return login.removesuffix("[bot]")
+    return None
+
+
+def is_poster_summary(item: Mapping) -> bool:
+    """Whether a comment is a summary comment of the poster: the poster finds
+    the one that a run updates by its marker and by its writer, so a user who
+    quotes the marker writes no summary."""
+    body = item.get("body")
+    return (
+        isinstance(body, str)
+        and SUMMARY_MARKER in body
+        and writer_app(item) == POSTER_APP
+    )
+
+
+def parse_checkpoint(body: str, number: int) -> Checkpoint | None:
+    """The checkpoint of a summary comment; None when the body holds none,
+    more than one, or one that does not agree with the form of the poster or
+    is about another pull request."""
+    markers = CHECKPOINT_MARKER.findall(body)
+    if len(markers) != 1:
+        return None
+    try:
+        payload = json.loads(base64.b64decode(markers[0], validate=True))
+    except ValueError:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    head = payload.get("head")
+    base_branch = payload.get("base_ref")
+    fingerprint = payload.get("fingerprint")
+    if (
+        payload.get("v") != CHECKPOINT_VERSION
+        or type(payload.get("pr")) is not int
+        or payload["pr"] != number
+        or payload.get("terminal_state") != "complete"
+        or not isinstance(head, str)
+        or not COMMIT.fullmatch(head)
+        or not isinstance(base_branch, str)
+        or not base_branch
+        or not isinstance(fingerprint, str)
+        or not fingerprint
+    ):
+        return None
+    return Checkpoint(head, base_branch, fingerprint)
+
+
+def newest_summary(comments: Sequence[Mapping], number: int) -> SummaryComment | None:
+    """The summary comment that the poster updates: its newest one among the
+    comments of the pull request, oldest first as GitHub lists them."""
+    for item in reversed(comments):
+        if is_poster_summary(item):
+            body = item["body"]
+            return SummaryComment(
+                body.startswith(f"{SUMMARY_MARKER}\n{ERROR_HEADING}"),
+                parse_checkpoint(body, number),
+            )
+    return None
+
+
+def read_summary(api: GitHubApi, number: int) -> SummaryComment | None:
+    return newest_summary(
+        api.pages(f"/repos/{PEPPY.full_name}/issues/{number}/comments"), number
     )
 
 
@@ -189,29 +338,63 @@ def parse_name_status(text: str) -> tuple[ChangedFile, ...]:
     return tuple(files)
 
 
-@dataclass(frozen=True)
-class PreparedReview:
-    revisions: Revisions
-    changed: tuple[ChangedFile, ...]
+def fetch_revisions(
+    workspace: Workspace, pull_request: PullRequest, reviewed: str | None
+) -> tuple[Revisions, str | None]:
+    """Fetch the base branch, the head and the reviewed head of a checkpoint;
+    the revisions of the review, and the reviewed head when GitHub still has
+    it, else None."""
+    fetched = workspace.fetch(pull_request, reviewed)
+    base = workspace.base_commit(pull_request)
+    merge_base = workspace.merge_base(pull_request, base)
+    return Revisions(base, merge_base, pull_request.head_commit), fetched
 
 
-def prepare(workspace: Workspace, pull_request: PullRequest) -> PreparedReview:
+def differs_by_base_merge(
+    workspace: Workspace, merges: GitMerges, revisions: Revisions, reviewed: str
+) -> bool:
+    """Whether the head differs from the reviewed head by a clean merge of the
+    base branch alone: git merges the reviewed head and the newest commit of
+    the base branch that the head holds (the merge base of the review), with
+    no conflict, into the tree of the head. A merge that git cannot check
+    counts as no clean merge, and the head gets a review."""
+    found = workspace.git(
+        PEPPY, "merge-base", revisions.merge_base, reviewed, check=False
+    )
+    if found.returncode != 0:
+        return False
+    try:
+        return merges.is_clean_merge(
+            PEPPY, found.stdout.strip(), reviewed, revisions.merge_base, revisions.head
+        )
+    except GitError as error:
+        print(
+            f"The review does not keep the review of {reviewed}: git did not "
+            f"check the merge. {error}",
+            flush=True,
+        )
+        return False
+
+
+def prepare(workspace: Workspace, revisions: Revisions) -> tuple[ChangedFile, ...]:
     """Check out the tip of the base branch and the head, and list the
     changed files. The workspace fetches no file before git needs it, so a
     diff of the two sides fetches the files that the OCR CLI reads: it then
     reads local objects alone."""
-    workspace.fetch(pull_request, None)
-    base = workspace.base_commit(pull_request)
-    merge_base = workspace.merge_base(pull_request, base)
-    head = pull_request.head_commit
     layout = workspace.layout
-    workspace.check_out(PEPPY, base, layout.default_branch_of(PEPPY))
-    workspace.check_out(PEPPY, head, layout.head_of(PEPPY))
-    workspace.diff(PEPPY, merge_base, head)
+    workspace.check_out(PEPPY, revisions.base, layout.default_branch_of(PEPPY))
+    workspace.check_out(PEPPY, revisions.head, layout.head_of(PEPPY))
+    workspace.diff(PEPPY, revisions.merge_base, revisions.head)
     names = workspace.git(
-        PEPPY, "diff", "--name-status", "-z", "--find-renames", merge_base, head
+        PEPPY,
+        "diff",
+        "--name-status",
+        "-z",
+        "--find-renames",
+        revisions.merge_base,
+        revisions.head,
     ).stdout
-    return PreparedReview(Revisions(base, merge_base, head), parse_name_status(names))
+    return parse_name_status(names)
 
 
 def diff_path(layout: Layout, index: int) -> Path:
@@ -238,6 +421,17 @@ def write_diffs(
         )
 
 
+def git_lines(data: bytes) -> list[str]:
+    """The lines of a file as git and GitHub number them: a line ends at each
+    line feed and only there, so a carriage return, a form feed or a line
+    separator of Unicode stays in its line. A byte that is not UTF-8 becomes
+    the replacement character."""
+    lines = data.decode(errors="replace").split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def head_lines(layout: Layout) -> Callable[[str], list[str] | None]:
     """The lines of a file at the head; None when the head has no such
     file."""
@@ -246,7 +440,7 @@ def head_lines(layout: Layout) -> Callable[[str], list[str] | None]:
         file = layout.head_of(PEPPY) / path
         if not file.is_file():
             return None
-        return file.read_text(errors="replace").splitlines()
+        return git_lines(file.read_bytes())
 
     return read
 
@@ -316,13 +510,6 @@ def delegate_document(text: str, fail: Failure) -> Mapping:
     return document
 
 
-def file_path_of(item: Mapping, fail: Failure) -> str:
-    path = text_field(item, "path", "an entry", fail)
-    if not is_relative_path(path):
-        raise fail("a path is not relative to the repository")
-    return path
-
-
 def preview_arguments(revisions: Revisions) -> list[str]:
     return [
         "delegate",
@@ -345,7 +532,8 @@ def parse_preview(text: str, revisions: Revisions) -> Preview:
         raise fail("its merge base is not the one of the review")
     files = tuple(
         ReviewableFile(
-            file_path_of(item, fail), text_field(item, "status", "an entry", fail)
+            relative_path_of(item, "an entry", fail),
+            nonempty_text(item, "status", "an entry", fail),
         )
         for item in object_list(document, "reviewable_files", fail)
     )
@@ -353,9 +541,9 @@ def parse_preview(text: str, revisions: Revisions) -> Preview:
         raise fail("a file to review is in it more than once")
     excluded = tuple(
         ExcludedFile(
-            file_path_of(item, fail),
-            text_field(item, "status", "an entry", fail),
-            text_field(item, "exclude_reason", "an entry", fail),
+            relative_path_of(item, "an entry", fail),
+            nonempty_text(item, "status", "an entry", fail),
+            nonempty_text(item, "exclude_reason", "an entry", fail),
         )
         for item in object_list(document, "excluded_files", fail)
     )
@@ -399,10 +587,10 @@ def parse_rules(text: str, paths: Sequence[str]) -> tuple[RuleGroup, ...]:
             raise fail("a group names a file that is not to review")
         groups.append(
             RuleGroup(
-                text_field(item, "source", "a group", fail),
-                text_field(item, "pattern", "a group", fail),
+                nonempty_text(item, "source", "a group", fail),
+                nonempty_text(item, "pattern", "a group", fail),
                 tuple(files),
-                text_field(item, "rule", "a group", fail),
+                nonempty_text(item, "rule", "a group", fail),
             )
         )
     return tuple(groups)
@@ -534,7 +722,10 @@ class SkippedFile:
 
 @dataclass(frozen=True)
 class ReviewAnswer:
+    # The findings on the files to review, which GitHub takes inline.
     findings: tuple[Finding, ...]
+    # The findings on each other file, which go to the summary.
+    findings_elsewhere: tuple[Finding, ...]
     behavior_changes: tuple[BehaviorChange, ...]
     skipped: tuple[SkippedFile, ...]
     # The files to review that the answer does not account for.
@@ -548,68 +739,73 @@ class FileState(Enum):
 
 # The reason of a skipped file whose entry gives none.
 NO_REASON = "The review gives no reason."
-
-
-def answer_schema(preview: Preview) -> dict:
-    """The JSON Schema of the answer: the comments of step 5 of the skill,
-    on the files to review, the behavior changes of step 6, on the changed
-    files, and the state of each file to review."""
-    line = {"type": "integer", "minimum": 0}
-    to_review = {"enum": list(preview.paths)}
-    comment = {
-        "type": "object",
-        "additionalProperties": False,
-        "required": [
-            "path",
-            "start_line",
-            "end_line",
-            "category",
-            "severity",
-            "content",
-            "existing_code",
-            "suggestion_code",
-        ],
-        "properties": {
-            "path": to_review,
-            "start_line": line,
-            "end_line": line,
-            "category": {"enum": [category.value for category in Category]},
-            "severity": {"enum": [severity.value for severity in Severity]},
-            "content": {"type": "string", "minLength": 1},
-            "existing_code": {"type": "string"},
-            "suggestion_code": {"type": "string"},
+# A path of the answer. The schema names no path of the pull request, as the
+# CLI gets the schema as one argument, which Linux limits to 128 KiB: the
+# parser sorts the paths against the preview.
+PATH_SCHEMA = {"type": "string", "minLength": 1}
+LINE_SCHEMA = {"type": "integer", "minimum": 0}
+# The JSON Schema of the answer: the comments of step 5 of the skill, the
+# behavior changes of step 6, and the state of each file to review.
+ANSWER_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["comments", "behavior_changes", "files"],
+    "properties": {
+        "comments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "path",
+                    "start_line",
+                    "end_line",
+                    "category",
+                    "severity",
+                    "content",
+                    "existing_code",
+                    "suggestion_code",
+                ],
+                "properties": {
+                    "path": PATH_SCHEMA,
+                    "start_line": LINE_SCHEMA,
+                    "end_line": LINE_SCHEMA,
+                    "category": {"enum": [category.value for category in Category]},
+                    "severity": {"enum": [severity.value for severity in Severity]},
+                    "content": {"type": "string", "minLength": 1},
+                    "existing_code": {"type": "string"},
+                    "suggestion_code": {"type": "string"},
+                },
+            },
         },
-    }
-    behavior_change = {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["path", "line", "description"],
-        "properties": {
-            "path": {"enum": list(preview.listed_paths)},
-            "line": line,
-            "description": {"type": "string", "minLength": 1},
+        "behavior_changes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "line", "description"],
+                "properties": {
+                    "path": PATH_SCHEMA,
+                    "line": LINE_SCHEMA,
+                    "description": {"type": "string", "minLength": 1},
+                },
+            },
         },
-    }
-    file_state = {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["path", "state", "reason"],
-        "properties": {
-            "path": to_review,
-            "state": {"enum": [state.value for state in FileState]},
-            "reason": {"type": "string"},
+        "files": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "state", "reason"],
+                "properties": {
+                    "path": PATH_SCHEMA,
+                    "state": {"enum": [state.value for state in FileState]},
+                    "reason": {"type": "string"},
+                },
+            },
         },
-    }
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["comments", "behavior_changes", "files"],
-        "properties": {
-            "comments": {"type": "array", "items": comment},
-            "behavior_changes": {"type": "array", "items": behavior_change},
-            "files": {"type": "array", "items": file_state},
-        },
-    }
+    },
+}
 
 
 def line_of(item: Mapping, key: str, where: str) -> int | None:
@@ -625,13 +821,6 @@ def enum_of(enum: type[Enum], item: Mapping, key: str, where: str):
         return enum(item.get(key))
     except ValueError:
         raise InvalidAnswer(f"{where} has an unknown `{key}`") from None
-
-
-def path_of(item: Mapping, paths: Sequence[str], where: str) -> str:
-    path = item.get("path")
-    if path not in paths:
-        raise InvalidAnswer(f"{where} is not on a file that the schema names")
-    return path
 
 
 def parse_lines(item: Mapping, where: str) -> Lines | None:
@@ -654,22 +843,23 @@ def parse_suggestion(
     item: Mapping, lines: Lines | None, where: str
 ) -> Suggestion | None:
     """The replacement that a finding proposes. A suggestion with no code to
-    replace, or on a finding with no lines, replaces nothing: the finding
-    stays, with no suggestion."""
+    replace, with no code that replaces it, or on a finding with no lines
+    replaces nothing: the finding stays, with no suggestion. The poster posts
+    no suggestion that deletes lines, so a deletion is a text of the finding."""
     existing = item.get("existing_code")
     suggested = item.get("suggestion_code")
     if not isinstance(existing, str) or not isinstance(suggested, str):
         raise InvalidAnswer(f"{where} has no code texts")
-    if not existing or lines is None:
+    if not existing or not suggested or lines is None:
         return None
     return Suggestion(existing, suggested)
 
 
-def parse_finding(item: Mapping, paths: Sequence[str], where: str) -> Finding:
+def parse_finding(item: Mapping, where: str) -> Finding:
     lines = parse_lines(item, where)
     return Finding(
-        path=path_of(item, paths, where),
-        content=text_field(item, "content", where, InvalidAnswer),
+        path=relative_path_of(item, where, InvalidAnswer),
+        content=nonempty_text(item, "content", where),
         lines=lines,
         category=enum_of(Category, item, "category", where),
         severity=enum_of(Severity, item, "severity", where),
@@ -677,30 +867,28 @@ def parse_finding(item: Mapping, paths: Sequence[str], where: str) -> Finding:
     )
 
 
-def parse_behavior_change(
-    item: Mapping, paths: Sequence[str], where: str
-) -> BehaviorChange:
+def parse_behavior_change(item: Mapping, where: str) -> BehaviorChange:
     return BehaviorChange(
-        path_of(item, paths, where),
+        relative_path_of(item, where, InvalidAnswer),
         line_of(item, "line", where),
-        text_field(item, "description", where, InvalidAnswer),
+        nonempty_text(item, "description", where),
     )
 
 
 def parse_answer(payload: object, preview: Preview) -> ReviewAnswer:
-    """The answer of Claude. A file counts as reviewed when an entry says so,
-    else as skipped with the reasons of its entries, else as unaccounted."""
+    """The answer of Claude. A finding goes inline when its file is to
+    review, and to the summary else. A file counts as reviewed when an entry
+    says so, else as skipped with the reasons of its entries, else as
+    unaccounted; an entry on another file accounts for no file."""
     if not isinstance(payload, Mapping):
         raise InvalidAnswer("it is not an object")
     paths = preview.paths
     findings = tuple(
-        parse_finding(item, paths, f"comment {index + 1}")
+        parse_finding(item, f"comment {index + 1}")
         for index, item in enumerate(object_list(payload, "comments", InvalidAnswer))
     )
     behavior_changes = tuple(
-        parse_behavior_change(
-            item, preview.listed_paths, f"behavior change {index + 1}"
-        )
+        parse_behavior_change(item, f"behavior change {index + 1}")
         for index, item in enumerate(
             object_list(payload, "behavior_changes", InvalidAnswer)
         )
@@ -709,13 +897,16 @@ def parse_answer(payload: object, preview: Preview) -> ReviewAnswer:
     reasons: dict[str, list[str]] = {}
     for index, item in enumerate(object_list(payload, "files", InvalidAnswer)):
         where = f"file entry {index + 1}"
-        path = path_of(item, paths, where)
-        if enum_of(FileState, item, "state", where) is FileState.REVIEWED:
-            reviewed.add(path)
-            continue
+        path = relative_path_of(item, where, InvalidAnswer)
+        state = enum_of(FileState, item, "state", where)
         reason = item.get("reason")
         if not isinstance(reason, str):
             raise InvalidAnswer(f"{where} has no `reason` text")
+        if path not in paths:
+            continue
+        if state is FileState.REVIEWED:
+            reviewed.add(path)
+            continue
         reasons.setdefault(path, []).append(reason.strip() or NO_REASON)
     skipped = tuple(
         SkippedFile(path, "; ".join(reasons[path]))
@@ -725,7 +916,13 @@ def parse_answer(payload: object, preview: Preview) -> ReviewAnswer:
     unaccounted = tuple(
         path for path in paths if path not in reviewed and path not in reasons
     )
-    return ReviewAnswer(findings, behavior_changes, skipped, unaccounted)
+    return ReviewAnswer(
+        tuple(finding for finding in findings if finding.path in paths),
+        tuple(finding for finding in findings if finding.path not in paths),
+        behavior_changes,
+        skipped,
+        unaccounted,
+    )
 
 
 def suggestion_matches(finding: Finding, lines: list[str] | None) -> bool:
@@ -807,19 +1004,22 @@ it against the code.
 
 ## Your answer
 
-Answer in English, with the JSON that the schema of the run asks for:
+Answer in English, with the JSON that the schema of the run asks for. Each
+`path` is a path relative to the repository, as the preview gives it.
 
-- `comments`: one entry for each finding, with the fields of step 5.
-  `start_line` and `end_line` are lines of the file at the head, on lines that
-  its diff shows; give 0 for both when the finding is on the file as a whole.
-  When you propose an exact replacement of the lines from `start_line` to
-  `end_line`, `existing_code` is their text and `suggestion_code` is the text
-  that replaces it; else both are empty.
-- `behavior_changes`: each material behavior change of step 6, with the
-  changed file and the line (0 for none) of its evidence, and a description
-  that names the affected workflow, what happened before and what happens now.
-- `files`: one entry for each file to review: `reviewed`, or `skipped` with a
-  concrete reason. The reason of a reviewed file is empty.
+- `comments`: one entry for each finding, with the fields of step 5, on the
+  `path` of a file of `reviewable_files`. `start_line` and `end_line` are
+  lines of the file at the head, on lines that its diff shows; give 0 for both
+  when the finding is on the file as a whole. When you propose an exact
+  replacement of the lines from `start_line` to `end_line`, `existing_code` is
+  their text and `suggestion_code` is the text that replaces it. A suggestion
+  cannot delete lines: describe a deletion in `content`, with both fields
+  empty. Else both are empty.
+- `behavior_changes`: each material behavior change of step 6, with the file
+  and the line (0 for none) of its evidence, and a description that names the
+  affected workflow, what happened before and what happens now.
+- `files`: one entry for each file of `reviewable_files`: `reviewed`, or
+  `skipped` with a concrete reason. The reason of a reviewed file is empty.
 """
 
 
@@ -890,7 +1090,44 @@ def review_prompt(
     )
 
 
+def reviewer_fingerprint(skill: str) -> str:
+    """What names the reviewer of a review: the model, the effort, the skill
+    and the prompt. A push keeps only a review of the same reviewer."""
+    reviewer = json.dumps(
+        [claude_review.CLAUDE_MODEL, claude_review.CLAUDE_EFFORT, skill, REVIEW_PROMPT]
+    )
+    return hashlib.sha256(reviewer.encode()).hexdigest()
+
+
+def kept_checkpoint(
+    summary: SummaryComment | None,
+    pull_request: PullRequest,
+    fingerprint: str,
+    push: bool,
+) -> Checkpoint | None:
+    """The checkpoint whose review a push can keep: that of the newest summary
+    comment, for the same base branch and the same reviewer. Each other event
+    asks for a review in full."""
+    if not push or summary is None or summary.checkpoint is None:
+        return None
+    checkpoint = summary.checkpoint
+    if (
+        checkpoint.base_branch != pull_request.base_branch
+        or checkpoint.fingerprint != fingerprint
+    ):
+        return None
+    return checkpoint
+
+
 # The result ----------------------------------------------------------------------
+
+
+def location(path: str, lines: Lines | None) -> str:
+    if lines is None:
+        return path
+    if lines.start == lines.end:
+        return f"{path}:{lines.start}"
+    return f"{path}:{lines.start}-{lines.end}"
 
 
 def comment_of(finding: Finding) -> dict:
@@ -909,47 +1146,53 @@ def comment_of(finding: Finding) -> dict:
     return comment
 
 
-def behavior_change_comment(change: BehaviorChange) -> dict:
-    """A behavior change goes to the summary comment: a comment with no line,
-    of the category `other` and with no severity, as the skill keeps it apart
-    from the findings. Its text names the line of its evidence."""
-    location = change.path if change.line is None else f"{change.path}:{change.line}"
+def warning(place: str, kind: str, message: str) -> dict:
+    """A warning of the summary comment, which the poster shows as
+    `place` (`kind`): message. Neither text mentions anybody."""
     return {
-        "path": change.path,
-        "content": without_mentions(
-            f"**Behavior change** (`{location}`): {change.description}"
-        ),
-        "start_line": 0,
-        "end_line": 0,
-        "category": Category.OTHER.value,
+        "file": without_mentions(place),
+        "type": kind,
+        "message": without_mentions(message),
     }
+
+
+def behavior_change_warning(change: BehaviorChange) -> dict:
+    """A behavior change, which the skill keeps apart from the findings, at
+    the file and the line of its evidence."""
+    lines = None if change.line is None else Lines(change.line, change.line)
+    return warning(location(change.path, lines), "behavior change", change.description)
+
+
+def elsewhere_warning(finding: Finding) -> dict:
+    """A finding on a file that is not to review, on which GitHub takes no
+    inline comment."""
+    return warning(
+        location(finding.path, finding.lines),
+        "finding on another file",
+        f"{finding.severity.value} {finding.category.value}: {finding.content}",
+    )
 
 
 def omitted_warning(path: str) -> dict:
-    return {
-        "file": path,
-        "type": "omitted",
-        "message": "OCR does not list this changed file (the `.gitignore` of the "
-        "head can match it), so the review does not read it.",
-    }
+    return warning(
+        path,
+        "omitted",
+        "OCR does not list this changed file (the `.gitignore` of the head can "
+        "match it), so the review does not read it.",
+    )
 
 
 def warnings_of(answer: ReviewAnswer, omitted: Sequence[str]) -> list[dict]:
     return [
+        *(behavior_change_warning(change) for change in answer.behavior_changes),
+        *(elsewhere_warning(finding) for finding in answer.findings_elsewhere),
+        *(warning(file.path, "skipped", file.reason) for file in answer.skipped),
         *(
-            {
-                "file": file.path,
-                "type": "skipped",
-                "message": without_mentions(file.reason),
-            }
-            for file in answer.skipped
-        ),
-        *(
-            {
-                "file": path,
-                "type": "unaccounted",
-                "message": "The review does not say that it reviewed this file.",
-            }
+            warning(
+                path,
+                "unaccounted",
+                "The review does not say that it reviewed this file.",
+            )
             for path in answer.unaccounted
         ),
         *(omitted_warning(path) for path in omitted),
@@ -960,22 +1203,31 @@ def no_comment_message(answer: ReviewAnswer, paths: Sequence[str]) -> str:
     reviewed = len(paths) - len(answer.skipped) - len(answer.unaccounted)
     return (
         f"Claude ({claude_review.CLAUDE_MODEL}) reviewed {reviewed} of {len(paths)} "
-        "file(s) in the delegation mode of OCR and has no comment."
+        "file(s) in the delegation mode of OCR and has no finding on them."
     )
 
 
 def result_document(
-    head: str, comments: list[dict], warnings: list[dict], message: str | None
+    head: str,
+    comments: list[dict],
+    warnings: list[dict],
+    message: str | None,
+    complete: bool,
 ) -> dict:
     """The result in the JSON form of `ocr review --format json`, with the
     fields that the poster reads. The poster shows the message only in the
     summary of a result with no comment. The manifest gives the commit of the
-    inline comments, which the event of a comment does not give."""
+    inline comments, which the event of a comment does not give, and calls
+    the review complete when it accounts for each file to review: the poster
+    then records its head in a checkpoint, when it posts each finding."""
+    manifest: dict = {"input": {"resolved_head": head}}
+    if complete:
+        manifest["terminal_state"] = "complete"
     document = {
         "status": "success",
         "comments": comments,
         "warnings": warnings,
-        "manifest": {"input": {"resolved_head": head}},
+        "manifest": manifest,
     }
     if message is not None:
         document["message"] = message
@@ -985,12 +1237,14 @@ def result_document(
 def review_result(
     answer: ReviewAnswer, paths: Sequence[str], omitted: Sequence[str], head: str
 ) -> dict:
-    comments = [
-        *(comment_of(finding) for finding in answer.findings),
-        *(behavior_change_comment(change) for change in answer.behavior_changes),
-    ]
-    message = None if comments else no_comment_message(answer, paths)
-    return result_document(head, comments, warnings_of(answer, omitted), message)
+    comments = [comment_of(finding) for finding in answer.findings]
+    return result_document(
+        head,
+        comments,
+        warnings_of(answer, omitted),
+        None if comments else no_comment_message(answer, paths),
+        complete=not answer.unaccounted,
+    )
 
 
 def nothing_to_review_message(preview: Preview, omitted: Sequence[str]) -> str:
@@ -1019,7 +1273,37 @@ def nothing_to_review_result(
         [],
         [omitted_warning(path) for path in omitted],
         nothing_to_review_message(preview, omitted),
+        complete=True,
     )
+
+
+# The options of the poster, with the names of the parameters of
+# runPostReviewComments, for each outcome of the review step.
+
+
+def recorded_review_options(fingerprint: str, base_branch: str, merge_base: str) -> dict:
+    """A result replaces the summary comment, and the poster records its head
+    in a checkpoint when the review is complete and each finding is posted."""
+    return {
+        "stickySummary": True,
+        "checkpointEnabled": True,
+        "checkpointFingerprint": fingerprint,
+        "checkpointBaseRef": base_branch,
+        "checkpointMergeBase": merge_base,
+    }
+
+
+# The head keeps the review of the checkpoint: the poster leaves the summary
+# comment as it is.
+KEPT_REVIEW_OPTIONS = {"checkpointNoop": True}
+
+
+def failure_options(summary: SummaryComment | None) -> dict:
+    """The cause of a review that did not complete replaces the summary
+    comment only when it holds the cause of an earlier run: the cause goes to
+    a new comment when the summary holds a review, when the pull request has
+    no summary, and when the run could not read it."""
+    return {"stickySummary": summary is not None and summary.holds_error}
 
 
 # The review ----------------------------------------------------------------------
@@ -1028,34 +1312,65 @@ def nothing_to_review_result(
 ClaudeRunner = claude_review.ClaudeRunner
 
 
+@dataclass(frozen=True)
+class Outcome:
+    """The result to post and the options of the poster; no result when the
+    head keeps the review of the checkpoint."""
+
+    result: dict | None
+    poster_options: dict
+
+
 def review(
     pull: ReviewedPullRequest,
     workspace: Workspace,
     ocr: OcrRunner,
     claude: ClaudeRunner,
     skill: str,
-) -> dict:
-    """The result of the review of the pull request."""
-    prepared = prepare(workspace, pull.pull_request)
-    revisions = prepared.revisions
+    kept: Checkpoint | None,
+    merges: GitMerges,
+) -> Outcome:
+    """The outcome of the review of the pull request. A head that differs
+    from the head of the kept checkpoint by a clean merge of the base branch
+    alone keeps its review: Claude does not run."""
+    pull_request = pull.pull_request
+    revisions, reviewed = fetch_revisions(
+        workspace, pull_request, None if kept is None else kept.head
+    )
+    if reviewed is not None and differs_by_base_merge(
+        workspace, merges, revisions, reviewed
+    ):
+        print(
+            f"The head {revisions.head} differs from the reviewed head {reviewed} "
+            f"by a clean merge of `{pull_request.base_branch}` alone: it keeps "
+            "that review.",
+            flush=True,
+        )
+        return Outcome(None, KEPT_REVIEW_OPTIONS)
+    options = recorded_review_options(
+        reviewer_fingerprint(skill), pull_request.base_branch, revisions.merge_base
+    )
+    changed = prepare(workspace, revisions)
     preview = parse_preview(ocr(preview_arguments(revisions)), revisions)
-    omitted = omitted_paths(preview, prepared.changed)
+    omitted = omitted_paths(preview, changed)
     if not preview.files:
-        return nothing_to_review_result(preview, omitted, revisions.head)
+        return Outcome(
+            nothing_to_review_result(preview, omitted, revisions.head), options
+        )
     paths = preview.paths
     groups = parse_rules(ocr(rule_arguments(revisions, paths)), paths)
-    write_diffs(workspace, revisions, paths, prepared.changed)
+    write_diffs(workspace, revisions, paths, changed)
     layout = workspace.layout
     payload = claude(
         review_prompt(pull, revisions, preview, groups, layout, skill),
-        answer_schema(preview),
+        ANSWER_SCHEMA,
         "review",
         claude_review.REVIEW_TIMEOUT_SECONDS,
     )
     answer = with_checked_suggestions(
         parse_answer(payload, preview), head_lines(layout)
     )
-    return review_result(answer, paths, omitted, revisions.head)
+    return Outcome(review_result(answer, paths, omitted, revisions.head), options)
 
 
 # The commands --------------------------------------------------------------------
@@ -1072,12 +1387,14 @@ STEP_VARIABLES = (
 )
 REVIEW_COMMAND = (
     "python3 .github/open-code-review/open_code_review.py review "
-    f'--result "$RUNNER_TEMP/{RESULT_FILE}" --errors "$RUNNER_TEMP/{ERRORS_FILE}"'
+    f'--result "$RUNNER_TEMP/{RESULT_FILE}" --errors "$RUNNER_TEMP/{ERRORS_FILE}" '
+    f'--poster "$RUNNER_TEMP/{POSTER_FILE}"'
 )
 # The lines that the workflow holds, so that its steps check out the
-# directories that this script imports from, give the variables that it reads
-# and read the files that it writes. test_open_code_review.py checks the
-# workflow against them with claude_review.workflow_problems.
+# directories that this script imports from, give the variables that it reads,
+# install the Claude CLI of the Claude review of a set and read the files that
+# it writes. test_open_code_review.py checks the workflow against them with
+# claude_review.workflow_problems.
 WORKFLOW_LINES = (
     "/.github/open-code-review/",
     "/.github/merge-set/",
@@ -1085,35 +1402,68 @@ WORKFLOW_LINES = (
     f"run: {REVIEW_COMMAND}",
     "REVIEW_TOKEN: ${{ github.token }}",
     "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
-    f"resultPath: `${{process.env.RUNNER_TEMP}}/{RESULT_FILE}`,",
-    f"stderrPath: `${{process.env.RUNNER_TEMP}}/{ERRORS_FILE}`,",
+    f"CLAUDE_CLI_VERSION: {claude_review.CLAUDE_CLI_VERSION}",
+    "types: [opened, synchronize, reopened, ready_for_review]",
+    f"const resultPath = `${{process.env.RUNNER_TEMP}}/{RESULT_FILE}`;",
+    f"const stderrPath = `${{process.env.RUNNER_TEMP}}/{ERRORS_FILE}`;",
+    f"const posterPath = `${{process.env.RUNNER_TEMP}}/{POSTER_FILE}`;",
+    "options = JSON.parse(fs.readFileSync(posterPath, 'utf8'));",
+    "...options,",
     f"&& startsWith(github.event.comment.body, '{COMMENT_COMMAND}')",
 )
 
 
-def run_review(environment: Mapping[str, str]) -> dict:
+@dataclass(frozen=True)
+class Run:
+    """What the review step reads before it reviews: its variables, the pull
+    request of its event, the newest summary comment of the poster on it, and
+    whether the event is a push."""
+
+    environment: Mapping[str, str]
+    pull: ReviewedPullRequest
+    summary: SummaryComment | None
+    push: bool
+
+
+def start_run(environment: Mapping[str, str]) -> Run:
     required = claude_review.required
     repository = required(environment, "GITHUB_REPOSITORY")
     if repository != PEPPY.full_name:
         raise MergeSetError(f"this script reviews pull requests of {PEPPY.full_name}")
+    event_name = required(environment, "GITHUB_EVENT_NAME")
     event = json.loads(Path(required(environment, "GITHUB_EVENT_PATH")).read_text())
-    number = pull_request_number(required(environment, "GITHUB_EVENT_NAME"), event)
+    number = pull_request_number(event_name, event)
     for name in STEP_VARIABLES:
         required(environment, name)
+    api = GitHubApi(environment["REVIEW_TOKEN"])
+    return Run(
+        environment,
+        fetch_pull_request(api, number),
+        read_summary(api, number),
+        is_push(event_name, event),
+    )
+
+
+def run_review(run: Run) -> Outcome:
+    environment = run.environment
     token = environment["REVIEW_TOKEN"]
     executable = Path(environment["REVIEW_OCR"])
-    skill = Path(environment["REVIEW_SKILL"])
+    skill = claude_review.skill_text(Path(environment["REVIEW_SKILL"]).read_text())
     root = Path(environment["REVIEW_WORKSPACE"])
     workspace = Workspace(root, token)
     layout = workspace.layout
     return review(
-        fetch_pull_request(GitHubApi(token), number),
+        run.pull,
         workspace,
         run_ocr(
             executable, layout.default_branch_of(PEPPY), root / "ocr-home", environment
         ),
         claude_review.run_claude(environment, layout),
-        claude_review.skill_text(skill.read_text()),
+        skill,
+        kept_checkpoint(
+            run.summary, run.pull.pull_request, reviewer_fingerprint(skill), run.push
+        ),
+        GitMerges(token),
     )
 
 
@@ -1122,12 +1472,24 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text)
 
 
-def review_command(result: Path, errors: Path) -> int:
-    """Run the review and write its result; a review that does not complete
-    writes its cause to `errors`, which the poster posts on the pull request,
-    and no result."""
+def write_json(path: Path, document: object) -> None:
+    write_text(path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+
+
+def write_failure(errors: Path, poster: Path, cause: str, run: Run | None) -> None:
+    write_json(poster, failure_options(None if run is None else run.summary))
+    write_text(errors, f"{cause}\n")
+
+
+def review_command(result: Path, errors: Path, poster: Path) -> int:
+    """Run the review and write the options of the poster and the result. A
+    head that keeps an earlier review gets no result; a review that does not
+    complete writes its cause to `errors`, which the poster posts on the pull
+    request, and no result."""
+    run = None
     try:
-        document = run_review(os.environ)
+        run = start_run(os.environ)
+        outcome = run_review(run)
     except ApiError as failure:
         cause = f"A call to GitHub failed: {failure}"
     except ReviewFailure as failure:
@@ -1136,12 +1498,14 @@ def review_command(result: Path, errors: Path) -> int:
         # Each other error: the log gets it with its traceback, and the pull
         # request gets a cause that names no content.
         traceback.print_exc()
-        write_text(errors, f"{STOPPED_CAUSE}\n")
+        write_failure(errors, poster, STOPPED_CAUSE, run)
         return claude_review.error(str(failure) or type(failure).__name__)
     else:
-        write_text(result, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+        write_json(poster, outcome.poster_options)
+        if outcome.result is not None:
+            write_json(result, outcome.result)
         return 0
-    write_text(errors, f"{cause}\n")
+    write_failure(errors, poster, cause, run)
     return claude_review.error(cause)
 
 
@@ -1167,6 +1531,12 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         required=True,
         help="The file that gets the cause of a review that does not complete.",
     )
+    review_parser.add_argument(
+        "--poster",
+        type=Path,
+        required=True,
+        help="The file that gets the options of the poster, as JSON.",
+    )
     check = commands.add_parser(
         "check-workflow",
         help="Check that the workflow gives the variables that this script reads.",
@@ -1179,7 +1549,7 @@ def main(argv: Sequence[str]) -> int:
     arguments = parse_arguments(argv)
     match arguments.command:
         case "review":
-            return review_command(arguments.result, arguments.errors)
+            return review_command(arguments.result, arguments.errors, arguments.poster)
         case "check-workflow":
             return claude_review.check_workflow(
                 arguments.workflow, WORKFLOW_LINES, STEP_VARIABLES

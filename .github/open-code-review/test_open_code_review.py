@@ -7,6 +7,7 @@ GitHub, with FakeOcr and FakeClaude, which give recorded outputs: no test
 calls a model, runs the OCR CLI or touches the network.
 """
 
+import base64
 import io
 import json
 import os
@@ -23,10 +24,12 @@ from open_code_review import (
     BehaviorChange,
     Category,
     ChangedFile,
+    Checkpoint,
     ExcludedFile,
     Finding,
     Lines,
     OcrFailure,
+    Outcome,
     Preview,
     ReviewableFile,
     ReviewAnswer,
@@ -36,13 +39,14 @@ from open_code_review import (
     Severity,
     SkippedFile,
     Suggestion,
+    SummaryComment,
 )
 
 import claude_review
 import merge_set
 from claude_review import InvalidAnswer, ReviewFailure
-from merge_set import PEPPY, ApiError, MergeSetError
-from test_claude_review import GitRepository
+from merge_set import PEPPY, ApiError, GitMerges, MergeSetError
+from test_claude_review import SET_NAME, GitRepository
 
 WORKFLOW = Path(__file__).resolve().parents[1] / "workflows" / "open-code-review.yml"
 MERGE_BASE = "a" * 40
@@ -163,6 +167,57 @@ def answer(comments=(), behavior_changes=(), files=None):
 
 
 LINE_FIVE = Lines(5, 5)
+# The checkpoint that the poster of OCR 1.14.3 writes for pull request 42 at
+# the head HEAD of the base branch `dev`, with the fingerprint `f1`
+# (buildCheckpointMarker of post-review-comments.js).
+POSTER_CHECKPOINT = (
+    "<!-- ocr-checkpoint:v1 eyJ2IjoxLCJwciI6NDIsImhlYWQiOiJiYmJiYmJiYmJiYmJiYmJi"
+    "YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiIiwiYmFzZV9yZWYiOiJkZXYiLCJtZXJnZV9iYXNlIjoi"
+    "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsInRlcm1pbmFsX3N0YXRl"
+    "IjoiY29tcGxldGUiLCJmaW5nZXJwcmludCI6ImYxIiwicnVuIjoiNyJ9 -->"
+)
+
+
+def checkpoint_marker(**changes):
+    """A checkpoint in the form of the poster, with `changes` to its fields."""
+    payload = {
+        "v": 1,
+        "pr": 42,
+        "head": HEAD,
+        "base_ref": "dev",
+        "merge_base": MERGE_BASE,
+        "terminal_state": "complete",
+        "fingerprint": "f1",
+        "run": "7",
+    }
+    payload.update(changes)
+    encoded = base64.b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).decode()
+    return f"<!-- ocr-checkpoint:v1 {encoded} -->"
+
+
+def review_summary(marker=POSTER_CHECKPOINT):
+    """The body of a summary comment of a review, as the poster writes it."""
+    return (
+        "<!-- ocr-summary -->\n<!-- ocr-run:7-1:summary -->\n"
+        "🔍 **OpenCodeReview** found **1** issue(s) in this PR.\n"
+        f"- ✅ Successfully posted inline: 1 comment(s)\n\n{marker}"
+    )
+
+
+ERROR_SUMMARY = (
+    "<!-- ocr-summary -->\n⚠️ **OpenCodeReview** encountered an error:\n"
+    "```\nThe Claude login is at its usage limit.\n```"
+)
+
+
+def issue_comment(body, login="github-actions[bot]", kind="Bot", app="github-actions"):
+    """A comment of a pull request as the REST API lists it."""
+    item = {"body": body, "user": {"login": login, "type": kind}}
+    if app is not None:
+        item["performed_via_github_app"] = {"slug": app}
+    return item
 
 
 def finding(path="src/lib.rs", lines=LINE_FIVE, suggestion=None):
@@ -201,15 +256,39 @@ class Events(unittest.TestCase):
                     "pull_request_target", {"pull_request": {"number": number}}
                 )
 
+    def test_a_push_alone_can_keep_an_earlier_review(self):
+        self.assertTrue(
+            open_code_review.is_push("pull_request_target", {"action": "synchronize"})
+        )
+        for event_name, action in (
+            ("pull_request_target", "opened"),
+            ("pull_request_target", "reopened"),
+            ("pull_request_target", "ready_for_review"),
+            ("issue_comment", "created"),
+            ("issue_comment", "synchronize"),
+        ):
+            with self.subTest(event=event_name, action=action):
+                self.assertFalse(
+                    open_code_review.is_push(event_name, {"action": action})
+                )
+
 
 class FakeApi:
-    def __init__(self, item):
+    """GitHub: each request gives `item`, and the list of the comments of the
+    pull request gives `comments`."""
+
+    def __init__(self, item, comments=()):
         self.item = item
+        self.comments = list(comments)
         self.calls = []
 
     def request(self, method, path, query=None, body=None):
         self.calls.append((method, path))
         return self.item
+
+    def pages(self, path, query=None, key=None):
+        self.calls.append(("GET", path))
+        return self.comments
 
 
 class PullRequests(unittest.TestCase):
@@ -414,6 +493,7 @@ class Answers(unittest.TestCase):
     def test_a_suggestion_that_replaces_nothing_is_dropped_and_the_finding_stays(self):
         cases = {
             "no code to replace": comment(suggestion_code="let n = 2;"),
+            "no code that replaces it": comment(existing_code="let n = 1;"),
             "no lines": comment(
                 start=0, end=0, existing_code="let n = 1;", suggestion_code="let n = 2;"
             ),
@@ -424,14 +504,39 @@ class Answers(unittest.TestCase):
                 self.assertEqual(len(parsed.findings), 1)
                 self.assertIsNone(parsed.findings[0].suggestion)
 
-    def test_a_behavior_change_on_a_changed_file_is_read(self):
+    def test_a_finding_on_another_file_is_kept_apart(self):
+        parsed = self.parse(
+            answer(
+                [
+                    comment(),
+                    comment(path="README.md", start=2, end=2),
+                    comment(path="src/caller.rs", existing_code="x", suggestion_code="y"),
+                ]
+            )
+        )
+        self.assertEqual([finding.path for finding in parsed.findings], ["src/lib.rs"])
+        self.assertEqual(
+            [(finding.path, finding.lines) for finding in parsed.findings_elsewhere],
+            [("README.md", Lines(2, 2)), ("src/caller.rs", Lines(5, 6))],
+        )
+
+    def test_a_behavior_change_is_read_with_the_file_of_its_evidence(self):
         change = {"path": "README.md", "line": 12, "description": "The flag is gone."}
-        parsed = self.parse(answer(behavior_changes=[change, {**change, "line": 0}]))
+        parsed = self.parse(
+            answer(
+                behavior_changes=[
+                    change,
+                    {**change, "line": 0},
+                    {**change, "path": "src/caller.rs"},
+                ]
+            )
+        )
         self.assertEqual(
             parsed.behavior_changes,
             (
                 BehaviorChange("README.md", 12, "The flag is gone."),
                 BehaviorChange("README.md", None, "The flag is gone."),
+                BehaviorChange("src/caller.rs", 12, "The flag is gone."),
             ),
         )
 
@@ -460,6 +565,18 @@ class Answers(unittest.TestCase):
             parsed.skipped, (SkippedFile("tool.py", open_code_review.NO_REASON),)
         )
 
+    def test_an_entry_on_another_file_accounts_for_no_file(self):
+        parsed = self.parse(
+            answer(
+                files=[
+                    file_state("src/lib.rs"),
+                    file_state("README.md"),
+                    file_state("tools.py", "skipped", "Generated."),
+                ]
+            )
+        )
+        self.assertEqual((parsed.skipped, parsed.unaccounted), ((), ("tool.py",)))
+
     def test_a_file_that_an_entry_reviewed_is_reviewed(self):
         parsed = self.parse(
             answer(
@@ -476,10 +593,9 @@ class Answers(unittest.TestCase):
         cases = {
             "not an object": [],
             "no comments": {"behavior_changes": [], "files": []},
-            "a comment on a file that is not to review": answer(
-                [comment(path="other.rs")]
-            ),
-            "a comment on an excluded file": answer([comment(path="README.md")]),
+            "a comment with no path": answer([comment(path="")]),
+            "a comment on an absolute path": answer([comment(path="/etc/passwd")]),
+            "a comment out of the repository": answer([comment(path="../x.rs")]),
             "an unknown category": answer([comment(category="nit")]),
             "an unknown severity": answer([comment(severity="blocker")]),
             "a negative line": answer([comment(start=-1)]),
@@ -487,10 +603,14 @@ class Answers(unittest.TestCase):
             "a line that is a boolean": answer([comment(end=True)]),
             "a comment with no text": answer([comment(content=" ")]),
             "a comment with no code texts": answer([comment(existing_code=None)]),
-            "a behavior change on a file that is not changed": answer(
-                behavior_changes=[
-                    {"path": "x`@team`.rs", "line": 0, "description": "x"}
-                ]
+            "a behavior change out of the repository": answer(
+                behavior_changes=[{"path": "../x.rs", "line": 0, "description": "x"}]
+            ),
+            "a file entry out of the repository": answer(
+                files=[file_state("./tool.py")]
+            ),
+            "a reviewed file with no reason text": answer(
+                files=[{"path": "tool.py", "state": "reviewed", "reason": None}]
             ),
             "a skipped file with no reason text": answer(
                 files=[{"path": "tool.py", "state": "skipped", "reason": None}]
@@ -508,6 +628,7 @@ class Suggestions(unittest.TestCase):
     def checked(self, lines, existing):
         parsed = ReviewAnswer(
             (finding(lines=lines, suggestion=Suggestion(existing, "    let n = 3;")),),
+            (),
             (),
             (),
             (),
@@ -536,37 +657,100 @@ class Suggestions(unittest.TestCase):
                 self.assertEqual(checked.lines, lines)
 
     def test_a_suggestion_on_a_file_that_the_head_does_not_have_is_dropped(self):
-        parsed = ReviewAnswer((finding(suggestion=Suggestion("x", "y")),), (), (), ())
+        parsed = ReviewAnswer(
+            (finding(suggestion=Suggestion("x", "y")),), (), (), (), ()
+        )
         checked = open_code_review.with_checked_suggestions(parsed, lambda path: None)
         self.assertIsNone(checked.findings[0].suggestion)
 
 
+class HeadLines(unittest.TestCase):
+    """The lines of a file at the head, numbered as git and GitHub number
+    them."""
+
+    def test_a_line_ends_at_a_line_feed_alone(self):
+        data = "one\ftwo\n\u2028three\r\nfour\rfive\x85\x1c\v\n\nlast".encode()
+        self.assertEqual(
+            open_code_review.git_lines(data),
+            ["one\ftwo", "\u2028three\r", "four\rfive\x85\x1c\v", "", "last"],
+        )
+
+    def test_a_final_line_feed_ends_the_last_line(self):
+        for data, lines in (
+            (b"", []),
+            (b"a", ["a"]),
+            (b"a\n", ["a"]),
+            (b"a\n\n", ["a", ""]),
+        ):
+            with self.subTest(data=data):
+                self.assertEqual(open_code_review.git_lines(data), lines)
+
+    def test_a_byte_that_is_not_utf8_stays_in_its_line(self):
+        self.assertEqual(
+            open_code_review.git_lines(b"a\xff\nb\xc3\n"), ["a\ufffd", "b\ufffd"]
+        )
+
+    def test_a_suggestion_after_a_form_feed_is_checked_on_the_line_of_github(self):
+        """Line 3 holds a form feed, which splitlines takes for a line end:
+        the line that GitHub numbers 41 is the 42nd line of splitlines."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            layout = claude_review.Layout(root / "d", root / "h", root / "c")
+            file = layout.head_of(PEPPY) / "src" / "lib.rs"
+            file.parent.mkdir(parents=True)
+            lines = [f"line {number}" for number in range(1, 51)]
+            lines[2] = "line 3\fstill line 3"
+            file.write_bytes(("\n".join(lines) + "\n").encode())
+
+            def checked(existing):
+                parsed = ReviewAnswer(
+                    (finding(lines=Lines(41, 41), suggestion=Suggestion(existing, "x")),),
+                    (),
+                    (),
+                    (),
+                    (),
+                )
+                return open_code_review.with_checked_suggestions(
+                    parsed, open_code_review.head_lines(layout)
+                ).findings[0]
+
+            self.assertIsNotNone(checked("line 41").suggestion)
+            self.assertIsNone(checked("line 40").suggestion)
+
+
 class Schemas(unittest.TestCase):
-    def test_the_schema_names_the_files_to_review_and_the_changed_files(self):
-        properties = open_code_review.answer_schema(PREVIEW)["properties"]
-
-        def path_of(key):
-            return properties[key]["items"]["properties"]["path"]
-
-        self.assertEqual(path_of("comments"), {"enum": list(PATHS)})
-        self.assertEqual(path_of("files"), {"enum": list(PATHS)})
-        self.assertEqual(path_of("behavior_changes"), {"enum": [*PATHS, "README.md"]})
-
-    def test_each_field_of_each_entry_is_required(self):
-        schema = open_code_review.answer_schema(PREVIEW)
-        entries = [schema] + [
+    def entries(self):
+        schema = open_code_review.ANSWER_SCHEMA
+        return [schema] + [
             schema["properties"][key]["items"]
             for key in ("comments", "behavior_changes", "files")
         ]
-        for entry in entries:
+
+    def test_the_paths_are_free_text(self):
+        """The CLI gets the schema as one argument, which Linux limits to
+        128 KiB: a schema that named the paths of a pull request of about 900
+        files would pass that limit."""
+        for entry in self.entries()[1:]:
+            with self.subTest(required=entry["required"]):
+                self.assertEqual(
+                    entry["properties"]["path"], {"type": "string", "minLength": 1}
+                )
+        argument = json.dumps(open_code_review.ANSWER_SCHEMA)
+        self.assertIn(argument, claude_review.claude_command(
+            open_code_review.ANSWER_SCHEMA, Prompts.LAYOUT
+        ))
+        self.assertLess(len(argument.encode()), 4096)
+
+    def test_each_field_of_each_entry_is_required(self):
+        for entry in self.entries():
             with self.subTest(required=entry["required"]):
                 self.assertEqual(sorted(entry["required"]), sorted(entry["properties"]))
                 self.assertFalse(entry["additionalProperties"])
 
     def test_the_schema_gives_the_values_that_the_parser_reads(self):
-        fields = open_code_review.answer_schema(PREVIEW)["properties"]["comments"][
-            "items"
-        ]["properties"]
+        fields = open_code_review.ANSWER_SCHEMA["properties"]["comments"]["items"][
+            "properties"
+        ]
         self.assertEqual(
             fields["category"]["enum"], [category.value for category in Category]
         )
@@ -614,46 +798,86 @@ class Results(unittest.TestCase):
             },
         )
 
-    def test_a_behavior_change_goes_to_the_summary_with_its_location(self):
-        for line, location in ((12, "src/cli.rs:12"), (None, "src/cli.rs")):
+    def test_a_behavior_change_is_a_warning_at_its_location(self):
+        """The poster counts each comment as an issue, so a behavior change,
+        which is no defect, is a warning of the summary."""
+        for line, place in ((12, "src/cli.rs:12"), (None, "src/cli.rs")):
             with self.subTest(line=line):
                 change = BehaviorChange(
                     "src/cli.rs", line, "Scripts that pass @x break."
                 )
                 self.assertEqual(
-                    open_code_review.behavior_change_comment(change),
+                    open_code_review.behavior_change_warning(change),
                     {
-                        "path": "src/cli.rs",
-                        "content": f"**Behavior change** (`{location}`): "
-                        f"Scripts that pass @{ZERO_WIDTH_SPACE}x break.",
-                        "start_line": 0,
-                        "end_line": 0,
-                        "category": "other",
+                        "file": place,
+                        "type": "behavior change",
+                        "message": f"Scripts that pass @{ZERO_WIDTH_SPACE}x break.",
                     },
                 )
 
-    def test_a_behavior_change_mentions_nobody_with_its_path(self):
-        change = BehaviorChange("a`@alice`.rs", None, "Text.")
-        content = open_code_review.behavior_change_comment(change)["content"]
-        self.assertNotRegex(content, r"@(?=[A-Za-z0-9])")
+    def test_a_finding_on_another_file_is_a_warning_at_its_location(self):
+        for lines, place in (
+            (Lines(4, 4), "src/caller.rs:4"),
+            (Lines(4, 9), "src/caller.rs:4-9"),
+            (None, "src/caller.rs"),
+        ):
+            with self.subTest(lines=lines):
+                item = Finding(
+                    "src/caller.rs",
+                    "It breaks @x.",
+                    lines,
+                    Category.BUG,
+                    Severity.HIGH,
+                    None,
+                )
+                self.assertEqual(
+                    open_code_review.elsewhere_warning(item),
+                    {
+                        "file": place,
+                        "type": "finding on another file",
+                        "message": f"high bug: It breaks @{ZERO_WIDTH_SPACE}x.",
+                    },
+                )
+
+    def test_a_warning_mentions_nobody_with_its_path(self):
+        """The poster puts the path of a warning in a code span, which a
+        backtick of the path ends."""
+        for path in ("a`@alice`.rs", "@org/team.rs"):
+            with self.subTest(path=path):
+                for item in (
+                    open_code_review.behavior_change_warning(
+                        BehaviorChange(path, None, "Text.")
+                    ),
+                    open_code_review.omitted_warning(path),
+                    open_code_review.warning(path, "skipped", "Text."),
+                ):
+                    self.assertNotRegex(item["file"], r"@(?=[A-Za-z0-9])")
 
     def test_the_result_has_the_form_of_ocr_review(self):
         parsed = ReviewAnswer(
             (finding(),),
+            (finding(path="src/caller.rs", lines=None),),
             (BehaviorChange("src/cli.rs", None, "Gone."),),
             (SkippedFile("src/lib.rs", "Generated by @bot."),),
             ("tool.py",),
         )
         result = open_code_review.review_result(parsed, PATHS, ["out/gen.rs"], HEAD)
         self.assertEqual(result["status"], "success")
+        # A file that the review does not account for makes it incomplete:
+        # the poster records no checkpoint.
         self.assertEqual(result["manifest"], {"input": {"resolved_head": HEAD}})
         self.assertEqual(
-            [item["path"] for item in result["comments"]],
-            ["src/lib.rs", "src/cli.rs"],
+            [item["path"] for item in result["comments"]], ["src/lib.rs"]
         )
         self.assertEqual(
             result["warnings"],
             [
+                {"file": "src/cli.rs", "type": "behavior change", "message": "Gone."},
+                {
+                    "file": "src/caller.rs",
+                    "type": "finding on another file",
+                    "message": "high bug: Text.",
+                },
                 {
                     "file": "src/lib.rs",
                     "type": "skipped",
@@ -671,15 +895,30 @@ class Results(unittest.TestCase):
         # comment.
         self.assertNotIn("message", result)
 
+    def test_a_review_that_accounts_for_each_file_is_complete(self):
+        parsed = ReviewAnswer((), (), (), (SkippedFile("src/lib.rs", "Generated."),), ())
+        result = open_code_review.review_result(parsed, PATHS, [], HEAD)
+        self.assertEqual(
+            result["manifest"],
+            {"input": {"resolved_head": HEAD}, "terminal_state": "complete"},
+        )
+
     def test_a_result_with_no_comment_gives_the_files_that_claude_reviewed(self):
-        parsed = ReviewAnswer((), (), (SkippedFile("src/lib.rs", "Generated."),), ())
+        parsed = ReviewAnswer(
+            (),
+            (finding(path="src/caller.rs"),),
+            (BehaviorChange("src/cli.rs", None, "Gone."),),
+            (SkippedFile("src/lib.rs", "Generated."),),
+            (),
+        )
         result = open_code_review.review_result(parsed, PATHS, [], HEAD)
         self.assertEqual(result["comments"], [])
         self.assertEqual(
             result["message"],
             f"Claude ({claude_review.CLAUDE_MODEL}) reviewed 1 of 2 file(s) in the "
-            "delegation mode of OCR and has no comment.",
+            "delegation mode of OCR and has no finding on them.",
         )
+        self.assertEqual(len(result["warnings"]), 3)
 
     def test_an_omitted_file_has_a_warning(self):
         self.assertEqual(
@@ -712,11 +951,139 @@ class Results(unittest.TestCase):
         self.assertEqual(
             result["warnings"], [open_code_review.omitted_warning("gen.rs")]
         )
+        self.assertEqual(result["manifest"]["terminal_state"], "complete")
 
     def test_a_pull_request_that_changes_no_file_says_so(self):
         self.assertEqual(
             open_code_review.nothing_to_review_message(Preview((), ()), []),
             "This pull request changes no file.",
+        )
+
+
+class SummaryComments(unittest.TestCase):
+    def test_the_newest_summary_of_the_poster_is_read(self):
+        comments = [
+            issue_comment(review_summary()),
+            issue_comment(ERROR_SUMMARY),
+            issue_comment("A comment.", login="alice", kind="User", app=None),
+        ]
+        self.assertEqual(
+            open_code_review.newest_summary(comments, 42), SummaryComment(True, None)
+        )
+        self.assertEqual(
+            open_code_review.newest_summary(comments[:1], 42),
+            SummaryComment(False, Checkpoint(HEAD, "dev", "f1")),
+        )
+
+    def test_a_comment_of_another_writer_is_no_summary(self):
+        """The poster updates only a summary of the token of the job, so a
+        quote of its marker is no summary."""
+        for item in (
+            issue_comment(ERROR_SUMMARY, login="alice", kind="User", app=None),
+            # A user who writes through the App of the job is still a user.
+            issue_comment(ERROR_SUMMARY, login="alice", kind="User"),
+            issue_comment(ERROR_SUMMARY, login="other[bot]", app="other"),
+            issue_comment(ERROR_SUMMARY, login="other[bot]", app=None),
+            issue_comment("A summary with no marker."),
+            {"body": ERROR_SUMMARY},
+        ):
+            with self.subTest(item=item):
+                self.assertIsNone(open_code_review.newest_summary([item], 42))
+
+    def test_the_token_of_the_job_writes_a_summary_also_with_no_app(self):
+        self.assertIsNotNone(
+            open_code_review.newest_summary([issue_comment(ERROR_SUMMARY, app=None)], 42)
+        )
+
+    def test_the_marker_of_the_poster_is_read(self):
+        self.assertEqual(checkpoint_marker(), POSTER_CHECKPOINT)
+        self.assertEqual(
+            open_code_review.parse_checkpoint(review_summary(), 42),
+            Checkpoint(HEAD, "dev", "f1"),
+        )
+
+    def test_a_checkpoint_that_does_not_agree_with_the_poster_is_none(self):
+        cases = {
+            "no marker": "<!-- ocr-summary -->\nNo checkpoint.",
+            "two markers": review_summary(f"{POSTER_CHECKPOINT}\n{POSTER_CHECKPOINT}"),
+            "not base64": review_summary("<!-- ocr-checkpoint:v1 abc -->"),
+            "not JSON": review_summary(
+                f"<!-- ocr-checkpoint:v1 {base64.b64encode(b'{').decode()} -->"
+            ),
+            "not an object": review_summary(
+                f"<!-- ocr-checkpoint:v1 {base64.b64encode(b'[1]').decode()} -->"
+            ),
+            "another version": review_summary(checkpoint_marker(v=2)),
+            "another pull request": review_summary(checkpoint_marker(pr=43)),
+            "a pull request that is not a number": review_summary(
+                checkpoint_marker(pr="42")
+            ),
+            "an incomplete review": review_summary(
+                checkpoint_marker(terminal_state="partial")
+            ),
+            "a head that is no commit": review_summary(checkpoint_marker(head="b" * 39)),
+            "no base branch": review_summary(checkpoint_marker(base_ref="")),
+            "no fingerprint": review_summary(checkpoint_marker(fingerprint=None)),
+        }
+        for case, body in cases.items():
+            with self.subTest(case=case):
+                self.assertIsNone(open_code_review.parse_checkpoint(body, 42))
+
+    def test_a_push_keeps_the_review_of_the_same_base_branch_and_reviewer(self):
+        checkpoint = Checkpoint(HEAD, "dev", "f1")
+        summary = SummaryComment(False, checkpoint)
+        pull_request = reviewed_pull_request(base="dev").pull_request
+        self.assertEqual(
+            open_code_review.kept_checkpoint(summary, pull_request, "f1", True),
+            checkpoint,
+        )
+        cases = {
+            "not a push": (summary, pull_request, "f1", False),
+            "no summary": (None, pull_request, "f1", True),
+            "no checkpoint": (SummaryComment(False, None), pull_request, "f1", True),
+            "another base branch": (
+                summary,
+                reviewed_pull_request(base="main").pull_request,
+                "f1",
+                True,
+            ),
+            "another reviewer": (summary, pull_request, "f2", True),
+        }
+        for case, arguments in cases.items():
+            with self.subTest(case=case):
+                self.assertIsNone(open_code_review.kept_checkpoint(*arguments))
+
+    def test_the_fingerprint_names_the_reviewer(self):
+        fingerprint = open_code_review.reviewer_fingerprint("SKILL")
+        self.assertEqual(open_code_review.reviewer_fingerprint("SKILL"), fingerprint)
+        self.assertNotEqual(open_code_review.reviewer_fingerprint("SKILL 2"), fingerprint)
+        self.assertRegex(fingerprint, r"^[0-9a-f]{64}$")
+
+    def test_a_cause_replaces_only_a_summary_that_holds_a_cause(self):
+        for summary, sticky in (
+            (None, False),
+            (SummaryComment(False, None), False),
+            (SummaryComment(False, Checkpoint(HEAD, "dev", "f1")), False),
+            (SummaryComment(True, None), True),
+        ):
+            with self.subTest(summary=summary):
+                self.assertEqual(
+                    open_code_review.failure_options(summary), {"stickySummary": sticky}
+                )
+
+    def test_a_result_replaces_the_summary_and_records_its_head(self):
+        self.assertEqual(
+            open_code_review.recorded_review_options("f1", "dev", MERGE_BASE),
+            {
+                "stickySummary": True,
+                "checkpointEnabled": True,
+                "checkpointFingerprint": "f1",
+                "checkpointBaseRef": "dev",
+                "checkpointMergeBase": MERGE_BASE,
+            },
+        )
+        self.assertEqual(
+            open_code_review.KEPT_REVIEW_OPTIONS, {"checkpointNoop": True}
         )
 
 
@@ -750,6 +1117,14 @@ class Prompts(unittest.TestCase):
         self.assertIn("### Rule group 1: `**/*.rs` (system)", prompt)
         self.assertIn("Files: `src/lib.rs`", prompt)
         self.assertIn("#### Rust Review Principles", prompt)
+
+    def test_the_prompt_asks_for_no_suggestion_that_deletes_lines(self):
+        """The poster posts no suggestion with no code that replaces the
+        lines."""
+        self.assertIn(
+            "A suggestion\n  cannot delete lines: describe a deletion in `content`",
+            self.prompt(),
+        )
 
     def test_each_file_to_review_names_the_file_of_its_diff(self):
         document = json.loads(open_code_review.preview_document(PREVIEW, self.LAYOUT))
@@ -897,13 +1272,35 @@ class WholeReview(unittest.TestCase):
             lambda repository: self.repository.remote.as_uri(),
         )
         self.layout = self.workspace.layout
+        self.merges = GitMerges(
+            "token", lambda repository: self.repository.remote.as_uri()
+        )
         self.pull = reviewed_pull_request(head=self.repository.first, base="main")
 
-    def review(self, ocr, claude):
+    def review(self, ocr, claude, kept=None):
         with patch("sys.stdout", io.StringIO()):
             return open_code_review.review(
-                self.pull, self.workspace, ocr, claude, "SKILL"
+                self.pull, self.workspace, ocr, claude, "SKILL", kept, self.merges
             )
+
+    def checkpoint(self, head):
+        """The checkpoint of a review of `head` by the reviewer of the tests."""
+        return Checkpoint(head, "main", open_code_review.reviewer_fingerprint("SKILL"))
+
+    def push(self, *changes):
+        """A push to the branch of the pull request: each change runs in the
+        work tree on that branch."""
+        work = self.repository.work
+        self.repository.git(work, "checkout", "--quiet", SET_NAME)
+        for change in changes:
+            change(work)
+        self.repository.push()
+        head = self.repository.git(work, "rev-parse", "HEAD")
+        self.pull = reviewed_pull_request(head=head, base="main")
+        return head
+
+    def merge_main(self, work):
+        self.repository.git(work, "merge", "--quiet", "--no-edit", "main")
 
     def move_main(self):
         """A commit on main after the branch: it changes line 9 of the file
@@ -930,7 +1327,8 @@ class WholeReview(unittest.TestCase):
                 "files": [file_state("src/lib.rs")],
             }
         )
-        result = self.review(ocr, claude)
+        outcome = self.review(ocr, claude)
+        result = outcome.result
         merge_base, head = self.repository.base, self.repository.first
         self.assertEqual(
             ocr.calls,
@@ -943,7 +1341,10 @@ class WholeReview(unittest.TestCase):
                 ),
             ],
         )
-        self.assertEqual(result["manifest"], {"input": {"resolved_head": head}})
+        self.assertEqual(
+            result["manifest"],
+            {"input": {"resolved_head": head}, "terminal_state": "complete"},
+        )
         self.assertEqual(
             result["comments"],
             [
@@ -961,14 +1362,20 @@ class WholeReview(unittest.TestCase):
         self.assertIn("Rule of src/lib.rs.", prompt)
         self.assertIn(f'"diff": "{self.layout.changes / "1.diff"}"', prompt)
         self.assertEqual(timeout, claude_review.REVIEW_TIMEOUT_SECONDS)
+        self.assertEqual(schema, open_code_review.ANSWER_SCHEMA)
+        # The poster records the head of the review in a checkpoint.
         self.assertEqual(
-            schema["properties"]["comments"]["items"]["properties"]["path"],
-            {"enum": ["src/lib.rs"]},
+            outcome.poster_options,
+            open_code_review.recorded_review_options(
+                open_code_review.reviewer_fingerprint("SKILL"), "main", merge_base
+            ),
         )
 
     def test_the_files_that_ocr_does_not_list_have_a_warning(self):
         ocr = FakeOcr((("src/lib.rs", "modified"),))
-        result = self.review(ocr, FakeClaude(answer(files=[file_state("src/lib.rs")])))
+        result = self.review(
+            ocr, FakeClaude(answer(files=[file_state("src/lib.rs")]))
+        ).result
         self.assertEqual(
             result["warnings"],
             [
@@ -1095,7 +1502,7 @@ class WholeReview(unittest.TestCase):
                 "files": [file_state("src/lib.rs")],
             }
         )
-        result = self.review(FakeOcr((("src/lib.rs", "modified"),)), claude)
+        result = self.review(FakeOcr((("src/lib.rs", "modified"),)), claude).result
         first, second = result["comments"]
         self.assertEqual(first["suggestion_code"], "line 5, fixed")
         self.assertNotIn("suggestion_code", second)
@@ -1103,7 +1510,7 @@ class WholeReview(unittest.TestCase):
     def test_with_nothing_to_review_claude_does_not_run(self):
         ocr = FakeOcr(())
         claude = FakeClaude(answer())
-        result = self.review(ocr, claude)
+        result = self.review(ocr, claude).result
         self.assertEqual(len(ocr.calls), 1)
         self.assertEqual(claude.calls, [])
         self.assertEqual(
@@ -1112,13 +1519,68 @@ class WholeReview(unittest.TestCase):
             "(`omitted`: 4), so Claude reviews none.",
         )
 
+    def assert_kept(self, kept):
+        ocr = FakeOcr((("src/lib.rs", "modified"),))
+        claude = FakeClaude(answer(files=[file_state("src/lib.rs")]))
+        outcome = self.review(ocr, claude, kept)
+        self.assertEqual(outcome, Outcome(None, open_code_review.KEPT_REVIEW_OPTIONS))
+        self.assertEqual((ocr.calls, claude.calls), ([], []))
+
+    def assert_reviewed(self, kept):
+        ocr = FakeOcr((("src/lib.rs", "modified"),))
+        claude = FakeClaude(answer(files=[file_state("src/lib.rs")]))
+        outcome = self.review(ocr, claude, kept)
+        self.assertIsNotNone(outcome.result)
+        self.assertEqual(len(claude.calls), 1)
+
+    def test_a_push_that_merges_the_base_branch_alone_keeps_the_review(self):
+        self.move_main()
+        self.push(self.merge_main)
+        self.assert_kept(self.checkpoint(self.repository.first))
+
+    def test_a_head_that_is_the_reviewed_head_keeps_the_review(self):
+        self.assert_kept(self.checkpoint(self.repository.first))
+
+    def test_a_push_that_changes_the_code_gets_a_review(self):
+        self.move_main()
+
+        def change_line_two(work):
+            self.repository.commit(
+                "Change line 2",
+                **{
+                    "src/lib.rs": (work / "src" / "lib.rs")
+                    .read_text()
+                    .replace("line 2\n", "line 2, changed\n")
+                },
+            )
+
+        self.push(self.merge_main, change_line_two)
+        self.assert_reviewed(self.checkpoint(self.repository.first))
+
+    def test_a_merge_that_changes_more_than_the_base_branch_gets_a_review(self):
+        self.move_main()
+
+        def merge_with_a_change(work):
+            self.repository.git(work, "merge", "--quiet", "--no-commit", "main")
+            (work / "other.rs").write_text("fn main() { evil() }\n")
+            self.repository.git(work, "add", "--all")
+            self.repository.git(work, "commit", "--quiet", "--no-edit")
+
+        self.push(merge_with_a_change)
+        self.assert_reviewed(self.checkpoint(self.repository.first))
+
+    def test_a_reviewed_head_that_github_does_not_have_gets_a_review(self):
+        self.assert_reviewed(self.checkpoint("d" * 40))
+
 
 class FakeEnvironment:
     """The variables of a run of the review step, with the event of a push."""
 
     def __init__(self, root):
         self.event = root / "event.json"
-        self.event.write_text(json.dumps({"pull_request": {"number": 42}}))
+        self.event.write_text(
+            json.dumps({"action": "synchronize", "pull_request": {"number": 42}})
+        )
         self.values = {
             "GITHUB_REPOSITORY": "Peppy-bot/peppy",
             "GITHUB_EVENT_NAME": "pull_request_target",
@@ -1131,6 +1593,14 @@ class FakeEnvironment:
         }
 
 
+def started_run(summary=None):
+    """start_run, which reads a pull request with `summary` as its newest
+    summary comment."""
+    return lambda environment: open_code_review.Run(
+        environment, reviewed_pull_request(), summary, True
+    )
+
+
 class Commands(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -1138,26 +1608,43 @@ class Commands(unittest.TestCase):
         self.root = Path(directory.name)
         self.result = self.root / "out" / "ocr-result.json"
         self.errors = self.root / "out" / "ocr-errors.log"
+        self.poster = self.root / "out" / "ocr-poster.json"
 
-    def run_command(self, run_review):
+    def run_command(self, run_review, start_run=None):
         output = io.StringIO()
         with (
+            patch.object(open_code_review, "start_run", start_run or started_run()),
             patch.object(open_code_review, "run_review", run_review),
             patch("sys.stdout", output),
             patch("sys.stderr", io.StringIO()),
         ):
-            code = open_code_review.review_command(self.result, self.errors)
+            code = open_code_review.review_command(
+                self.result, self.errors, self.poster
+            )
         return code, output.getvalue()
 
-    def test_a_review_that_completes_writes_its_result(self):
-        document = open_code_review.result_document(HEAD, [], [], "Clean.")
-        code, _ = self.run_command(lambda environment: document)
+    def poster_options(self):
+        return json.loads(self.poster.read_text())
+
+    def test_a_review_that_completes_writes_its_result_and_the_options(self):
+        document = open_code_review.result_document(HEAD, [], [], "Clean.", True)
+        options = open_code_review.recorded_review_options("f1", "dev", MERGE_BASE)
+        code, _ = self.run_command(lambda run: Outcome(document, options))
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(self.result.read_text()), document)
+        self.assertEqual(self.poster_options(), options)
+        self.assertFalse(self.errors.exists())
+
+    def test_a_head_that_keeps_its_review_writes_no_result(self):
+        outcome = Outcome(None, open_code_review.KEPT_REVIEW_OPTIONS)
+        code, _ = self.run_command(lambda run: outcome)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.poster_options(), {"checkpointNoop": True})
+        self.assertFalse(self.result.exists())
         self.assertFalse(self.errors.exists())
 
     def test_a_review_that_does_not_complete_writes_its_cause(self):
-        def fails(environment):
+        def fails(run):
             raise ReviewFailure("The Claude login is at its usage limit.")
 
         code, output = self.run_command(fails)
@@ -1165,20 +1652,31 @@ class Commands(unittest.TestCase):
         self.assertEqual(
             self.errors.read_text(), "The Claude login is at its usage limit.\n"
         )
+        self.assertEqual(self.poster_options(), {"stickySummary": False})
         self.assertFalse(self.result.exists())
         self.assertIn("::error::The Claude login is at its usage limit.", output)
+
+    def test_a_cause_replaces_a_summary_that_holds_a_cause(self):
+        def fails(run):
+            raise ReviewFailure("The Claude login is at its usage limit.")
+
+        self.run_command(fails, started_run(SummaryComment(True, None)))
+        self.assertEqual(self.poster_options(), {"stickySummary": True})
 
     def test_a_call_to_github_that_fails_names_the_call(self):
         def fails(environment):
             raise ApiError("GET /repos/Peppy-bot/peppy/pulls/42", 502, "Bad Gateway")
 
-        code, _ = self.run_command(fails)
+        code, _ = self.run_command(None, start_run=fails)
         self.assertEqual(code, 1)
         self.assertEqual(
             self.errors.read_text(),
             "A call to GitHub failed: GET /repos/Peppy-bot/peppy/pulls/42 failed: "
             "HTTP 502: Bad Gateway\n",
         )
+        # The run could not read the summary comment, so the cause goes to a
+        # new comment.
+        self.assertEqual(self.poster_options(), {"stickySummary": False})
 
     def test_each_other_error_writes_a_cause_with_no_detail(self):
         errors = (
@@ -1189,14 +1687,17 @@ class Commands(unittest.TestCase):
         for raised in errors:
             with self.subTest(error=type(raised).__name__):
 
-                def fails(environment, raised=raised):
+                def fails(run, raised=raised):
                     raise raised
 
-                code, output = self.run_command(fails)
+                code, output = self.run_command(
+                    fails, started_run(SummaryComment(True, None))
+                )
                 self.assertEqual(code, 1)
                 self.assertEqual(
                     self.errors.read_text(), f"{open_code_review.STOPPED_CAUSE}\n"
                 )
+                self.assertEqual(self.poster_options(), {"stickySummary": True})
                 self.assertFalse(self.result.exists())
                 self.assertIn(f"::error::{raised}", output)
 
@@ -1204,7 +1705,7 @@ class Commands(unittest.TestCase):
         environment = FakeEnvironment(self.root).values
         environment["GITHUB_REPOSITORY"] = "someone/peppy"
         with self.assertRaisesRegex(MergeSetError, "Peppy-bot/peppy"):
-            open_code_review.run_review(environment)
+            open_code_review.start_run(environment)
 
     def test_each_variable_of_the_step_is_required(self):
         for name in open_code_review.STEP_VARIABLES:
@@ -1212,27 +1713,45 @@ class Commands(unittest.TestCase):
                 environment = FakeEnvironment(self.root).values
                 del environment[name]
                 with self.assertRaisesRegex(MergeSetError, f"{name} is not set"):
-                    open_code_review.run_review(environment)
+                    open_code_review.start_run(environment)
 
     def test_the_run_reviews_the_pull_request_of_its_event(self):
         values = FakeEnvironment(self.root).values
         (self.root / "SKILL.md").write_text("---\nname: x\n---\n\nThe skill.\n")
+        fingerprint = open_code_review.reviewer_fingerprint("The skill.")
+        api = FakeApi(
+            pull_request_item(number=42),
+            [issue_comment(review_summary(checkpoint_marker(fingerprint=fingerprint)))],
+        )
+        with patch.object(open_code_review, "GitHubApi", lambda token: api):
+            run = open_code_review.start_run(values)
+        self.assertEqual(
+            api.calls,
+            [
+                ("GET", "/repos/Peppy-bot/peppy/pulls/42"),
+                ("GET", "/repos/Peppy-bot/peppy/issues/42/comments"),
+            ],
+        )
+        self.assertTrue(run.push)
         calls = []
 
-        def review(pull, workspace, ocr, claude, skill):
-            calls.append((pull.pull_request.number, workspace.root, skill))
-            return {"status": "success"}
+        def review(pull, workspace, ocr, claude, skill, kept, merges):
+            calls.append((pull.pull_request.number, workspace.root, skill, kept))
+            return Outcome(None, open_code_review.KEPT_REVIEW_OPTIONS)
 
-        with (
-            patch.object(open_code_review, "review", review),
-            patch.object(
-                open_code_review,
-                "GitHubApi",
-                lambda token: FakeApi(pull_request_item(number=42)),
-            ),
-        ):
-            self.assertEqual(open_code_review.run_review(values), {"status": "success"})
-        self.assertEqual(calls, [(42, self.root / "workspace", "The skill.")])
+        with patch.object(open_code_review, "review", review):
+            open_code_review.run_review(run)
+        self.assertEqual(
+            calls,
+            [
+                (
+                    42,
+                    self.root / "workspace",
+                    "The skill.",
+                    Checkpoint(HEAD, "dev", fingerprint),
+                )
+            ],
+        )
 
 
 def condition_of(text: str, start: str, end: str) -> str:
@@ -1249,6 +1768,23 @@ def condition_of(text: str, start: str, end: str) -> str:
         if line.strip().startswith(end)
     )
     return re.sub(r"\s+", " ", " ".join(lines[first + 1 : last])).strip()
+
+
+def time_limits(text: str) -> tuple[int, dict[str, int | None]]:
+    """The `timeout-minutes` of the job of the workflow, and that of each of
+    its steps by its name (None for a step with no limit)."""
+    job = None
+    steps: dict[str, int | None] = {}
+    step = None
+    for line in text.splitlines():
+        if line.startswith("    timeout-minutes: "):
+            job = int(line.split(":", 1)[1])
+        elif line.startswith("      - name: "):
+            step = line.removeprefix("      - name: ")
+            steps[step] = None
+        elif step is not None and line.startswith("        timeout-minutes: "):
+            steps[step] = int(line.split(":", 1)[1])
+    return job, steps
 
 
 class WorkflowContract(unittest.TestCase):
@@ -1291,6 +1827,40 @@ class WorkflowContract(unittest.TestCase):
         self.assertEqual(group, f"( {job} )")
         self.assertIn("github.event.pull_request.author_association", job)
         self.assertIn("github.event.comment.author_association", job)
+        # A push to a draft starts no review; a comment does.
+        self.assertIn(
+            "github.event_name == 'pull_request_target' "
+            "&& !github.event.pull_request.draft",
+            job,
+        )
+
+    def test_the_job_outlasts_the_time_limits_of_its_steps(self):
+        """A step at its limit fails, and the post step then posts the cause;
+        the job at its limit is cancelled, which skips the post step."""
+        job, steps = time_limits(WORKFLOW.read_text())
+        self.assertIn("Review the pull request", steps)
+        for name, minutes in steps.items():
+            with self.subTest(step=name):
+                self.assertIsNotNone(minutes)
+        self.assertGreater(job, sum(steps.values()))
+        # The review step holds the Claude run, the two OCR commands and the
+        # git commands at their limits.
+        self.assertGreater(
+            steps["Review the pull request"] * 60,
+            claude_review.REVIEW_TIMEOUT_SECONDS
+            + 2 * open_code_review.OCR_TIMEOUT_SECONDS
+            + claude_review.GIT_TIMEOUT_SECONDS,
+        )
+
+    def test_the_workflow_installs_the_cli_of_the_claude_review_of_a_set(self):
+        text = WORKFLOW.read_text().replace(
+            f"CLAUDE_CLI_VERSION: {claude_review.CLAUDE_CLI_VERSION}",
+            "CLAUDE_CLI_VERSION: 9.9.9",
+        )
+        self.assertEqual(
+            self.problems(text),
+            [f"the line `CLAUDE_CLI_VERSION: {claude_review.CLAUDE_CLI_VERSION}`"],
+        )
 
 
 if __name__ == "__main__":
