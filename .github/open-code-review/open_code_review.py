@@ -2,9 +2,9 @@
 """The OpenCodeReview review of a pull request of peppy.
 
 The workflow `OpenCodeReview` (.github/workflows/open-code-review.yml) runs
-`review` on each push of a pull request, and on a comment of a member or a
-collaborator that starts with `/open-code-review`. The review is the
-delegation mode of OpenCodeReview (OCR,
+`review` on each push of a pull request of a member or a collaborator, and on
+a comment of a member or a collaborator that starts with `/open-code-review`.
+The review is the delegation mode of OpenCodeReview (OCR,
 https://github.com/alibaba/open-code-review):
 
 1. The OCR CLI selects the files of the pull request to review
@@ -21,21 +21,28 @@ OCR runs no model of its own: its native mode sends its prompts to a model
 provider with an API token, and the Claude login of a subscription is for
 Claude Code alone.
 
-Nothing of a pull request can change what runs:
+Nothing of a pull request runs, and a pull request cannot change the rules,
+the skill, the prompt or the poster of its review:
 
-- The workflow runs from the base branch. This script, the skill and the
+- The workflow runs from the default branch. This script, the skill and the
   poster come from trusted checkouts: peppy at the commit of the workflow, and
   OCR at a pinned commit.
 - The OCR CLI runs in a checkout of the base branch, from which it reads the
-  rules of the project (`.opencodereview/rule.json`), so a pull request cannot
-  change the rules of its own review. Its environment holds no token, and the
-  objects it reads are already local.
+  rules of the project (`.opencodereview/rule.json`). Its environment holds no
+  token, and the objects it reads are already local.
+- OCR leaves out each changed file that the `.gitignore` of the head matches,
+  and lists it nowhere. The script compares the files of the preview with
+  those of the diff, and the summary comment names each file that OCR leaves
+  out.
 - The Claude CLI runs with the tools Read, Grep and Glob alone, in its
   restricted mode (claude_review.claude_command), in a directory that holds the
-  base branch. The head and the diffs are directories that it reads as data.
-  Its environment holds the Claude login alone.
+  base branch. The head, with each symbolic link as a plain file, and the
+  diffs are directories that it reads as data. Its environment holds the
+  Claude login alone.
 - The title and the body of the pull request reach the prompt as one JSON
-  document that the prompt marks as data.
+  document that the prompt marks as data. Each text of Claude that the poster
+  posts goes through claude_review.without_mentions, and the location of a
+  behavior change is a changed file.
 
 A review that does not complete writes its cause to the error file, which the
 poster posts in the summary comment, and fails. The decisions are pure
@@ -50,13 +57,14 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
-# The Claude review of a set holds the run of the Claude CLI, the checkouts and
-# the GitHub client that this review uses too.
+# The Claude review of a set holds the run of the Claude CLI, the checkouts,
+# the GitHub client and the commands that this review uses too.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "merge-set"))
 import claude_review
 import merge_set
@@ -66,13 +74,9 @@ from claude_review import (
     ReviewFailure,
     Workspace,
     is_relative_path,
-    nonempty_text,
     without_mentions,
 )
 from merge_set import PEPPY, ApiError, GitHubApi, MergeSetError, PullRequest
-
-# merge_set puts the directory of resolve.py on the path.
-import resolve
 
 # The skill of OCR that the review follows; the workflow checks it out at the
 # commit of the OCR release that it pins.
@@ -85,6 +89,29 @@ COMMENT_COMMAND = "/open-code-review"
 # The files of the review step, which the post step reads.
 RESULT_FILE = "ocr-result.json"
 ERRORS_FILE = "ocr-errors.log"
+# The cause that the pull request gets for an error that is not a failure of
+# the review: the log of the run gives the error.
+STOPPED_CAUSE = "The review run stopped on an error: the log of the run gives it."
+
+# A function that makes the exception of a document that does not agree with
+# its schema, from the detail of the problem.
+Failure = Callable[[str], ReviewFailure]
+
+
+def object_list(item: Mapping, key: str, fail: Failure) -> list[Mapping]:
+    entries = item.get(key)
+    if not isinstance(entries, list) or not all(
+        isinstance(entry, Mapping) for entry in entries
+    ):
+        raise fail(f"`{key}` is not a list of objects")
+    return entries
+
+
+def text_field(item: Mapping, key: str, where: str, fail: Failure) -> str:
+    value = item.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise fail(f"{where} has no `{key}` text")
+    return value
 
 
 # The pull request ---------------------------------------------------------------
@@ -121,6 +148,9 @@ def fetch_pull_request(api: GitHubApi, number: int) -> ReviewedPullRequest:
     )
 
 
+# The checkouts -------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class Revisions:
     """The commits of the review: the tip of the base branch, whose files
@@ -131,10 +161,45 @@ class Revisions:
     head: str
 
 
-def prepare(workspace: Workspace, pull_request: PullRequest) -> Revisions:
-    """Check out the tip of the base branch and the head. The workspace
-    fetches no file before git needs it, so a diff of the two sides fetches
-    the files that the OCR CLI reads: it then reads local objects alone."""
+@dataclass(frozen=True)
+class ChangedFile:
+    # The path at the head; at the base for a deleted file.
+    path: str
+    # The path at the base of a renamed or copied file; None for each other.
+    old_path: str | None
+
+
+def parse_name_status(text: str) -> tuple[ChangedFile, ...]:
+    """The files of `git diff --name-status -z`: a status, then one path, or
+    two for a rename (R) or a copy (C), each ended with a NUL."""
+    fields = text.split("\0")
+    if fields[-1] != "":
+        raise ReviewFailure("The list of the changed files of git is cut.")
+    fields.pop()
+    files = []
+    index = 0
+    while index < len(fields):
+        two_paths = fields[index][:1] in ("R", "C")
+        end = index + (3 if two_paths else 2)
+        if end > len(fields):
+            raise ReviewFailure("The list of the changed files of git is cut.")
+        paths = fields[index + 1 : end]
+        files.append(ChangedFile(paths[-1], paths[0] if two_paths else None))
+        index = end
+    return tuple(files)
+
+
+@dataclass(frozen=True)
+class PreparedReview:
+    revisions: Revisions
+    changed: tuple[ChangedFile, ...]
+
+
+def prepare(workspace: Workspace, pull_request: PullRequest) -> PreparedReview:
+    """Check out the tip of the base branch and the head, and list the
+    changed files. The workspace fetches no file before git needs it, so a
+    diff of the two sides fetches the files that the OCR CLI reads: it then
+    reads local objects alone."""
     workspace.fetch(pull_request, None)
     base = workspace.base_commit(pull_request)
     merge_base = workspace.merge_base(pull_request, base)
@@ -143,23 +208,47 @@ def prepare(workspace: Workspace, pull_request: PullRequest) -> Revisions:
     workspace.check_out(PEPPY, base, layout.default_branch_of(PEPPY))
     workspace.check_out(PEPPY, head, layout.head_of(PEPPY))
     workspace.diff(PEPPY, merge_base, head)
-    return Revisions(base, merge_base, head)
+    names = workspace.git(
+        PEPPY, "diff", "--name-status", "-z", "--find-renames", merge_base, head
+    ).stdout
+    return PreparedReview(Revisions(base, merge_base, head), parse_name_status(names))
 
 
-def diff_path(layout: Layout, path: str) -> Path:
-    return layout.changes / f"{path}.diff"
+def diff_path(layout: Layout, index: int) -> Path:
+    """The file of the diff of the file to review at `index` in the preview.
+    A number, not the path, names it: two paths of a pull request cannot then
+    give one file and one directory of the same name."""
+    return layout.changes / f"{index + 1}.diff"
 
 
 def write_diffs(
-    workspace: Workspace, revisions: Revisions, paths: Sequence[str]
+    workspace: Workspace,
+    revisions: Revisions,
+    paths: Sequence[str],
+    changed: Sequence[ChangedFile],
 ) -> None:
-    """The diff of each file to review, as step 3 of the skill makes it."""
-    for path in paths:
-        target = diff_path(workspace.layout, path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            workspace.diff(PEPPY, revisions.merge_base, revisions.head, [path])
+    """The diff of each file to review, as step 3 of the skill makes it. The
+    diff of a renamed file names its path at the base too, so that git shows
+    the rename and not a file added in full."""
+    old_paths = {file.path: file.old_path for file in changed if file.old_path}
+    for index, path in enumerate(paths):
+        pathspec = [old_paths[path], path] if path in old_paths else [path]
+        diff_path(workspace.layout, index).write_text(
+            workspace.diff(PEPPY, revisions.merge_base, revisions.head, pathspec)
         )
+
+
+def head_lines(layout: Layout) -> Callable[[str], list[str] | None]:
+    """The lines of a file at the head; None when the head has no such
+    file."""
+
+    def read(path: str) -> list[str] | None:
+        file = layout.head_of(PEPPY) / path
+        if not file.is_file():
+            return None
+        return file.read_text(errors="replace").splitlines()
+
+    return read
 
 
 # The OCR CLI -------------------------------------------------------------------
@@ -171,6 +260,10 @@ class OcrFailure(ReviewFailure):
             f"The output of `ocr delegate {command}` does not agree with its "
             f"schema: {detail}."
         )
+
+
+def ocr_failure(command: str) -> Failure:
+    return lambda detail: OcrFailure(command, detail)
 
 
 @dataclass(frozen=True)
@@ -198,40 +291,35 @@ class Preview:
     def paths(self) -> tuple[str, ...]:
         return tuple(file.path for file in self.files)
 
+    @property
+    def listed_paths(self) -> tuple[str, ...]:
+        """Each changed file that the preview lists."""
+        return self.paths + tuple(file.path for file in self.excluded)
 
-def delegate_document(text: str, command: str) -> Mapping:
+
+def omitted_paths(preview: Preview, changed: Sequence[ChangedFile]) -> tuple[str, ...]:
+    """The changed files that the preview does not list."""
+    listed = set(preview.listed_paths)
+    return tuple(file.path for file in changed if file.path not in listed)
+
+
+def delegate_document(text: str, fail: Failure) -> Mapping:
     try:
         document = json.loads(text)
     except json.JSONDecodeError:
-        raise OcrFailure(command, "it is not JSON") from None
+        raise fail("it is not JSON") from None
     if not isinstance(document, Mapping):
-        raise OcrFailure(command, "it is not an object")
+        raise fail("it is not an object")
     version = document.get("schema_version")
     if version != DELEGATE_SCHEMA_VERSION:
-        raise OcrFailure(command, f"its schema version is {version!r}")
+        raise fail(f"its schema version is {version!r}")
     return document
 
 
-def items_of(document: Mapping, key: str, command: str) -> list[Mapping]:
-    items = document.get(key)
-    if not isinstance(items, list) or not all(
-        isinstance(item, Mapping) for item in items
-    ):
-        raise OcrFailure(command, f"`{key}` is not a list of objects")
-    return items
-
-
-def text_of(item: Mapping, key: str, command: str) -> str:
-    value = item.get(key)
-    if not isinstance(value, str) or not value:
-        raise OcrFailure(command, f"an entry has no `{key}`")
-    return value
-
-
-def file_path_of(item: Mapping, command: str) -> str:
-    path = text_of(item, "path", command)
+def file_path_of(item: Mapping, fail: Failure) -> str:
+    path = text_field(item, "path", "an entry", fail)
     if not is_relative_path(path):
-        raise OcrFailure(command, "a path is not relative to the repository")
+        raise fail("a path is not relative to the repository")
     return path
 
 
@@ -249,25 +337,27 @@ def preview_arguments(revisions: Revisions) -> list[str]:
 
 
 def parse_preview(text: str, revisions: Revisions) -> Preview:
-    command = "preview"
-    document = delegate_document(text, command)
+    fail = ocr_failure("preview")
+    document = delegate_document(text, fail)
     if document.get("mode") != "range":
-        raise OcrFailure(command, "its mode is not `range`")
+        raise fail("its mode is not `range`")
     if document.get("merge_base") != revisions.merge_base:
-        raise OcrFailure(command, "its merge base is not the one of the review")
+        raise fail("its merge base is not the one of the review")
     files = tuple(
-        ReviewableFile(file_path_of(item, command), text_of(item, "status", command))
-        for item in items_of(document, "reviewable_files", command)
+        ReviewableFile(
+            file_path_of(item, fail), text_field(item, "status", "an entry", fail)
+        )
+        for item in object_list(document, "reviewable_files", fail)
     )
     if len({file.path for file in files}) != len(files):
-        raise OcrFailure(command, "a file to review is in it more than once")
+        raise fail("a file to review is in it more than once")
     excluded = tuple(
         ExcludedFile(
-            file_path_of(item, command),
-            text_of(item, "status", command),
-            text_of(item, "exclude_reason", command),
+            file_path_of(item, fail),
+            text_field(item, "status", "an entry", fail),
+            text_field(item, "exclude_reason", "an entry", fail),
         )
-        for item in items_of(document, "excluded_files", command)
+        for item in object_list(document, "excluded_files", fail)
     )
     return Preview(files, excluded)
 
@@ -298,21 +388,21 @@ def rule_arguments(revisions: Revisions, paths: Sequence[str]) -> list[str]:
 
 
 def parse_rules(text: str, paths: Sequence[str]) -> tuple[RuleGroup, ...]:
-    command = "rule"
-    document = delegate_document(text, command)
+    fail = ocr_failure("rule")
+    document = delegate_document(text, fail)
     groups = []
-    for item in items_of(document, "groups", command):
+    for item in object_list(document, "groups", fail):
         files = item.get("files")
         if not isinstance(files, list) or not files:
-            raise OcrFailure(command, "a group has no files")
+            raise fail("a group has no files")
         if not set(files) <= set(paths):
-            raise OcrFailure(command, "a group names a file that is not to review")
+            raise fail("a group names a file that is not to review")
         groups.append(
             RuleGroup(
-                text_of(item, "source", command),
-                text_of(item, "pattern", command),
+                text_field(item, "source", "a group", fail),
+                text_field(item, "pattern", "a group", fail),
                 tuple(files),
-                text_of(item, "rule", command),
+                text_field(item, "rule", "a group", fail),
             )
         )
     return tuple(groups)
@@ -353,6 +443,7 @@ def run_ocr(
                 cwd=checkout,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 env=ocr_environment(environment, home),
                 timeout=OCR_TIMEOUT_SECONDS,
                 check=False,
@@ -455,10 +546,16 @@ class FileState(Enum):
     SKIPPED = "skipped"
 
 
-def answer_schema(paths: Sequence[str]) -> dict:
+# The reason of a skipped file whose entry gives none.
+NO_REASON = "The review gives no reason."
+
+
+def answer_schema(preview: Preview) -> dict:
     """The JSON Schema of the answer: the comments of step 5 of the skill,
-    the behavior changes of step 6, and the state of each file to review."""
+    on the files to review, the behavior changes of step 6, on the changed
+    files, and the state of each file to review."""
     line = {"type": "integer", "minimum": 0}
+    to_review = {"enum": list(preview.paths)}
     comment = {
         "type": "object",
         "additionalProperties": False,
@@ -473,7 +570,7 @@ def answer_schema(paths: Sequence[str]) -> dict:
             "suggestion_code",
         ],
         "properties": {
-            "path": {"enum": list(paths)},
+            "path": to_review,
             "start_line": line,
             "end_line": line,
             "category": {"enum": [category.value for category in Category]},
@@ -488,7 +585,7 @@ def answer_schema(paths: Sequence[str]) -> dict:
         "additionalProperties": False,
         "required": ["path", "line", "description"],
         "properties": {
-            "path": {"type": "string", "minLength": 1},
+            "path": {"enum": list(preview.listed_paths)},
             "line": line,
             "description": {"type": "string", "minLength": 1},
         },
@@ -498,7 +595,7 @@ def answer_schema(paths: Sequence[str]) -> dict:
         "additionalProperties": False,
         "required": ["path", "state", "reason"],
         "properties": {
-            "path": {"enum": list(paths)},
+            "path": to_review,
             "state": {"enum": [state.value for state in FileState]},
             "reason": {"type": "string"},
         },
@@ -513,15 +610,6 @@ def answer_schema(paths: Sequence[str]) -> dict:
             "files": {"type": "array", "items": file_state},
         },
     }
-
-
-def list_of(payload: Mapping, key: str) -> list[Mapping]:
-    items = payload.get(key)
-    if not isinstance(items, list) or not all(
-        isinstance(item, Mapping) for item in items
-    ):
-        raise InvalidAnswer(f"`{key}` is not a list of objects")
-    return items
 
 
 def line_of(item: Mapping, key: str, where: str) -> int | None:
@@ -542,7 +630,7 @@ def enum_of(enum: type[Enum], item: Mapping, key: str, where: str):
 def path_of(item: Mapping, paths: Sequence[str], where: str) -> str:
     path = item.get("path")
     if path not in paths:
-        raise InvalidAnswer(f"{where} is not on a file to review")
+        raise InvalidAnswer(f"{where} is not on a file that the schema names")
     return path
 
 
@@ -581,7 +669,7 @@ def parse_finding(item: Mapping, paths: Sequence[str], where: str) -> Finding:
     lines = parse_lines(item, where)
     return Finding(
         path=path_of(item, paths, where),
-        content=nonempty_text(item, "content", where),
+        content=text_field(item, "content", where, InvalidAnswer),
         lines=lines,
         category=enum_of(Category, item, "category", where),
         severity=enum_of(Severity, item, "severity", where),
@@ -589,37 +677,46 @@ def parse_finding(item: Mapping, paths: Sequence[str], where: str) -> Finding:
     )
 
 
-def parse_behavior_change(item: Mapping, where: str) -> BehaviorChange:
-    path = nonempty_text(item, "path", where)
-    if not is_relative_path(path):
-        raise InvalidAnswer(f"{where} is not on a file of the repository")
+def parse_behavior_change(
+    item: Mapping, paths: Sequence[str], where: str
+) -> BehaviorChange:
     return BehaviorChange(
-        path, line_of(item, "line", where), nonempty_text(item, "description", where)
+        path_of(item, paths, where),
+        line_of(item, "line", where),
+        text_field(item, "description", where, InvalidAnswer),
     )
 
 
-def parse_answer(payload: object, paths: Sequence[str]) -> ReviewAnswer:
+def parse_answer(payload: object, preview: Preview) -> ReviewAnswer:
     """The answer of Claude. A file counts as reviewed when an entry says so,
     else as skipped with the reasons of its entries, else as unaccounted."""
     if not isinstance(payload, Mapping):
         raise InvalidAnswer("it is not an object")
+    paths = preview.paths
     findings = tuple(
         parse_finding(item, paths, f"comment {index + 1}")
-        for index, item in enumerate(list_of(payload, "comments"))
+        for index, item in enumerate(object_list(payload, "comments", InvalidAnswer))
     )
     behavior_changes = tuple(
-        parse_behavior_change(item, f"behavior change {index + 1}")
-        for index, item in enumerate(list_of(payload, "behavior_changes"))
+        parse_behavior_change(
+            item, preview.listed_paths, f"behavior change {index + 1}"
+        )
+        for index, item in enumerate(
+            object_list(payload, "behavior_changes", InvalidAnswer)
+        )
     )
     reviewed: set[str] = set()
     reasons: dict[str, list[str]] = {}
-    for index, item in enumerate(list_of(payload, "files")):
+    for index, item in enumerate(object_list(payload, "files", InvalidAnswer)):
         where = f"file entry {index + 1}"
         path = path_of(item, paths, where)
         if enum_of(FileState, item, "state", where) is FileState.REVIEWED:
             reviewed.add(path)
             continue
-        reasons.setdefault(path, []).append(nonempty_text(item, "reason", where))
+        reason = item.get("reason")
+        if not isinstance(reason, str):
+            raise InvalidAnswer(f"{where} has no `reason` text")
+        reasons.setdefault(path, []).append(reason.strip() or NO_REASON)
     skipped = tuple(
         SkippedFile(path, "; ".join(reasons[path]))
         for path in paths
@@ -629,6 +726,32 @@ def parse_answer(payload: object, paths: Sequence[str]) -> ReviewAnswer:
         path for path in paths if path not in reviewed and path not in reasons
     )
     return ReviewAnswer(findings, behavior_changes, skipped, unaccounted)
+
+
+def suggestion_matches(finding: Finding, lines: list[str] | None) -> bool:
+    """Whether the code that a suggestion replaces is the text of the lines
+    of its finding at the head."""
+    if finding.suggestion is None or finding.lines is None or lines is None:
+        return False
+    if finding.lines.end > len(lines):
+        return False
+    text = "\n".join(lines[finding.lines.start - 1 : finding.lines.end])
+    return finding.suggestion.existing_code.rstrip("\n") == text
+
+
+def with_checked_suggestions(
+    answer: ReviewAnswer, file_lines: Callable[[str], list[str] | None]
+) -> ReviewAnswer:
+    """The answer with no suggestion whose code to replace is not the text of
+    its lines at the head: GitHub would replace other code with it."""
+    findings = tuple(
+        finding
+        if finding.suggestion is None
+        or suggestion_matches(finding, file_lines(finding.path))
+        else replace(finding, suggestion=None)
+        for finding in answer.findings
+    )
+    return replace(answer, findings=findings)
 
 
 # The prompt ----------------------------------------------------------------------
@@ -652,8 +775,10 @@ with the tools Read, Grep and Glob.
 - Step 2: the rule groups of `ocr delegate rule` are below. The rules name the
   tools `file_read` and `code_search` of OCR: use Read for the first, and Grep
   or Glob for the second.
-- Step 3: `{changes}/<path>.diff` is the diff of each file to review, from
-  `git diff --no-ext-diff --no-color --unified=3 {merge_base} {head} -- <path>`.
+- Step 3: the field `diff` of each file to review in the preview below names
+  the file of its diff, from `git diff --no-ext-diff --no-color --unified=3
+  {merge_base} {head} -- <path>`, with the path at the base too for a renamed
+  file.
 - The context: `{head_checkout}/` is the repository at the head, the new side
   of each diff. Your working directory holds `{base_checkout}/`, the
   repository at `{base}`, the tip of the base branch `{base_branch}`. No git
@@ -690,9 +815,9 @@ Answer in English, with the JSON that the schema of the run asks for:
   When you propose an exact replacement of the lines from `start_line` to
   `end_line`, `existing_code` is their text and `suggestion_code` is the text
   that replaces it; else both are empty.
-- `behavior_changes`: each material behavior change of step 6, with the file
-  and the line (0 for none) of its evidence, and a description that names the
-  affected workflow, what happened before and what happens now.
+- `behavior_changes`: each material behavior change of step 6, with the
+  changed file and the line (0 for none) of its evidence, and a description
+  that names the affected workflow, what happened before and what happens now.
 - `files`: one entry for each file to review: `reviewed`, or `skipped` with a
   concrete reason. The reason of a reviewed file is empty.
 """
@@ -709,11 +834,16 @@ def rules_text(groups: Sequence[RuleGroup]) -> str:
     )
 
 
-def preview_document(preview: Preview) -> str:
+def preview_document(preview: Preview, layout: Layout) -> str:
     return json.dumps(
         {
             "reviewable_files": [
-                {"path": file.path, "status": file.status} for file in preview.files
+                {
+                    "path": file.path,
+                    "status": file.status,
+                    "diff": str(diff_path(layout, index)),
+                }
+                for index, file in enumerate(preview.files)
             ],
             "excluded_files": [
                 {
@@ -752,10 +882,9 @@ def review_prompt(
         head=revisions.head,
         base=revisions.base,
         base_branch=pull_request.base_branch,
-        changes=layout.changes,
         head_checkout=layout.head_of(PEPPY),
         base_checkout=layout.default_branch_of(PEPPY),
-        preview=preview_document(preview),
+        preview=preview_document(preview, layout),
         rules=rules_text(groups),
         data=data,
     )
@@ -787,9 +916,8 @@ def behavior_change_comment(change: BehaviorChange) -> dict:
     location = change.path if change.line is None else f"{change.path}:{change.line}"
     return {
         "path": change.path,
-        "content": (
-            f"**Behavior change** (`{location}`): "
-            f"{without_mentions(change.description)}"
+        "content": without_mentions(
+            f"**Behavior change** (`{location}`): {change.description}"
         ),
         "start_line": 0,
         "end_line": 0,
@@ -797,7 +925,16 @@ def behavior_change_comment(change: BehaviorChange) -> dict:
     }
 
 
-def warnings_of(answer: ReviewAnswer) -> list[dict]:
+def omitted_warning(path: str) -> dict:
+    return {
+        "file": path,
+        "type": "omitted",
+        "message": "OCR does not list this changed file (the `.gitignore` of the "
+        "head can match it), so the review does not read it.",
+    }
+
+
+def warnings_of(answer: ReviewAnswer, omitted: Sequence[str]) -> list[dict]:
     return [
         *(
             {
@@ -815,6 +952,7 @@ def warnings_of(answer: ReviewAnswer) -> list[dict]:
             }
             for path in answer.unaccounted
         ),
+        *(omitted_warning(path) for path in omitted),
     ]
 
 
@@ -844,32 +982,44 @@ def result_document(
     return document
 
 
-def review_result(answer: ReviewAnswer, paths: Sequence[str], head: str) -> dict:
+def review_result(
+    answer: ReviewAnswer, paths: Sequence[str], omitted: Sequence[str], head: str
+) -> dict:
     comments = [
         *(comment_of(finding) for finding in answer.findings),
         *(behavior_change_comment(change) for change in answer.behavior_changes),
     ]
     message = None if comments else no_comment_message(answer, paths)
-    return result_document(head, comments, warnings_of(answer), message)
+    return result_document(head, comments, warnings_of(answer, omitted), message)
 
 
-def nothing_to_review_message(preview: Preview) -> str:
-    if not preview.excluded:
+def nothing_to_review_message(preview: Preview, omitted: Sequence[str]) -> str:
+    if not preview.excluded and not omitted:
         return "This pull request changes no file."
     reasons: dict[str, int] = {}
     for file in preview.excluded:
         reasons[file.reason] = reasons.get(file.reason, 0) + 1
+    if omitted:
+        reasons["omitted"] = len(omitted)
     counts = ", ".join(
         f"`{reason}`: {count}" for reason, count in sorted(reasons.items())
     )
+    total = len(preview.excluded) + len(omitted)
     return (
-        f"OCR excludes each of the {len(preview.excluded)} file(s) of this pull "
-        f"request ({counts}), so Claude reviews none."
+        f"OCR excludes each of the {total} file(s) of this pull request "
+        f"({counts}), so Claude reviews none."
     )
 
 
-def nothing_to_review_result(preview: Preview, head: str) -> dict:
-    return result_document(head, [], [], nothing_to_review_message(preview))
+def nothing_to_review_result(
+    preview: Preview, omitted: Sequence[str], head: str
+) -> dict:
+    return result_document(
+        head,
+        [],
+        [omitted_warning(path) for path in omitted],
+        nothing_to_review_message(preview, omitted),
+    )
 
 
 # The review ----------------------------------------------------------------------
@@ -886,21 +1036,26 @@ def review(
     skill: str,
 ) -> dict:
     """The result of the review of the pull request."""
-    revisions = prepare(workspace, pull.pull_request)
+    prepared = prepare(workspace, pull.pull_request)
+    revisions = prepared.revisions
     preview = parse_preview(ocr(preview_arguments(revisions)), revisions)
+    omitted = omitted_paths(preview, prepared.changed)
     if not preview.files:
-        return nothing_to_review_result(preview, revisions.head)
+        return nothing_to_review_result(preview, omitted, revisions.head)
     paths = preview.paths
     groups = parse_rules(ocr(rule_arguments(revisions, paths)), paths)
-    write_diffs(workspace, revisions, paths)
-    prompt = review_prompt(pull, revisions, preview, groups, workspace.layout, skill)
-    answer = claude(
-        prompt,
-        answer_schema(paths),
+    write_diffs(workspace, revisions, paths, prepared.changed)
+    layout = workspace.layout
+    payload = claude(
+        review_prompt(pull, revisions, preview, groups, layout, skill),
+        answer_schema(preview),
         "review",
         claude_review.REVIEW_TIMEOUT_SECONDS,
     )
-    return review_result(parse_answer(answer, paths), paths, revisions.head)
+    answer = with_checked_suggestions(
+        parse_answer(payload, preview), head_lines(layout)
+    )
+    return review_result(answer, paths, omitted, revisions.head)
 
 
 # The commands --------------------------------------------------------------------
@@ -922,7 +1077,7 @@ REVIEW_COMMAND = (
 # The lines that the workflow holds, so that its steps check out the
 # directories that this script imports from, give the variables that it reads
 # and read the files that it writes. test_open_code_review.py checks the
-# workflow against them: each one is a part of a line of the workflow.
+# workflow against them with claude_review.workflow_problems.
 WORKFLOW_LINES = (
     "/.github/open-code-review/",
     "/.github/merge-set/",
@@ -932,40 +1087,12 @@ WORKFLOW_LINES = (
     "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
     f"resultPath: `${{process.env.RUNNER_TEMP}}/{RESULT_FILE}`,",
     f"stderrPath: `${{process.env.RUNNER_TEMP}}/{ERRORS_FILE}`,",
-    f"startsWith(github.event.comment.body, '{COMMENT_COMMAND}')",
+    f"&& startsWith(github.event.comment.body, '{COMMENT_COMMAND}')",
 )
 
 
-def workflow_problems(text: str) -> list[str]:
-    """What the workflow lacks of WORKFLOW_LINES and of the variables of the
-    review step; none when it holds all of them."""
-    lines = [line.strip() for line in text.splitlines()]
-    keys = {line.split(":", 1)[0] for line in lines if ":" in line}
-    return [
-        *(
-            f"the line `{line}`"
-            for line in WORKFLOW_LINES
-            if not any(line in item for item in lines)
-        ),
-        *(
-            f"the variable `{name}` of the review step"
-            for name in STEP_VARIABLES
-            if name not in keys
-        ),
-    ]
-
-
-def required(environment: Mapping[str, str], name: str) -> str:
-    value = environment.get(name, "")
-    if not value:
-        raise MergeSetError(
-            f"{name} is not set; this script runs in a step of the OpenCodeReview "
-            "workflow"
-        )
-    return value
-
-
 def run_review(environment: Mapping[str, str]) -> dict:
+    required = claude_review.required
     repository = required(environment, "GITHUB_REPOSITORY")
     if repository != PEPPY.full_name:
         raise MergeSetError(f"this script reviews pull requests of {PEPPY.full_name}")
@@ -995,11 +1122,6 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text)
 
 
-def error(text: str) -> int:
-    print(f"::error::{resolve.escape_workflow_command(text)}")
-    return 1
-
-
 def review_command(result: Path, errors: Path) -> int:
     """Run the review and write its result; a review that does not complete
     writes its cause to `errors`, which the poster posts on the pull request,
@@ -1010,23 +1132,17 @@ def review_command(result: Path, errors: Path) -> int:
         cause = f"A call to GitHub failed: {failure}"
     except ReviewFailure as failure:
         cause = str(failure)
-    except (MergeSetError, resolve.ResolveError) as failure:
-        write_text(
-            errors, "The review run stopped on an error: the log of the run gives it.\n"
-        )
-        return error(str(failure))
+    except Exception as failure:
+        # Each other error: the log gets it with its traceback, and the pull
+        # request gets a cause that names no content.
+        traceback.print_exc()
+        write_text(errors, f"{STOPPED_CAUSE}\n")
+        return claude_review.error(str(failure) or type(failure).__name__)
     else:
         write_text(result, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
         return 0
     write_text(errors, f"{cause}\n")
-    return error(cause)
-
-
-def check_workflow(workflow: Path) -> int:
-    problems = workflow_problems(workflow.read_text())
-    for problem in problems:
-        error(f"{workflow} lacks {problem}")
-    return 1 if problems else 0
+    return claude_review.error(cause)
 
 
 def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
@@ -1065,7 +1181,9 @@ def main(argv: Sequence[str]) -> int:
         case "review":
             return review_command(arguments.result, arguments.errors)
         case "check-workflow":
-            return check_workflow(arguments.workflow)
+            return claude_review.check_workflow(
+                arguments.workflow, WORKFLOW_LINES, STEP_VARIABLES
+            )
 
 
 if __name__ == "__main__":

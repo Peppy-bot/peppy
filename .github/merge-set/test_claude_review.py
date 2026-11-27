@@ -1141,6 +1141,42 @@ class FakeClaude:
         return self.confirmations.pop(0)
 
 
+class WorkspaceCheckouts(unittest.TestCase):
+    """The workspace on a head that holds a symbolic link out of the
+    repository and a file that is not UTF-8."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.repository = GitRepository(root / "nodes-hub")
+        work = self.repository.work
+        (work / "secrets").symlink_to("/proc/self/environ")
+        (work / "latin1.txt").write_bytes(b"caf\xe9\n")
+        self.repository.git(work, "add", "--all")
+        self.repository.git(work, "commit", "--quiet", "--message", "Add a link")
+        self.head = self.repository.git(work, "rev-parse", "HEAD")
+        self.repository.push()
+        self.workspace = claude_review.Workspace(
+            root / "workspace",
+            "token",
+            lambda repository: self.repository.remote.as_uri(),
+        )
+        self.pr = pull_request(NODES_HUB, 88, head_commit=self.head, base_branch="main")
+        self.workspace.fetch(self.pr, None)
+
+    def test_a_symbolic_link_is_checked_out_as_a_plain_file(self):
+        path = self.workspace.layout.head_of(NODES_HUB)
+        self.workspace.check_out(NODES_HUB, self.head, path)
+        link = path / "secrets"
+        self.assertFalse(link.is_symlink())
+        self.assertEqual(link.read_text(), "/proc/self/environ")
+
+    def test_a_diff_of_a_file_that_is_not_utf8_has_replacement_characters(self):
+        diff = self.workspace.diff(NODES_HUB, self.repository.base, self.head)
+        self.assertIn("+caf\N{REPLACEMENT CHARACTER}\n", diff)
+
+
 class WholeRound(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()

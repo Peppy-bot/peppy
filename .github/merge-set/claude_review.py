@@ -43,7 +43,9 @@ Claude only reads, and nothing of a pull request can change what it runs:
   repositories of the set at their bases, and the AGENTS.md of the
   superproject), so the CLI loads no agent file of a pull request. The heads
   and the diffs are in directories that the CLI reads as data, and it loads
-  no CLAUDE.md from them.
+  no CLAUDE.md from them. A checkout writes each symbolic link of a commit as
+  a plain file that holds its target, so a head cannot point the CLI at a
+  file out of its directories.
 - The title, the body and the commit messages of each pull request, and the
   answers in the threads, reach the prompt as one JSON document that the
   prompt marks as data.
@@ -1420,11 +1422,14 @@ class Workspace:
             str(self.root / "git" / f"{repository.name}.git"),
             *arguments,
         ]
+        # A diff shows the bytes of the files, which need not be UTF-8: a byte
+        # that is not becomes the replacement character.
         try:
             result = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 env=self.environment,
                 timeout=GIT_TIMEOUT_SECONDS,
                 check=False,
@@ -1496,8 +1501,18 @@ class Workspace:
         ).stdout.strip()
 
     def check_out(self, repository: Repository, commit: str, path: Path) -> None:
+        """Check out the commit at the path, with each symbolic link as a plain
+        file that holds its target."""
         self.git(
-            repository, "worktree", "add", "--quiet", "--detach", str(path), commit
+            repository,
+            "-c",
+            "core.symlinks=false",
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            str(path),
+            commit,
         )
 
     def diff(
@@ -1770,16 +1785,21 @@ WORKFLOW_LINES = (
 )
 
 
-def workflow_problems(text: str) -> list[str]:
-    """What the review workflow lacks of WORKFLOW_LINES and of the variables
-    of the checkouts; none when it holds all of them."""
+def workflow_problems(
+    text: str,
+    required_lines: Sequence[str] = WORKFLOW_LINES,
+    variables: Sequence[str] = SOURCE_VARIABLES,
+) -> list[str]:
+    """What a review workflow lacks of the lines that it must hold and of the
+    variables of its review step; none when it holds all of them. The
+    defaults are those of the workflow of the Claude review of a set."""
     lines = [line.strip() for line in text.splitlines()]
     keys = {line.split(":", 1)[0] for line in lines if ":" in line}
     return [
-        *(f"the line `{line}`" for line in WORKFLOW_LINES if line not in lines),
+        *(f"the line `{line}`" for line in required_lines if line not in lines),
         *(
             f"the variable `{name}` of the review step"
-            for name in SOURCE_VARIABLES
+            for name in variables
             if name not in keys
         ),
     ]
@@ -1886,8 +1906,12 @@ def review_command(outcome: Path) -> int:
     return error(cause)
 
 
-def check_workflow(workflow: Path) -> int:
-    problems = workflow_problems(workflow.read_text())
+def check_workflow(
+    workflow: Path,
+    required_lines: Sequence[str] = WORKFLOW_LINES,
+    variables: Sequence[str] = SOURCE_VARIABLES,
+) -> int:
+    problems = workflow_problems(workflow.read_text(), required_lines, variables)
     for problem in problems:
         error(f"{workflow} lacks {problem}")
     return 1 if problems else 0
