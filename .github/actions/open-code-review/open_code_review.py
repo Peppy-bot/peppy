@@ -3,10 +3,14 @@
 
 The action open-code-review (action.yml in this directory) runs `review`, posts
 its result and runs `status`. The workflow `OpenCodeReview` of peppy
-(.github/workflows/open-code-review.yml) and the one of platform run the action
-on each push of a pull request of a member or a collaborator that is not a
-draft and on a change of its base branch, and on a comment of a member or a
-collaborator that starts with `/open-code-review`. The review is the delegation mode of OpenCodeReview (OCR,
+(.github/workflows/open-code-review.yml) and the one of platform run it on each
+push of a pull request that is not a draft and on a change of its base branch,
+and on a comment that starts with `/open-code-review`, when the author of the
+pull request, or of the comment, has write access to the repository. The first
+job of the workflow runs the action open-code-review/author
+(author/action.yml), which runs `author`: it reads the permission of that
+author from GitHub (author/action.yml tells why). The review is the
+delegation mode of OpenCodeReview (OCR,
 https://github.com/alibaba/open-code-review):
 
 1. The OCR CLI selects the files of the pull request to review
@@ -90,6 +94,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -114,6 +119,7 @@ from claude_review import (
 from merge_set import (
     PEPPY,
     PLATFORM,
+    WRITE_PERMISSIONS,
     ApiError,
     GitError,
     GitHubApi,
@@ -121,7 +127,9 @@ from merge_set import (
     MergeSetError,
     PullRequest,
     Repository,
+    read_permission,
     repository_of_full_name,
+    resolve,
 )
 
 # The repositories whose workflow `OpenCodeReview` runs the action.
@@ -186,10 +194,52 @@ def pull_request_number(event_name: str, event: Mapping) -> int:
     return number
 
 
+def author_of(event_name: str, event: Mapping) -> str:
+    """The user whose permission decides whether the event starts a review:
+    the author of the pull request for each event of the pull request, a push
+    of another user or of a bot too, and the author of the comment for a
+    comment."""
+    if event_name == "pull_request_target":
+        user = (event.get("pull_request") or {}).get("user")
+    elif event_name == "issue_comment":
+        user = (event.get("comment") or {}).get("user")
+    else:
+        raise MergeSetError(f"the event `{event_name}` starts no review")
+    login = user.get("login") if isinstance(user, Mapping) else None
+    if not isinstance(login, str) or not login:
+        raise MergeSetError(f"the event `{event_name}` names no author")
+    return login
+
+
 def is_push(event_name: str, event: Mapping) -> bool:
     """Whether the event is a push to the pull request, which can keep the
     review of an earlier head."""
     return event_name == "pull_request_target" and event.get("action") == "synchronize"
+
+
+@dataclass(frozen=True)
+class ReviewEvent:
+    """The event of the run: the repository, the pull request, the user whose
+    permission decides whether it starts a review, and whether it is a push."""
+
+    repository: Repository
+    number: int
+    author: str
+    push: bool
+
+
+def parse_review_event(environment: Mapping[str, str]) -> ReviewEvent:
+    """The event of the run, from the variables that GitHub sets."""
+    required = claude_review.required
+    repository = reviewed_repository(required(environment, "GITHUB_REPOSITORY"))
+    event_name = required(environment, "GITHUB_EVENT_NAME")
+    event = json.loads(Path(required(environment, "GITHUB_EVENT_PATH")).read_text())
+    return ReviewEvent(
+        repository,
+        pull_request_number(event_name, event),
+        author_of(event_name, event),
+        is_push(event_name, event),
+    )
 
 
 @dataclass(frozen=True)
@@ -1663,16 +1713,22 @@ ACTION_LINES = (
 )
 # The lines that each workflow that runs the action holds: the events of a
 # review (an edit of the pull request only when it changes the base branch),
-# the names of the workflow and of its runs, from which the merge-set bot
-# reads the pull request,
+# the first job, which runs open-code-review/author, and the review job that
+# needs its answer, the names of the workflow and of its runs, from which the
+# merge-set bot reads the pull request,
 # the permissions of the token of the job (the status needs `statuses: write`)
 # and the Claude login. `check-workflow` checks them.
 WORKFLOW_LINES = (
     "types: [opened, synchronize, reopened, ready_for_review, edited]",
     "&& (github.event.action != 'edited' || github.event.changes.base)",
     "name: OpenCodeReview",
-    "run-name: OpenCodeReview of #${{ github.event.pull_request.number || github.event.issue.number }}",
+    'run-name: "OpenCodeReview of #${{ github.event.pull_request.number || github.event.issue.number }}"',
     f"&& startsWith(github.event.comment.body, '{COMMENT_COMMAND}')",
+    "runs-on: ubuntu-slim",
+    "review: ${{ steps.author.outputs.review }}",
+    "- id: author",
+    "needs: author",
+    "if: needs.author.outputs.review == 'true'",
     "contents: read",
     "pull-requests: write",
     "statuses: write",
@@ -1696,21 +1752,17 @@ class Run:
 
 
 def start_run(environment: Mapping[str, str]) -> Run:
-    required = claude_review.required
-    repository = reviewed_repository(required(environment, "GITHUB_REPOSITORY"))
+    event = parse_review_event(environment)
     url = run_url(environment)
-    event_name = required(environment, "GITHUB_EVENT_NAME")
-    event = json.loads(Path(required(environment, "GITHUB_EVENT_PATH")).read_text())
-    number = pull_request_number(event_name, event)
     for name in STEP_VARIABLES:
-        required(environment, name)
+        claude_review.required(environment, name)
     api = GitHubApi(environment["REVIEW_TOKEN"])
     return Run(
         environment,
         api,
-        fetch_pull_request(api, repository, number),
-        read_summary(api, repository, number),
-        is_push(event_name, event),
+        fetch_pull_request(api, event.repository, event.number),
+        read_summary(api, event.repository, event.number),
+        event.push,
         url,
     )
 
@@ -1860,6 +1912,65 @@ def status_command(status: Path) -> int:
     return 0
 
 
+# The calls that read the permission of an author, and the wait after the
+# call of each attempt that fails, times the number of that attempt. A run
+# whose first job fails starts no review and sets no status, so a short fault
+# of GitHub must not end it.
+PERMISSION_ATTEMPTS = 3
+PERMISSION_RETRY_SECONDS = 10
+
+
+def read_author_permission(
+    api: GitHubApi,
+    repository: Repository,
+    author: str,
+    wait: Callable[[float], None],
+) -> str:
+    """The permission of the author; a call that GitHub fails (a 5xx) or that
+    gets no answer is made again, up to PERMISSION_ATTEMPTS calls. Each other
+    refusal fails at once."""
+    for attempt in range(1, PERMISSION_ATTEMPTS + 1):
+        try:
+            return read_permission(api, repository, author)
+        except ApiError as error:
+            transient = error.status is None or error.status >= 500
+            if not transient or attempt == PERMISSION_ATTEMPTS:
+                raise
+            print(f"The call failed ({error}): attempt {attempt + 1}.", flush=True)
+            wait(PERMISSION_RETRY_SECONDS * attempt)
+    raise AssertionError("unreachable")
+
+
+def author_command() -> int:
+    """Write `review=true` to the output of the step when the author of the
+    event (author_of) has write access to the repository, else
+    `review=false`."""
+    environment = os.environ
+    try:
+        event = parse_review_event(environment)
+        permission = read_author_permission(
+            GitHubApi(claude_review.required(environment, "REVIEW_TOKEN")),
+            event.repository,
+            event.author,
+            time.sleep,
+        )
+    except ApiError as failure:
+        return claude_review.error(f"A call to GitHub failed: {failure}")
+    except MergeSetError as failure:
+        return claude_review.error(str(failure))
+    review = permission in WRITE_PERMISSIONS
+    verdict = "starts a review" if review else "starts no review"
+    print(
+        f"`{event.author}` has the permission `{permission}` on "
+        f"{event.repository.full_name}: the event {verdict}.",
+        flush=True,
+    )
+    resolve.append_to_runner_file(
+        "GITHUB_OUTPUT", f"review={'true' if review else 'false'}\n"
+    )
+    return 0
+
+
 def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="The OpenCodeReview review of a pull request of peppy or "
@@ -1905,6 +2016,11 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         required=True,
         help="The file in which the review step recorded the status.",
     )
+    commands.add_parser(
+        "author",
+        help="Tell in the output `review` of the step whether the author of the "
+        "event may start a review.",
+    )
     check = commands.add_parser(
         "check-workflow",
         help="Check that a workflow that runs the action gives what it needs.",
@@ -1922,6 +2038,8 @@ def main(argv: Sequence[str]) -> int:
             )
         case "status":
             return status_command(arguments.status)
+        case "author":
+            return author_command()
         case "check-workflow":
             return claude_review.check_workflow(arguments.workflow, WORKFLOW_LINES, ())
 

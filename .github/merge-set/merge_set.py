@@ -602,9 +602,12 @@ def open_code_review_run_subject(payload: Mapping) -> RelaySubject | None:
     """The end of a run of the OpenCodeReview review: the pull request that
     the name of the run gives, whose branch the relay reads, as for a comment.
     The relay hands on the end alone: the sync that runs after it reads the
-    status that the review set. A run whose job its condition skips (each
+    status that the review set. A run whose jobs their conditions skip (each
     comment on a pull request starts a run) changes nothing, so it starts no
-    sync, and nor does a run whose name has another form."""
+    sync, and nor does a run whose name has another form. A run whose first
+    job found that the author has no write access, and so skipped the review,
+    ends with `success`: the payload gives no jobs, so it starts a sync that
+    changes nothing."""
     run = payload["workflow_run"]
     if (
         payload["action"] != "completed"
@@ -3721,20 +3724,8 @@ class GitHubGateway:
     def permission(self, repository: Repository, login: str) -> str:
         key = (repository.name, login)
         if key not in self.permissions:
-            self.permissions[key] = self.read_permission(repository, login)
+            self.permissions[key] = read_permission(self.api, repository, login)
         return self.permissions[key]
-
-    def read_permission(self, repository: Repository, login: str) -> str:
-        try:
-            response = self.api.request(
-                "GET",
-                f"/repos/{repository.full_name}/collaborators/{login}/permission",
-            )
-        except ApiError as error:
-            if error.status != 404:
-                raise
-            return NO_PERMISSION
-        return response["permission"]
 
     def merge(self, pull_request: PullRequest, commit: MergeCommit) -> str:
         """Merge the pull request at its head commit, and return the merge
@@ -3893,6 +3884,20 @@ GIT_TIMEOUT_SECONDS = 120
 
 class GitError(MergeSetError):
     """A git command that failed."""
+
+
+def read_permission(api: GitHubApi, repository: Repository, login: str) -> str:
+    """The permission of a user on a repository (`admin`, `write`, `read`),
+    or NO_PERMISSION for a user that GitHub does not know there."""
+    try:
+        response = api.request(
+            "GET", f"/repos/{repository.full_name}/collaborators/{login}/permission"
+        )
+    except ApiError as error:
+        if error.status != 404:
+            raise
+        return NO_PERMISSION
+    return response["permission"]
 
 
 def github_remote(repository: Repository) -> str:

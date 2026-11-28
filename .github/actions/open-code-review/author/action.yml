@@ -1,0 +1,31 @@
+name: OpenCodeReview author
+description: >-
+  Tells whether the event of the run starts an OpenCodeReview review: `true`
+  when the author of the pull request, for an event of the pull request, or
+  the author of the comment, for a comment, has write access to the
+  repository (open_code_review.py author). For each event of a pull request,
+  a push of another user or of a bot too, its author decides. The workflow
+  `OpenCodeReview` of peppy and the one of platform run it in a first job on
+  the smallest runner, and their review job and its concurrency group take
+  only an event for which it gives `true`. The association of the author that
+  the event gives cannot tell it: GitHub gives a member whose membership of
+  the organisation is private as a `CONTRIBUTOR` in an event. Each token of a
+  job can read the permission, which is part of the metadata of the
+  repository.
+
+outputs:
+  review:
+    description: "`true` when the event starts a review, else `false`."
+    value: ${{ steps.author.outputs.review }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the permission of the author
+      id: author
+      shell: bash
+      env:
+        REVIEW_TOKEN: ${{ github.token }}
+      run: |
+        timeout --kill-after=1m 2m \
+          python3 "$GITHUB_ACTION_PATH/../open_code_review.py" author
