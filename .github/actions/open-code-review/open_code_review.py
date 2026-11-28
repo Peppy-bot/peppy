@@ -1671,7 +1671,7 @@ WORKFLOW_LINES = (
     "types: [opened, synchronize, reopened, ready_for_review, edited]",
     "&& (github.event.action != 'edited' || github.event.changes.base)",
     "name: OpenCodeReview",
-    "run-name: OpenCodeReview of #${{ github.event.pull_request.number || github.event.issue.number }}",
+    'run-name: "OpenCodeReview of #${{ github.event.pull_request.number || github.event.issue.number }}"',
     f"&& startsWith(github.event.comment.body, '{COMMENT_COMMAND}')",
     "contents: read",
     "pull-requests: write",

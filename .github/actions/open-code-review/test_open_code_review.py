@@ -2295,6 +2295,16 @@ def step_limits(text: str) -> dict[str, int | None]:
     return steps
 
 
+def run_name_of(text: str) -> str:
+    """The run name of a workflow as YAML reads it: a double-quoted scalar,
+    or a plain scalar, which a ` #` ends as the start of a comment."""
+    line = next(line for line in text.splitlines() if line.startswith("run-name: "))
+    value = line.removeprefix("run-name: ")
+    if value.startswith('"'):
+        return json.loads(value)
+    return value.split(" #", 1)[0].rstrip()
+
+
 def job_limit(text: str) -> int:
     """The `timeout-minutes` of the job of the workflow."""
     found = re.findall(r"(?m)^    timeout-minutes: (\d+)$", text)
@@ -2416,6 +2426,26 @@ class WorkflowContract(unittest.TestCase):
             self.assertEqual(
                 open_code_review.main(["check-workflow", str(WORKFLOW)]), 0
             )
+
+    def test_the_merge_set_bot_reads_the_pull_request_from_the_name_of_a_run(self):
+        text = WORKFLOW.read_text()
+        self.assertEqual(
+            re.findall(r"(?m)^name: (.+)$", text), [merge_set.OPEN_CODE_REVIEW_WORKFLOW]
+        )
+        # GitHub gives the run of pull request 42 this name.
+        name = re.sub(r"\$\{\{.*?\}\}", "42", run_name_of(text))
+        found = merge_set.OPEN_CODE_REVIEW_RUN_NAME.fullmatch(name)
+        self.assertIsNotNone(found, name)
+        self.assertEqual(found["number"], "42")
+
+    def test_an_unquoted_run_name_ends_at_its_number_sign(self):
+        self.assertEqual(
+            run_name_of("run-name: OpenCodeReview of #${{ x }}\n"), "OpenCodeReview of"
+        )
+        self.assertEqual(
+            run_name_of('run-name: "OpenCodeReview of #${{ x }}"\n'),
+            "OpenCodeReview of #${{ x }}",
+        )
 
     def test_the_workflow_runs_the_action_at_its_own_commit(self):
         self.assertIn(

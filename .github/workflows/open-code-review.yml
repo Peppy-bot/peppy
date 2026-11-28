@@ -1,6 +1,7 @@
 name: OpenCodeReview
-# The merge-set bot reads the pull request of a run from its name.
-run-name: OpenCodeReview of #${{ github.event.pull_request.number || github.event.issue.number }}
+# The merge-set bot reads the pull request of a run from its name. The quotes
+# keep YAML from reading ` #` as the start of a comment.
+run-name: "OpenCodeReview of #${{ github.event.pull_request.number || github.event.issue.number }}"
 
 # A second review of each pull request of peppy, in the delegation mode of
 # OpenCodeReview (OCR, https://github.com/alibaba/open-code-review), next to
