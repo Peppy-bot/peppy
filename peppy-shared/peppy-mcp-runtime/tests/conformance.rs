@@ -20,7 +20,7 @@ use rmcp::{ClientLifecycleMode, ClientServiceExt};
 use serde_json::json;
 use support::{
     FRAME_URI, STATUS_URI, confirmation_accept, connect, connect_with_tasks, next_notification,
-    protocol_error, sample_rgb8_frame, start_set, start_task_less_set,
+    protocol_error, sample_rgb8_frame, sse_messages, start_set, start_task_less_set,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -125,12 +125,8 @@ async fn an_initialize_client_is_refused_with_the_supported_versions_listed() {
             "the refusal is streamed"
         );
         let stream = response.text().await.expect("the event stream ends");
-        let events: Vec<serde_json::Value> = stream
-            .lines()
-            .filter_map(|line| line.strip_prefix("data: "))
-            .map(|data| serde_json::from_str(data).expect("a JSON-RPC message"))
-            .collect();
-        let [body] = events.as_slice() else {
+        let messages = sse_messages(&stream);
+        let [body] = messages.as_slice() else {
             panic!("expected exactly one JSON-RPC message, got {stream}");
         };
         assert_eq!(

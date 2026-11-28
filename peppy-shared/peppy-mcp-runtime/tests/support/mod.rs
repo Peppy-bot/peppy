@@ -251,20 +251,29 @@ const BUNDLE_TEMPLATE: &str = r#"{
 /// milliseconds until the stream is stopped, as a camera or a state topic
 /// does, so a read that arrives while it runs answers with the next
 /// message. The fixture clock stands still, so the interval gate admits
-/// the first message alone; every later one is admitted for a waiting
-/// reader.
+/// the first message of a resource alone; every later one is admitted for
+/// a waiting reader.
 pub(crate) struct Streaming {
     publisher: tokio::task::JoinHandle<()>,
 }
 
 impl Streaming {
+    /// Starts the stream. When the gate admits a message at once, as it
+    /// does for the first message of a resource, that message is published
+    /// before this returns, so a read that the test sends next finds a
+    /// snapshot: a read of a resource with no snapshot is refused at once,
+    /// it does not wait for a message.
     pub(crate) fn of(ingest: ResourceIngest, value: Value) -> Self {
+        let publish_if_admitted = move |ingest: &ResourceIngest| {
+            if let Some(token) = ingest.admit() {
+                ingest.publish(token, value.clone()).expect("publishes");
+            }
+        };
+        publish_if_admitted(&ingest);
         let publisher = tokio::spawn(async move {
             loop {
-                if let Some(token) = ingest.admit() {
-                    ingest.publish(token, value.clone()).expect("publishes");
-                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
+                publish_if_admitted(&ingest);
             }
         });
         Self { publisher }
@@ -531,7 +540,10 @@ pub(crate) async fn connect_with_tasks(url: &str) -> Client {
 }
 
 /// A client without the tasks extension that keeps every progress
-/// notification the server sends it, in arrival order.
+/// notification the server sends it. The rmcp client runs the handler of
+/// each notification on a task of its own, so a notification can be kept
+/// after the call that it belongs to returned, and the log does not show
+/// the order of the wire: [`sse_messages`] reads that order.
 #[derive(Clone)]
 pub(crate) struct ProgressLog {
     progress: mpsc::UnboundedSender<ProgressNotificationParam>,
@@ -585,6 +597,23 @@ pub(crate) fn protocol_error(error: ServiceError) -> rmcp::ErrorData {
         ServiceError::McpError(data) => data,
         other => panic!("expected a protocol error, got {other:?}"),
     }
+}
+
+/// The JSON-RPC messages of an SSE stream of an endpoint, in the order of
+/// the stream. The endpoint writes each message as one `data` line, and
+/// the priming event of a stream that a client can resume as an empty one,
+/// which carries no message.
+pub(crate) fn sse_messages(stream: &str) -> Vec<Value> {
+    stream
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(|data| data.strip_prefix(' ').unwrap_or(data))
+        .filter(|data| !data.is_empty())
+        .map(|data| {
+            serde_json::from_str(data)
+                .unwrap_or_else(|error| panic!("`{data}` is not a JSON-RPC message: {error}"))
+        })
+        .collect()
 }
 
 /// Polls `tasks/get` until the task satisfies `accept`; the wait is bounded
