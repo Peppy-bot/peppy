@@ -3,11 +3,15 @@
 
 The action open-code-review (action.yml in this directory) runs `review`, posts
 its result and runs `status`. The workflow `OpenCodeReview` of peppy
-(.github/workflows/open-code-review.yml) and the one of platform run the action
-on each push of a pull request of a member or a collaborator that is not a
-draft and on a change of its base branch, and on a comment of a member or a
-collaborator that starts with `/open-code-review`. The review is the delegation mode of OpenCodeReview (OCR,
-https://github.com/alibaba/open-code-review):
+(.github/workflows/open-code-review.yml) and the one of platform run it on each
+push of a pull request that is not a draft and on a change of its base branch,
+and on a comment that starts with `/open-code-review`, when the author of the
+pull request, or of the comment, has write access to the repository. The
+action open-code-review/author (author/action.yml) runs `author`, which tells
+that, in a first job of the workflow: the association of the author that the
+event gives cannot, as GitHub gives a member whose membership of the
+organisation is private as a `CONTRIBUTOR`. The review is the delegation mode
+of OpenCodeReview (OCR, https://github.com/alibaba/open-code-review):
 
 1. The OCR CLI selects the files of the pull request to review
    (`ocr delegate preview`) and gives the rules of each file
@@ -114,6 +118,7 @@ from claude_review import (
 from merge_set import (
     PEPPY,
     PLATFORM,
+    WRITE_PERMISSIONS,
     ApiError,
     GitError,
     GitHubApi,
@@ -121,7 +126,9 @@ from merge_set import (
     MergeSetError,
     PullRequest,
     Repository,
+    read_permission,
     repository_of_full_name,
+    resolve,
 )
 
 # The repositories whose workflow `OpenCodeReview` runs the action.
@@ -184,6 +191,22 @@ def pull_request_number(event_name: str, event: Mapping) -> int:
     if not isinstance(number, int) or isinstance(number, bool) or number < 1:
         raise MergeSetError(f"the event `{event_name}` names no pull request")
     return number
+
+
+def author_of(event_name: str, event: Mapping) -> str:
+    """The user whose permission decides whether the event starts a review:
+    the author of the pull request for an event of the pull request, and the
+    author of the comment for a comment."""
+    if event_name == "pull_request_target":
+        user = (event.get("pull_request") or {}).get("user")
+    elif event_name == "issue_comment":
+        user = (event.get("comment") or {}).get("user")
+    else:
+        raise MergeSetError(f"the event `{event_name}` starts no review")
+    login = user.get("login") if isinstance(user, Mapping) else None
+    if not isinstance(login, str) or not login:
+        raise MergeSetError(f"the event `{event_name}` names no author")
+    return login
 
 
 def is_push(event_name: str, event: Mapping) -> bool:
@@ -1663,8 +1686,9 @@ ACTION_LINES = (
 )
 # The lines that each workflow that runs the action holds: the events of a
 # review (an edit of the pull request only when it changes the base branch),
-# the names of the workflow and of its runs, from which the merge-set bot
-# reads the pull request,
+# the first job, which runs open-code-review/author, and the review job that
+# needs its answer, the names of the workflow and of its runs, from which the
+# merge-set bot reads the pull request,
 # the permissions of the token of the job (the status needs `statuses: write`)
 # and the Claude login. `check-workflow` checks them.
 WORKFLOW_LINES = (
@@ -1673,6 +1697,10 @@ WORKFLOW_LINES = (
     "name: OpenCodeReview",
     'run-name: "OpenCodeReview of #${{ github.event.pull_request.number || github.event.issue.number }}"',
     f"&& startsWith(github.event.comment.body, '{COMMENT_COMMAND}')",
+    "runs-on: ubuntu-slim",
+    "review: ${{ steps.author.outputs.review }}",
+    "needs: author",
+    "if: needs.author.outputs.review == 'true'",
     "contents: read",
     "pull-requests: write",
     "statuses: write",
@@ -1860,6 +1888,37 @@ def status_command(status: Path) -> int:
     return 0
 
 
+def author_command() -> int:
+    """Write `review=true` to the output of the step when the author of the
+    event (author_of) has write access to the repository, else
+    `review=false`."""
+    environment = os.environ
+    required = claude_review.required
+    try:
+        repository = reviewed_repository(required(environment, "GITHUB_REPOSITORY"))
+        event_name = required(environment, "GITHUB_EVENT_NAME")
+        event = json.loads(Path(required(environment, "GITHUB_EVENT_PATH")).read_text())
+        author = author_of(event_name, event)
+        permission = read_permission(
+            GitHubApi(required(environment, "REVIEW_TOKEN")), repository, author
+        )
+    except ApiError as failure:
+        return claude_review.error(f"A call to GitHub failed: {failure}")
+    except MergeSetError as failure:
+        return claude_review.error(str(failure))
+    review = permission in WRITE_PERMISSIONS
+    verdict = "starts a review" if review else "starts no review"
+    print(
+        f"`{author}` has the permission `{permission}` on "
+        f"{repository.full_name}: the event {verdict}.",
+        flush=True,
+    )
+    resolve.append_to_runner_file(
+        "GITHUB_OUTPUT", f"review={'true' if review else 'false'}\n"
+    )
+    return 0
+
+
 def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="The OpenCodeReview review of a pull request of peppy or "
@@ -1905,6 +1964,11 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         required=True,
         help="The file in which the review step recorded the status.",
     )
+    commands.add_parser(
+        "author",
+        help="Tell in the output `review` of the step whether the author of the "
+        "event may start a review.",
+    )
     check = commands.add_parser(
         "check-workflow",
         help="Check that a workflow that runs the action gives what it needs.",
@@ -1922,6 +1986,8 @@ def main(argv: Sequence[str]) -> int:
             )
         case "status":
             return status_command(arguments.status)
+        case "author":
+            return author_command()
         case "check-workflow":
             return claude_review.check_workflow(arguments.workflow, WORKFLOW_LINES, ())
 

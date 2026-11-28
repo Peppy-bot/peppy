@@ -2176,6 +2176,124 @@ class Commands(unittest.TestCase):
         )
 
 
+class Authors(unittest.TestCase):
+    def test_the_author_of_a_pull_request_or_of_a_comment_decides(self):
+        self.assertEqual(
+            open_code_review.author_of(
+                "pull_request_target",
+                {
+                    "pull_request": {"user": {"login": "alice"}},
+                    "sender": {"login": "bob"},
+                },
+            ),
+            "alice",
+        )
+        self.assertEqual(
+            open_code_review.author_of(
+                "issue_comment",
+                {
+                    "issue": {"user": {"login": "alice"}},
+                    "comment": {"user": {"login": "bob"}},
+                },
+            ),
+            "bob",
+        )
+
+    def test_an_event_with_no_author_fails(self):
+        cases = (
+            (
+                "push",
+                {"pull_request": {"user": {"login": "alice"}}},
+                "starts no review",
+            ),
+            ("pull_request_target", {}, "names no author"),
+            ("issue_comment", {"comment": {"user": {"login": ""}}}, "names no author"),
+            ("issue_comment", {"comment": {"user": None}}, "names no author"),
+        )
+        for event_name, event, message in cases:
+            with self.subTest(event=event_name, payload=event):
+                with self.assertRaisesRegex(MergeSetError, message):
+                    open_code_review.author_of(event_name, event)
+
+
+class AuthorCommand(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.output = self.root / "output"
+        self.output.touch()
+        self.environment = FakeEnvironment(self.root).values
+        self.environment["GITHUB_OUTPUT"] = str(self.output)
+        (self.root / "event.json").write_text(
+            json.dumps(
+                {
+                    "action": "opened",
+                    "pull_request": {"number": 42, "user": {"login": "alice"}},
+                }
+            )
+        )
+
+    def run_command(self, api):
+        output = io.StringIO()
+        with (
+            patch.dict(os.environ, self.environment, clear=True),
+            patch.object(open_code_review, "GitHubApi", lambda token: api),
+            patch("sys.stdout", output),
+        ):
+            code = open_code_review.author_command()
+        return code, output.getvalue()
+
+    def test_a_user_with_write_access_starts_a_review(self):
+        for permission in ("admin", "maintain", "write"):
+            with self.subTest(permission=permission):
+                self.output.write_text("")
+                api = FakeApi({"permission": permission})
+                code, output = self.run_command(api)
+                self.assertEqual(code, 0)
+                self.assertEqual(self.output.read_text(), "review=true\n")
+                self.assertEqual(
+                    api.calls,
+                    [("GET", "/repos/Peppy-bot/peppy/collaborators/alice/permission")],
+                )
+                self.assertIn(f"`alice` has the permission `{permission}`", output)
+
+    def test_a_user_with_no_write_access_starts_no_review(self):
+        for permission in ("triage", "read", "none"):
+            with self.subTest(permission=permission):
+                self.output.write_text("")
+                code, _ = self.run_command(FakeApi({"permission": permission}))
+                self.assertEqual(code, 0)
+                self.assertEqual(self.output.read_text(), "review=false\n")
+
+    def test_a_user_that_github_does_not_know_starts_no_review(self):
+        class UnknownUserApi(FakeApi):
+            def request(self, method, path, query=None, body=None):
+                raise ApiError(f"{method} {path}", 404, "Not Found")
+
+        code, _ = self.run_command(UnknownUserApi())
+        self.assertEqual(code, 0)
+        self.assertEqual(self.output.read_text(), "review=false\n")
+
+    def test_a_call_to_github_that_fails_gives_no_answer(self):
+        class FailingApi(FakeApi):
+            def request(self, method, path, query=None, body=None):
+                raise ApiError(f"{method} {path}", 502, "Bad Gateway")
+
+        code, output = self.run_command(FailingApi())
+        self.assertEqual(code, 1)
+        self.assertEqual(self.output.read_text(), "")
+        self.assertIn("::error::A call to GitHub failed: GET", output)
+
+    def test_a_run_of_another_repository_gives_no_answer(self):
+        self.environment["GITHUB_REPOSITORY"] = "someone/peppy"
+        api = FakeApi({"permission": "admin"})
+        code, output = self.run_command(api)
+        self.assertEqual(code, 1)
+        self.assertEqual((api.calls, self.output.read_text()), ([], ""))
+        self.assertIn("Peppy-bot/peppy and Peppy-bot/platform alone", output)
+
+
 class StatusCommand(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -2305,11 +2423,19 @@ def run_name_of(text: str) -> str:
     return value.split(" #", 1)[0].rstrip()
 
 
+def job_text(text: str, job: str) -> str:
+    """The lines of a job of the workflow, up to the next job."""
+    found = re.search(rf"(?ms)^  {re.escape(job)}:\n(.*?)(?=^  [a-z-]+:\n|\Z)", text)
+    if found is None:
+        raise AssertionError(f"the workflow has no job `{job}`")
+    return found[1]
+
+
 def job_limit(text: str) -> int:
-    """The `timeout-minutes` of the job of the workflow."""
-    found = re.findall(r"(?m)^    timeout-minutes: (\d+)$", text)
+    """The `timeout-minutes` of the review job of the workflow."""
+    found = re.findall(r"(?m)^    timeout-minutes: (\d+)$", job_text(text, "review"))
     if len(found) != 1:
-        raise AssertionError("the workflow has not one job limit")
+        raise AssertionError("the review job has not one limit")
     return int(found[0])
 
 
@@ -2384,6 +2510,16 @@ class ActionContract(unittest.TestCase):
             + claude_review.GIT_TIMEOUT_SECONDS,
         )
 
+    def test_the_author_action_runs_the_author_command_with_a_limit(self):
+        text = (ACTION.parent / "author" / "action.yml").read_text()
+        self.assertIn(
+            "        timeout --kill-after=1m 2m \\\n"
+            '          python3 "$GITHUB_ACTION_PATH/../open_code_review.py" author\n',
+            text,
+        )
+        self.assertIn("    value: ${{ steps.author.outputs.review }}\n", text)
+        self.assertIn("        REVIEW_TOKEN: ${{ github.token }}\n", text)
+
     def test_the_post_step_runs_after_a_failure_and_the_status_step_always(self):
         """A cancelled run must not leave the pending status of its start."""
         text = ACTION.read_text()
@@ -2452,21 +2588,36 @@ class WorkflowContract(unittest.TestCase):
             "      - uses: $/.github/actions/open-code-review\n", WORKFLOW.read_text()
         )
 
-    def test_the_condition_of_the_job_is_the_one_of_the_concurrency_group(self):
-        text = WORKFLOW.read_text()
-        group = condition_of(text, "${{", "&& format('open-code-review-{0}'")
-        job = condition_of(text, "if: >-", "# A small RunsOn runner")
-        self.assertEqual(group, f"( {job} )")
-        self.assertIn("github.event.pull_request.author_association", job)
-        self.assertIn("github.event.comment.author_association", job)
+    def test_the_condition_of_the_review_is_the_one_of_its_concurrency_group(self):
+        """An event that starts no review cancels no review in progress."""
+        review = job_text(WORKFLOW.read_text(), "review")
+        group = condition_of(review, "${{", "&& format('open-code-review-{0}'")
+        self.assertEqual(group, "needs.author.outputs.review == 'true'")
+        self.assertIn(f"    if: {group}\n", review)
+        self.assertIn("    needs: author\n", review)
+
+    def test_the_first_job_takes_the_events_of_a_review_on_the_smallest_runner(self):
+        author = job_text(WORKFLOW.read_text(), "author")
+        condition = condition_of(author, "if: >-", "runs-on:")
         # A push to a draft starts no review; a comment does. An edit starts
-        # one only when it changes the base branch.
+        # one only when it changes the base branch. No bot starts one.
         self.assertIn(
             "github.event_name == 'pull_request_target' "
             "&& (github.event.action != 'edited' || github.event.changes.base) "
-            "&& !github.event.pull_request.draft",
-            job,
+            "&& !github.event.pull_request.draft "
+            "&& github.event.pull_request.user.type != 'Bot'",
+            condition,
         )
+        self.assertIn("github.event.comment.user.type != 'Bot'", condition)
+        self.assertIn("    runs-on: ubuntu-slim\n", author)
+        self.assertIn(
+            "        uses: $/.github/actions/open-code-review/author\n", author
+        )
+
+    def test_the_workflow_reads_no_association_of_the_author(self):
+        """GitHub gives a member whose membership is private as a
+        CONTRIBUTOR in an event."""
+        self.assertNotIn("author_association", WORKFLOW.read_text())
 
     def test_the_job_outlasts_the_time_limits_of_the_steps_of_the_action(self):
         """The job at its limit is cancelled, which skips the post step and

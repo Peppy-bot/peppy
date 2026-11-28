@@ -3725,16 +3725,7 @@ class GitHubGateway:
         return self.permissions[key]
 
     def read_permission(self, repository: Repository, login: str) -> str:
-        try:
-            response = self.api.request(
-                "GET",
-                f"/repos/{repository.full_name}/collaborators/{login}/permission",
-            )
-        except ApiError as error:
-            if error.status != 404:
-                raise
-            return NO_PERMISSION
-        return response["permission"]
+        return read_permission(self.api, repository, login)
 
     def merge(self, pull_request: PullRequest, commit: MergeCommit) -> str:
         """Merge the pull request at its head commit, and return the merge
@@ -3893,6 +3884,20 @@ GIT_TIMEOUT_SECONDS = 120
 
 class GitError(MergeSetError):
     """A git command that failed."""
+
+
+def read_permission(api: GitHubApi, repository: Repository, login: str) -> str:
+    """The permission of a user on a repository (`admin`, `write`, `read`),
+    or NO_PERMISSION for a user that GitHub does not know there."""
+    try:
+        response = api.request(
+            "GET", f"/repos/{repository.full_name}/collaborators/{login}/permission"
+        )
+    except ApiError as error:
+        if error.status != 404:
+            raise
+        return NO_PERMISSION
+    return response["permission"]
 
 
 def github_remote(repository: Repository) -> str:
