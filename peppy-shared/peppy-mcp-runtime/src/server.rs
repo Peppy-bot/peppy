@@ -636,7 +636,7 @@ impl ExposureServer {
     /// events of the exposure when it arrives.
     fn endpoint_route(self, shutdown: &CancellationToken) -> MethodRouter {
         let events = self.state.events.clone();
-        subscribed_at_arrival(any_service(self.http_service(shutdown)), events)
+        with_events_since_arrival(any_service(self.http_service(shutdown)), events)
     }
 
     /// The Streamable HTTP service for this exposure. Sessions are per
@@ -1365,7 +1365,7 @@ impl EventsSinceArrival {
     }
 
     /// Takes the receiver of the request that `context` serves: `None` for
-    /// a request that did not come through [`subscribe_at_arrival`].
+    /// a request that did not come through [`insert_events_since_arrival`].
     fn take(context: &RequestContext<RoleServer>) -> Option<broadcast::Receiver<CatalogEvent>> {
         context
             .extensions
@@ -1381,19 +1381,19 @@ impl EventsSinceArrival {
 
 /// `route` behind the layer that subscribes each request to `events` when
 /// it arrives (see [`EventsSinceArrival`]).
-fn subscribed_at_arrival(
+fn with_events_since_arrival(
     route: MethodRouter,
     events: broadcast::Sender<CatalogEvent>,
 ) -> MethodRouter {
     route.layer(axum::middleware::map_request_with_state(
         events,
-        subscribe_at_arrival,
+        insert_events_since_arrival,
     ))
 }
 
 /// Gives `request` the receiver of each event of `events` published from
 /// now on.
-async fn subscribe_at_arrival(
+async fn insert_events_since_arrival(
     State(events): State<broadcast::Sender<CatalogEvent>>,
     mut request: Request,
 ) -> Request {
@@ -2019,7 +2019,7 @@ impl ServerHandler for ExposureServer {
     }
 
     /// Relays the events of the exposure to the subscription, from the
-    /// arrival of its request (see [`EventsSinceArrival`]). A request that
+    /// arrival of its request (see `EventsSinceArrival`). A request that
     /// did not come through an [`ExposureSet`] has no receiver, and its
     /// subscription ends with an internal error.
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
@@ -3932,8 +3932,6 @@ mod tests {
         use rmcp::{ClientLifecycleMode, ClientServiceExt, RoleClient};
         use std::sync::atomic::AtomicBool;
 
-        const STATUS_URI: &str = "peppy://resource/front_camera.status";
-
         /// Bounds the waits that the answers of the server drive; it fires
         /// only when something is broken.
         const GUARD: Duration = Duration::from_secs(30);
@@ -3986,12 +3984,15 @@ mod tests {
                 }
             }
 
+            /// Disconnects the client and settles the serve task, so that a
+            /// serve failure is a named failure of the test.
             async fn stop(self) {
                 self.client.cancel().await.expect("the client disconnects");
                 self.shutdown.cancel();
-                self.serving
+                tokio::time::timeout(GUARD, self.serving)
                     .await
-                    .expect("the serving task does not panic")
+                    .expect("the serve task ends once the token is cancelled")
+                    .expect("the serve task does not panic")
                     .expect("the listener serves until the shutdown");
             }
         }
@@ -4008,10 +4009,11 @@ mod tests {
                 .expect("subscriptions/listen is acknowledged")
         }
 
-        /// The status ingest of `server`, and whether it published.
+        /// The server whose status a test publishes, and whether it
+        /// published.
         #[derive(Clone)]
         struct StatusPublisher {
-            ingest: ResourceIngest,
+            server: ExposureServer,
             published: Arc<AtomicBool>,
         }
 
@@ -4027,14 +4029,7 @@ mod tests {
                 .get("mcp-method")
                 .is_some_and(|method| method == "subscriptions/listen");
             if is_listen {
-                let token = publisher
-                    .ingest
-                    .admit()
-                    .expect("the gate admits the first message");
-                publisher
-                    .ingest
-                    .publish(token, json!({ "battery": 42 }))
-                    .expect("the status publishes");
+                publish_status(&publisher.server, 42);
                 publisher.published.store(true, Ordering::SeqCst);
             }
             request
@@ -4044,16 +4039,14 @@ mod tests {
         async fn a_subscription_is_told_of_an_update_published_before_its_acknowledgment() {
             let server = built_server();
             let publisher = StatusPublisher {
-                ingest: server
-                    .ingest("front_camera.status")
-                    .expect("the resource exists"),
+                server: server.clone(),
                 published: Arc::new(AtomicBool::new(false)),
             };
             let shutdown = CancellationToken::new();
             let rmcp_with_publish = any_service(server.clone().http_service(&shutdown)).layer(
                 map_request_with_state(publisher.clone(), publish_status_on_listen),
             );
-            let route = subscribed_at_arrival(rmcp_with_publish, server.state.events.clone());
+            let route = with_events_since_arrival(rmcp_with_publish, server.state.events.clone());
             let served = Served::start(&server, route, shutdown).await;
 
             let mut subscription = listen_to_status(&served.client).await;
