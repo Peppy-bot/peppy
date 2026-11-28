@@ -44,13 +44,15 @@ INFRAOPS_CONTRACT = {
     "runtime": "python3.14",
     "secret_key": "webhook_secret",
     "variables": {"APP_CLIENT_ID", "APP_SLUG", "APP_KEY_ID", "WEBHOOK_SECRET_ARN"},
+    "wait_syncs_event": {"merge_set": "wait-syncs"},
+    "wait_syncs_schedule": "rate(30 minutes)",
 }
 
 SECRET = b"webhook-secret"
 CLIENT_ID = "Iv23client"
 INSTALLATION = 5
 NOW = 1_800_000_000
-SYNC_SCOPE = merge_set.SYNC_START_SCOPE
+SYNC_SCOPE = merge_set.WORKFLOW_START_SCOPE
 NODES_HUB_SCOPE = merge_set.pull_request_scope(
     merge_set.REPOSITORIES_BY_NAME["nodes-hub"]
 )
@@ -154,6 +156,11 @@ def token_answer(name, expires_at=NOW + 3600):
 
 TOKENS_PATH = f"/app/installations/{INSTALLATION}/access_tokens"
 DISPATCH_PATH = "/repos/Peppy-bot/peppy/actions/workflows/merge-set.yml/dispatches"
+INSTALLATION_PATH = "/repos/Peppy-bot/peppy/installation"
+WAIT_DISPATCH_PATH = (
+    "/repos/Peppy-bot/peppy/actions/workflows/merge-set-wait.yml/dispatches"
+)
+WAIT_RUN_URL = "https://github.com/Peppy-bot/peppy/actions/runs/77"
 
 
 class SignedDeliveries(unittest.TestCase):
@@ -395,6 +402,120 @@ class Handling(unittest.TestCase):
         self.assertIn("HTTP 401", log)
 
 
+class Schedule(unittest.TestCase):
+    def setUp(self):
+        self.secret_reads = FakeSecretReads(SECRET.decode())
+        self.webhook = webhook.Webhook(
+            webhook.WebhookSecret(self.secret_reads, FakeClock()),
+            BOT,
+            webhook.AppTokens(CLIENT_ID, FakeSigner(), FakeClock()),
+        )
+
+    def invoke(self, event, answers):
+        """What the function gives back, its API calls and its log."""
+        log = io.StringIO()
+        with FakeGitHub(answers) as github, patch("sys.stdout", log):
+            result = self.webhook.invoke(event)
+        return result, github.calls, log.getvalue()
+
+    def answers(self, dispatch=None):
+        return {
+            ("GET", INSTALLATION_PATH): {"id": INSTALLATION},
+            ("POST", TOKENS_PATH): token_answer("start-token"),
+            ("POST", WAIT_DISPATCH_PATH): dispatch
+            or {"workflow_run_id": 77, "html_url": WAIT_RUN_URL},
+        }
+
+    def test_the_event_of_the_schedule_starts_the_wait_workflow_of_peppy(self):
+        result, calls, log = self.invoke(webhook.WAIT_SYNCS_EVENT, self.answers())
+        text = f"Started merge-set-wait.yml of peppy: {WAIT_RUN_URL}"
+        self.assertEqual(result, text)
+        self.assertEqual(log, f"Schedule: {text}\n")
+        (jwt,) = {token for token, *_ in calls[:2]}
+        self.assertEqual(
+            calls,
+            [
+                (jwt, "GET", INSTALLATION_PATH, None),
+                (
+                    jwt,
+                    "POST",
+                    TOKENS_PATH,
+                    {"repositories": ["peppy"], "permissions": {"actions": "write"}},
+                ),
+                (
+                    "start-token",
+                    "POST",
+                    WAIT_DISPATCH_PATH,
+                    {"ref": "dev", "inputs": {}, "return_run_details": True},
+                ),
+            ],
+        )
+        self.assertEqual(decoded(jwt.split(".")[1])["iss"], CLIENT_ID)
+
+    def test_the_handler_of_the_runtime_hands_each_invocation_to_the_function(self):
+        log = io.StringIO()
+        with (
+            patch.object(webhook, "lambda_webhook", return_value=self.webhook),
+            FakeGitHub(self.answers()),
+            patch("sys.stdout", log),
+        ):
+            started = webhook.lambda_handler(webhook.WAIT_SYNCS_EVENT, None)
+            pong = webhook.lambda_handler(
+                function_url_request("ping", {"zen": "z"}), None
+            )
+        self.assertEqual(
+            started, f"Started merge-set-wait.yml of peppy: {WAIT_RUN_URL}"
+        )
+        self.assertEqual((pong["statusCode"], pong["body"]), (200, "pong"))
+
+    def test_the_schedule_reads_no_webhook_secret(self):
+        self.invoke(webhook.WAIT_SYNCS_EVENT, self.answers())
+        self.assertEqual(self.secret_reads.reads, 0)
+
+    def test_a_start_that_fails_raises_so_that_lambda_invokes_again(self):
+        refused = merge_set.ApiError("POST dispatches", 500, "Server Error")
+        log = io.StringIO()
+        with (
+            FakeGitHub(self.answers(dispatch=refused)),
+            patch("sys.stdout", log),
+            self.assertRaises(merge_set.ApiError),
+        ):
+            self.webhook.invoke(webhook.WAIT_SYNCS_EVENT)
+        self.assertEqual(log.getvalue(), f"Schedule: failed: {refused}\n")
+
+    def test_an_answer_without_the_installation_on_peppy_starts_nothing(self):
+        answers = {**self.answers(), ("GET", INSTALLATION_PATH): {"message": "x"}}
+        log = io.StringIO()
+        with (
+            FakeGitHub(answers) as github,
+            patch("sys.stdout", log),
+            self.assertRaises(MergeSetError) as refused,
+        ):
+            self.webhook.invoke(webhook.WAIT_SYNCS_EVENT)
+        self.assertIn(
+            "names no installation of the App on Peppy-bot/peppy",
+            str(refused.exception),
+        )
+        self.assertEqual([path for _, _, path, _ in github.calls], [INSTALLATION_PATH])
+
+    def test_a_delivery_that_holds_the_event_of_the_schedule_is_a_delivery(self):
+        # Through the function URL, the event is the body of a request, which
+        # the function checks and hands to the relay as any other delivery.
+        result, calls, _ = self.invoke(
+            function_url_request("ping", webhook.WAIT_SYNCS_EVENT), {}
+        )
+        self.assertEqual((result["statusCode"], result["body"]), (200, "pong"))
+        self.assertEqual(calls, [])
+        result, calls, _ = self.invoke(
+            function_url_request(
+                "ping", webhook.WAIT_SYNCS_EVENT, signature="sha256=0"
+            ),
+            {},
+        )
+        self.assertEqual(result["statusCode"], 401)
+        self.assertEqual(calls, [])
+
+
 class WebhookSecrets(unittest.TestCase):
     def setUp(self):
         self.clock = FakeClock()
@@ -601,6 +722,15 @@ class RepositoryFacts(unittest.TestCase):
             INFRAOPS_CONTRACT["variables"],
         )
         self.assertEqual(STACK_ENVIRONMENT.keys(), INFRAOPS_CONTRACT["variables"])
+        self.assertEqual(
+            webhook.WAIT_SYNCS_EVENT, INFRAOPS_CONTRACT["wait_syncs_event"]
+        )
+
+    def test_the_schedule_of_the_stack_runs_at_the_interval_the_dashboard_names(self):
+        interval = int(merge_set.WAIT_SYNC_INTERVAL.total_seconds() // 60)
+        self.assertEqual(
+            INFRAOPS_CONTRACT["wait_syncs_schedule"], f"rate({interval} minutes)"
+        )
 
     def test_the_code_runs_on_the_python_of_the_runtime(self):
         # The runtime of the stack is the newest Python this code may use.

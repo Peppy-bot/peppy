@@ -20,7 +20,7 @@ The tests this enables are not simulations of the messaging layer. The mocks pub
 
 After `peppy node sync`, two module trees sit next to the production bindings, regenerated on every sync:
 
-- `peppygen.mock` (Python) / `peppygen::mock` (Rust) provides one module per dependency, pairing, and observer slot, named by `link_id` and grouped by namespace: `mock.deps.<link_id>`, `mock.pairings.<link_id>`, `mock.observed.<link_id>`. Each holds a `Mock` with one typed sub-surface per interface the slot carries, named after the interface. An interface whose name the `Mock` uses for itself (`start`, `stop`, `session`, `router`, `instance_id`, `node_instance_id`, `self`, `cls`) is reached as `<link_id>_<name>`: the `stop` service of a `limb_motion` slot is `mocks.deps.limb_motion.limb_motion_stop`, beside the mock's own `stop()`.
+- `peppygen.mock` (Python) / `peppygen::mock` (Rust) provides one module per dependency, pairing, and observer slot, named by `link_id` and grouped by namespace: `mock.deps.<link_id>`, `mock.pairings.<link_id>`, `mock.observed.<link_id>`. Each holds a `Mock` with one typed sub-surface per interface the slot carries, named after the interface. An interface whose name the `Mock` uses for itself (`start`, `stop`, `session`, `router`, `instance_id`, `node_instance_id`, `self`, `cls`) is reached as `<link_id>_<name>`: the `stop` service of a `robot_stop` slot is `mocks.deps.robot_stop.robot_stop_stop`, beside the mock's own `stop()`.
 - `peppygen.fixtures` (Python) / `peppygen::fixtures` (Rust) provides the harness (`fixtures.harness`), plus typed observation of the node's **own** surface: `fixtures.emitted_topics.<topic>`, `fixtures.exposed_services.<service>`, `fixtures.exposed_actions.<action>`.
 
 Neither tree can leak into a production build:
@@ -187,7 +187,7 @@ from peppygen.consumed_topics.camera import video_stream
 assert await h.mocks.deps.camera.video_stream.wait_for_subscriber(10.0)
 
 await h.mocks.deps.camera.video_stream.publish(
-    video_stream.Message(width=640, frame=b"\x01\x02")
+    video_stream.Message(width=640, data=b"\x01\x02")
 )
 ```
   </TabItem>
@@ -211,7 +211,7 @@ mocks
     .deps
     .camera
     .video_stream
-    .publish(&video_stream::Message { width: 640, frame: vec![1, 2] })
+    .publish(&video_stream::Message { width: 640, data: vec![1, 2] })
     .await?;
 ```
   </TabItem>

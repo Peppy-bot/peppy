@@ -8,7 +8,7 @@ import soundfile
 
 from tests.factories import segment_table, transcript_of
 from tools.timing import lay_out
-from tools.voice import OtherVoice, SentenceVoice, assemble_voice_track, record_of
+from tools.voice import OtherVoice, SentenceVoice, assemble_voice_track, parallel_syntheses, record_of
 from tools.voice_durations import RecordedDuration
 
 SAMPLE_RATE = 24000
@@ -70,3 +70,10 @@ def test_the_track_has_each_sentence_at_its_start_and_the_length_of_the_video(tm
     assert set(track[second(2.0) : second(2.5)]) == {0}
     assert set(track[second(2.5) : second(3.0)]) == {200}
     assert set(track[second(3.0) :]) == {0}
+
+
+def test_parallel_syntheses_scales_with_processors() -> None:
+    assert parallel_syntheses(1) == 1
+    assert parallel_syntheses(8) == 4
+    assert parallel_syntheses(24) == 12
+    assert parallel_syntheses(64) == 12

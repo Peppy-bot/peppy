@@ -73,10 +73,7 @@
     {% endif %}
     <ol class="map-chapters">
       {% for chapter in act.chapters %}
-      <li id="{{ id }}-map-chapter-{{ chapter.segment_id }}" class="map-chapter">
-        <span class="map-chapter-number">{{ "%02d" | format(chapter.number) }}</span>
-        <span>{{ lines[chapter.segment_id] if lines else chapter.title }}</span>
-      </li>
+      <li id="{{ id }}-map-chapter-{{ chapter.segment_id }}" class="map-chapter"><span class="map-chapter-number">{{ "%02d" | format(chapter.number) }}</span><span>{{ lines[chapter.segment_id] if lines else chapter.title }}</span></li>
       {% endfor %}
     </ol>
   </div>

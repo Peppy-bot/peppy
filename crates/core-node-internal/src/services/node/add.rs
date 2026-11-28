@@ -17,9 +17,10 @@ use super::sync::{
     materialize_repo_deps, stack_resolver, stack_then_repo_resolver,
 };
 use super::{
-    clone_with_progress, encode_hex, extract_tar_zst, generate_random_id, is_supported_fs_archive,
-    is_supported_http_archive, locate_node_root_dir, parse_node_config_file,
-    resolve_local_archive_source, sanitize_repo_path,
+    clone_with_progress, encode_hex, extract_node_source_archive, generate_random_id,
+    is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
+    node_named_in_archive, parse_node_config_file, resolve_local_archive_source,
+    sanitize_repo_path,
 };
 use crate::Result;
 use crate::services::raw_calls::RawCallGate;
@@ -444,6 +445,31 @@ fn bundle_file_name(url: &url::Url) -> String {
         .map_or_else(|| "bundle.tar.zst".to_string(), sanitize_http_filename)
 }
 
+/// The most bytes of a node bundle that one download takes. A bundle holds
+/// the source of a node; a server that sends more fills the disk.
+const MAX_BUNDLE_DOWNLOAD_BYTES: u64 = 4 << 30;
+
+/// How long a bundle server may take to open a connection, to send the
+/// headers of its answer, and to send the next bytes of the body.
+const BUNDLE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const BUNDLE_ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
+const BUNDLE_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The longest one download attempt of a bundle takes, so that a server
+/// that sends one byte at a time cannot hold a thread of the daemon.
+const BUNDLE_ATTEMPT_TIMEOUT: Duration = Duration::from_mins(60);
+
+/// The HTTP client of the bundle downloads.
+static BUNDLE_AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(BUNDLE_CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(BUNDLE_ANSWER_TIMEOUT))
+        .timeout_per_read(Some(BUNDLE_READ_TIMEOUT))
+        .timeout_global(Some(BUNDLE_ATTEMPT_TIMEOUT))
+        .build()
+        .into()
+});
+
 /// Total attempts (initial try plus retries) for a bundle download that
 /// keeps failing transiently.
 const DOWNLOAD_ATTEMPTS: usize = 3;
@@ -489,7 +515,13 @@ fn download_http_bundle(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let err = match download_http_bundle_once(url, destination, expected_sha256, announcer) {
+        let err = match download_http_bundle_once(
+            url,
+            destination,
+            expected_sha256,
+            MAX_BUNDLE_DOWNLOAD_BYTES,
+            announcer,
+        ) {
             Ok(()) => return Ok(()),
             Err(DownloadAttemptError::Fatal(msg)) => return Err(msg),
             Err(DownloadAttemptError::Transient(msg)) if attempt >= DOWNLOAD_ATTEMPTS => {
@@ -514,6 +546,7 @@ fn download_http_bundle_once(
     url: &url::Url,
     destination: &Path,
     expected_sha256: Option<&str>,
+    max_bytes: u64,
     announcer: Option<&Announcer>,
 ) -> std::result::Result<(), DownloadAttemptError> {
     use sha2::{Digest, Sha256};
@@ -526,7 +559,7 @@ fn download_http_bundle_once(
         .transpose()
         .map_err(DownloadAttemptError::Fatal)?;
 
-    let response = ureq::get(url.as_str()).call().map_err(|err| {
+    let response = BUNDLE_AGENT.get(url.as_str()).call().map_err(|err| {
         let transient = is_transient_http_error(&err);
         let reason = match err {
             HttpError::StatusCode(code) => format!("unexpected status code {code}"),
@@ -546,6 +579,15 @@ fn download_http_bundle_once(
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok());
+    let too_large = |size: u64| {
+        DownloadAttemptError::Fatal(format!(
+            "The bundle at {shown_url} is larger than {} ({size} bytes or more)",
+            format_bytes(max_bytes)
+        ))
+    };
+    if let Some(size) = total_size.filter(|size| *size > max_bytes) {
+        return Err(too_large(size));
+    }
 
     let mut reader = response.into_body().into_reader();
     let mut file = File::create(destination).map_err(|e| {
@@ -572,6 +614,11 @@ fn download_http_bundle_once(
             break;
         }
         bytes_downloaded += read as u64;
+        if bytes_downloaded > max_bytes {
+            drop(file);
+            let _ = std::fs::remove_file(destination);
+            return Err(too_large(bytes_downloaded));
+        }
         file.write_all(&buffer[..read]).map_err(|e| {
             DownloadAttemptError::Fatal(format!(
                 "Failed to write bundle file {}: {}",
@@ -664,7 +711,7 @@ fn extract_http_bundle(
     destination: &Path,
     url: &url::Url,
 ) -> std::result::Result<(), String> {
-    extract_tar_zst(bundle_path, destination)
+    extract_node_source_archive(bundle_path, destination)
         .map_err(|e| format!("{e} (source: {})", SourceUrl::new(url.as_str())))
 }
 
@@ -793,15 +840,12 @@ pub(crate) fn create_add_log(
 /// what is wrong with it.
 fn node_named_by(source: &NodeSource) -> Option<(String, String)> {
     match source {
+        NodeSource::Fs(path) if is_supported_fs_archive(path) => node_named_in_archive(path),
         NodeSource::Fs(path) => {
-            let config = if is_supported_fs_archive(path) {
-                resolve_local_archive_source(path).ok()?.node_config
-            } else {
-                NodeConfigParser::from_path(path.join(NODE_CONFIG_FILE)).ok()?
-            };
+            let config = NodeConfigParser::from_path(path.join(NODE_CONFIG_FILE)).ok()?;
             Some((
                 config.manifest.name.as_str().to_owned(),
-                config.manifest.tag.clone(),
+                config.manifest.tag,
             ))
         }
         NodeSource::Git { .. } | NodeSource::Http { .. } => None,
@@ -840,7 +884,14 @@ async fn resolve_node_add_source(
             let is_stack_launch = goal.git_hash == STACK_LAUNCH_GIT_HASH;
 
             if is_supported_fs_archive(path) {
-                let resolved = resolve_local_archive_source(path)?;
+                // Extraction writes the whole archive: off the async workers.
+                let archive = path.clone();
+                let resolved =
+                    tokio::task::spawn_blocking(move || resolve_local_archive_source(&archive))
+                        .await
+                        .map_err(|e| {
+                            format!("the extraction of {} failed: {e}", path.display())
+                        })??;
                 if !is_stack_launch {
                     verify_git_hash(&resolved.source_path, &goal.git_hash)?;
                 }
@@ -1738,6 +1789,45 @@ mod tests {
     fn sha256_hex(data: &[u8]) -> String {
         let hash = Sha256::digest(data);
         encode_hex(hash.as_slice())
+    }
+
+    /// A server that sends more than the limit fills no disk: the download
+    /// stops at the limit, with no file left.
+    #[test]
+    fn a_bundle_larger_than_the_limit_is_refused() {
+        let bundle = vec![1u8; 4096];
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .respond_with(status_code(200).body(bundle)),
+        );
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        let result = download_http_bundle_once(&url, &dest, None, 1024, None);
+
+        let Err(DownloadAttemptError::Fatal(error)) = result else {
+            panic!("a larger bundle is a fatal error");
+        };
+        assert!(error.contains("is larger than"), "{error}");
+        assert!(!dest.exists(), "no part of the bundle is left");
+    }
+
+    #[test]
+    fn a_bundle_at_the_limit_is_downloaded() {
+        let bundle = vec![1u8; 1024];
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .respond_with(status_code(200).body(bundle.clone())),
+        );
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        assert!(download_http_bundle_once(&url, &dest, None, 1024, None).is_ok());
+        assert_eq!(std::fs::read(&dest).unwrap(), bundle);
     }
 
     #[test]

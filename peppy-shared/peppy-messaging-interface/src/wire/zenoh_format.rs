@@ -57,15 +57,19 @@ impl ZenohWireFormat {
     pub(crate) fn parse_topic_keyexpr(
         keyexpr: &str,
     ) -> Result<ParsedTopicKey, ZenohWireParseError> {
-        let segments: Vec<&str> = keyexpr.split('/').collect();
-        let core_node = extract_caller_segment(segments.get(1).copied(), "caller_core_node")?;
-        let instance_id = extract_caller_segment(segments.get(3).copied(), "caller_instance_id")?;
+        // The segments are read in one pass over the key, with no list of
+        // them: this runs for each sample and each reply that arrives.
+        let mut segments = keyexpr.split('/');
+        let caller_core = segments.nth(1);
+        let caller_inst = segments.nth(1);
+        let core_node = extract_caller_segment(caller_core, "caller_core_node")?;
+        let instance_id = extract_caller_segment(caller_inst, "caller_instance_id")?;
         // link_id sits at index 8 of the topic publish shape. A service reply
         // keyexpr carries the link_id the responder claimed (see
         // `ParsedInboundQuery::claim`) at the same index. A key cut short
         // before index 8, or with an empty segment there, surfaces an empty
         // link_id.
-        let link_id = segments.get(8).copied().unwrap_or_default().to_string();
+        let link_id = segments.nth(4).unwrap_or_default().to_string();
         Ok(ParsedTopicKey {
             core_node,
             instance_id,
@@ -572,7 +576,7 @@ pub enum ServiceQueryKind {
 }
 
 impl ServiceQueryKind {
-    pub(crate) fn as_byte(self) -> u8 {
+    pub(crate) const fn as_byte(self) -> u8 {
         match self {
             Self::UserRequest => 0x00,
             Self::Probe => 0x01,
@@ -611,12 +615,21 @@ pub(crate) struct ServiceQueryAttachment {
 
 impl ServiceQueryAttachment {
     pub(crate) const MAGIC_V3: u8 = 0x03;
+    const UNSIGNED_USER_REQUEST: [u8; 2] =
+        [Self::MAGIC_V3, ServiceQueryKind::UserRequest.as_byte()];
+    const UNSIGNED_PROBE: [u8; 2] = [Self::MAGIC_V3, ServiceQueryKind::Probe.as_byte()];
 
     pub(crate) fn encode(&self) -> bytes::Bytes {
+        let Some(proof) = &self.proof else {
+            // An unsigned query has one of two fixed attachments, which need
+            // no allocation.
+            return bytes::Bytes::from_static(match self.kind {
+                ServiceQueryKind::UserRequest => &Self::UNSIGNED_USER_REQUEST,
+                ServiceQueryKind::Probe => &Self::UNSIGNED_PROBE,
+            });
+        };
         let mut bytes = vec![Self::MAGIC_V3, self.kind.as_byte()];
-        if let Some(proof) = &self.proof {
-            proof.encode_into(&mut bytes);
-        }
+        proof.encode_into(&mut bytes);
         bytes::Bytes::from(bytes)
     }
 
@@ -665,7 +678,7 @@ pub enum ServiceReplyKind {
 }
 
 impl ServiceReplyKind {
-    fn as_byte(self) -> u8 {
+    const fn as_byte(self) -> u8 {
         match self {
             Self::Ack => 0x00,
             Self::Response => 0x01,
@@ -697,9 +710,18 @@ pub(crate) struct ServiceReplyAttachment {
 
 impl ServiceReplyAttachment {
     pub(crate) const MAGIC_V1: u8 = 0x01;
+    const ACK: [u8; 2] = [Self::MAGIC_V1, ServiceReplyKind::Ack.as_byte()];
+    const RESPONSE: [u8; 2] = [Self::MAGIC_V1, ServiceReplyKind::Response.as_byte()];
+    const FAILURE: [u8; 2] = [Self::MAGIC_V1, ServiceReplyKind::Failure.as_byte()];
 
+    /// The attachment of a reply: one of three fixed pairs of bytes, which
+    /// need no allocation.
     pub(crate) fn encode(self) -> bytes::Bytes {
-        bytes::Bytes::from(vec![Self::MAGIC_V1, self.kind.as_byte()])
+        bytes::Bytes::from_static(match self.kind {
+            ServiceReplyKind::Ack => &Self::ACK,
+            ServiceReplyKind::Response => &Self::RESPONSE,
+            ServiceReplyKind::Failure => &Self::FAILURE,
+        })
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, ZenohWireParseError> {

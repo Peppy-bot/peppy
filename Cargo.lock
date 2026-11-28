@@ -1127,6 +1127,7 @@ version = "0.0.1"
 dependencies = [
  "const_format",
  "core-node-api",
+ "daemon-config",
  "dirs 7.0.0",
  "jsonschema",
  "peppy-codec",
@@ -3000,6 +3001,7 @@ dependencies = [
  "bytes",
  "daemon-config",
  "log-export",
+ "loopback-test-support",
  "opentelemetry-proto",
  "prost",
  "rand 0.10.4",
@@ -3011,6 +3013,13 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "loopback-test-support"
+version = "0.0.1"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]
@@ -3508,6 +3517,7 @@ dependencies = [
  "daemon-config",
  "futures-util",
  "httpmock",
+ "loopback-test-support",
  "peppy-config-model",
  "reqwest",
  "serde",
@@ -3764,6 +3774,7 @@ dependencies = [
  "daemon-config",
  "derive_more",
  "dirs 7.0.0",
+ "flate2",
  "futures",
  "generator",
  "git2",
@@ -3775,6 +3786,7 @@ dependencies = [
  "json5-pretty",
  "latency-report",
  "log-export",
+ "loopback-test-support",
  "mcp-server",
  "mcp-test-support",
  "names-generator2",
@@ -3795,6 +3807,7 @@ dependencies = [
  "serde_json5",
  "service-manager",
  "stack-goal",
+ "tar",
  "tempfile",
  "testcontainers",
  "thiserror 2.0.21",
@@ -3803,6 +3816,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width",
+ "ureq",
  "url",
 ]
 

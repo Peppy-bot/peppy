@@ -42,12 +42,17 @@ peppy-mcp-catalog = { workspace = true }
 peppy-codec = { workspace = true }
 
 [features]
-# `PackagesBaseUrl::loopback_http_for_tests`, for the tests of downstream
-# crates that serve a PyPI mirror over plain HTTP on loopback.
+# For the tests of this crate and of downstream crates:
+# `PackagesBaseUrl::loopback_http_for_tests`, for a PyPI mirror served over
+# plain HTTP on loopback, and `launcher::hosted_brain`, the `any_of` of launch
+# variables that the tests of each crate share.
 test-support = []
 
 [dev-dependencies]
 tempfile = "3"
+# Self-reference so the integration tests of this crate see the helpers of
+# `test-support`, such as `launcher::hosted_brain`, with no extra flag.
+daemon-config = { path = ".", features = ["test-support"] }
 # The validator the MCP server runtime compiles a tool's input schema with
 # (`jsonschema::validator_for`, default features off there too), so the
 # tests of a daemon interface's schema narrowing judge input the way the

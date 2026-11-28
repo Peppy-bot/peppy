@@ -102,22 +102,27 @@ pub mod peppy_config {
 
 // -- launcher --
 pub mod launcher {
+    /// The `any_of` of a hosted brain that the tests of each crate share.
+    #[cfg(any(test, feature = "test-support"))]
+    pub use crate::internal::launcher::hosted_brain;
     pub use crate::internal::launcher::{
-        AlreadyPairedSlots, AppliedChange, AxisRole, BindingValidationItem, ClockIncarnations,
-        ComponentAxis, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport,
-        CopyInstance, CopyMembership, CopyRecord, DaemonScopeError, DaemonScopeRefusals,
-        Deployment, DeploymentInstance, DeploymentSource, DeploymentTargets,
-        ExternallyCoveredSlots, ForwardedEnv, FrameworkOverrides, JoinRequest, Joinable,
-        JoinableNode, JoinableNodes, LaunchValues, LaunchVariable, LaunchVariables,
-        LauncherFragmentParser, LinkTargets, LinkValue, MemberAddressing, MissingLaunchVariables,
-        OptionSpec, PairingValidationItem, PartMachines, PartRefusal, PeppyLauncher,
-        PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing,
-        PreparedLauncher, RepeatedLaunchVariable, ResolvedClocks, RunningStack, SETS_READ_WHOLE,
-        ScopeCheck, Selection, SkipReason, SkippedAdjustment, Starter, TrialCopy, TrialStack,
-        UnitSelection, VacantReason, VariableChange, VariableGivenTwoValues, VariableNeed,
-        VariableNeeds, VariablesGivenTwoValues, WALL_CLOCK, WrittenWord, check_composition,
-        check_daemon_scopes, instance_restart, mint_incarnation, participant_vacancies,
-        refuse_peer_placements, resolve_clocks, resolve_restart, restart_request_of,
+        AlreadyPairedSlots, AppliedChange, AxisRole, BindingValidationItem, BrokenAnyOf,
+        ChangeValues, ChoiceNeed, ClockIncarnations, ComponentAxis, ComposedJoin, ComposedLaunch,
+        CompositionError, CompositionReport, CopyInstance, CopyMembership, CopyRecord,
+        DaemonScopeError, DaemonScopeRefusals, Deployment, DeploymentInstance, DeploymentSource,
+        DeploymentTargets, ExternallyCoveredSlots, ForwardedEnv, FrameworkOverrides, JoinRequest,
+        Joinable, JoinableNode, JoinableNodes, KeptSetsHeldInPart, LaunchValues, LaunchVariable,
+        LaunchVariables, LaunchVariablesKey, LauncherFragmentParser, LinkTargets, LinkValue,
+        MemberAddressing, MissingLaunchVariables, OptionSpec, PairingValidationItem, PartMachines,
+        PartRefusal, PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation,
+        PlannedPairEndpoint, PlannedPairing, PreparedLauncher, RepeatedLaunchVariable,
+        ResolvedClocks, RunningStack, SETS_READ_WHOLE, ScopeCheck, Selection, SkipReason,
+        SkippedAdjustment, Starter, TrialCopy, TrialStack, UnitSelection, VacantReason,
+        VariableChange, VariableGivenTwoValues, VariableNeed, VariableNeeds, VariableOutsideItsSet,
+        VariablesGivenTwoValues, WALL_CLOCK, WrittenLaunchVariables, WrittenWord,
+        check_composition, check_daemon_scopes, instance_restart, mint_incarnation,
+        participant_vacancies, refuse_kept_sets_held_in_part, refuse_peer_placements,
+        refuse_variables_outside_their_set, resolve_clocks, resolve_restart, restart_request_of,
         split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
         validate_pairings,
     };

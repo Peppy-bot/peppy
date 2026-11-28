@@ -3,9 +3,10 @@
 //! Spawns the actual `peppy service serve` binary as a separate OS process. The
 //! signal cases verify it shuts down cleanly on both SIGINT (ctrl+C) and
 //! SIGTERM (systemd stop); they run on the mock engine, which needs no router,
-//! and take a fraction of a second. The zenohd case (Linux) boots the daemon on
-//! zenoh, SIGKILLs it, and verifies the kernel ends its zenohd and the next
-//! daemon on the same port boots.
+//! and take a fraction of a second. The zenohd cases (Linux) boot the daemon on
+//! zenoh: one verifies that its router listens on the loopback interface
+//! alone; the other SIGKILLs it, and verifies the kernel ends its zenohd and
+//! the next daemon on the same port boots.
 //!
 //! These run in the default suite.
 //!
@@ -173,6 +174,61 @@ mod zenohd_dies_with_the_daemon {
 
         let (mut second, second_logs) = spawn_daemon(home, MessagingEngine::Zenoh { port });
         wait_for_boot(&mut second, &second_logs, SERVE_INITIALIZED)
+    }
+
+    /// `127.0.0.1` as `/proc/net/tcp` writes it: the address in the byte
+    /// order of the host, which is little-endian on the machines that run
+    /// the suite.
+    const LOOPBACK_IN_PROC_NET_TCP: &str = "0100007F";
+
+    /// The local address of each socket that listens on `port`, as
+    /// `/proc/net/tcp` and `/proc/net/tcp6` write it.
+    fn listen_addresses(port: u16) -> Vec<String> {
+        /// The state of a listening socket in the tables.
+        const LISTEN: &str = "0A";
+        let mut addresses = Vec::new();
+        for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+            let text = std::fs::read_to_string(table).unwrap_or_default();
+            for line in text.lines().skip(1) {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                let (Some(local), Some(state)) = (fields.get(1), fields.get(3)) else {
+                    continue;
+                };
+                let Some((address, local_port)) = local.split_once(':') else {
+                    continue;
+                };
+                if *state == LISTEN && u16::from_str_radix(local_port, 16) == Ok(port) {
+                    addresses.push(address.to_owned());
+                }
+            }
+        }
+        addresses
+    }
+
+    /// The transport of the managed router has no authentication, so no host
+    /// of the network can connect to it: it listens on the loopback
+    /// interface alone. "Zenoh router started" comes once the router accepts
+    /// connections.
+    #[test]
+    fn the_managed_router_listens_on_the_loopback_interface_only() {
+        for _ in 0..PORT_ATTEMPTS {
+            let home = tempfile::tempdir().expect("temp home");
+            let port = free_port();
+            let (mut daemon, logs) = spawn_daemon(home.path(), MessagingEngine::Zenoh { port });
+            if matches!(
+                wait_for_boot(&mut daemon, &logs, ROUTER_STARTED),
+                Boot::PortCollision
+            ) {
+                continue;
+            }
+            assert_eq!(
+                listen_addresses(port),
+                [LOOPBACK_IN_PROC_NET_TCP],
+                "the router of port {port} must listen on 127.0.0.1 alone"
+            );
+            return;
+        }
+        panic!("{PORT_ATTEMPTS} attempts in a row hit a port collision");
     }
 
     #[test]

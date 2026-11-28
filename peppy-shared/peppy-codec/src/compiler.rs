@@ -17,10 +17,11 @@
 //! Peppy never runs a system `capnp` from `PATH`.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -73,11 +74,26 @@ pub fn binary_path() -> Result<PathBuf, CompilerError> {
                 path.display()
             )));
         }
-        ensure_executable(&path)?;
-        verify_runs(&path)?;
+        verify_override_once(&path)?;
         return Ok(path);
     }
     carried_binary()
+}
+
+/// Checks the compiler that `CAPNP_BINARY_PATH` names, once per path and
+/// process: each schema that a process compiles asks for the compiler, and
+/// the check runs `capnp --version`. A check that fails is not kept, so the
+/// next call checks again.
+fn verify_override_once(path: &Path) -> Result<(), CompilerError> {
+    static VERIFIED: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
+    let verified = || VERIFIED.lock().unwrap_or_else(PoisonError::into_inner);
+    if verified().contains(path) {
+        return Ok(());
+    }
+    ensure_executable(path)?;
+    verify_runs(path)?;
+    verified().insert(path.to_path_buf());
+    Ok(())
 }
 
 /// The compiler that the process carries, written to its extraction
@@ -416,6 +432,37 @@ mod tests {
             message.contains(&path.display().to_string()),
             "error should name the path it tried, got: {message}"
         );
+    }
+
+    /// A compiler that the override names runs once per path: the next
+    /// compile of the process finds it checked.
+    #[cfg(unix)]
+    #[test]
+    fn an_override_compiler_is_checked_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runs = dir.path().join("runs");
+        let script = format!("#!/bin/sh\necho run >> '{}'\nexit 0\n", runs.display());
+        let path = write_executable(dir.path(), "capnp", script.as_bytes());
+
+        verify_override_once(&path).expect("the compiler runs");
+        verify_override_once(&path).expect("the compiler was checked");
+
+        assert_eq!(fs::read_to_string(&runs).expect("runs"), "run\n");
+    }
+
+    /// A check that failed is not kept: a compiler put at the path later is
+    /// checked.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_check_of_an_override_compiler_is_not_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_executable(dir.path(), "capnp", b"#!/bin/sh\nexit 1\n");
+        verify_override_once(&path).expect_err("the compiler fails");
+
+        fs::remove_file(&path).expect("remove the compiler");
+        let path = write_executable(dir.path(), "capnp", b"#!/bin/sh\nexit 0\n");
+
+        verify_override_once(&path).expect("the new compiler runs");
     }
 
     #[cfg(unix)]

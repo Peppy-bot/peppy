@@ -2679,6 +2679,7 @@ dependencies = [
  "pythonize",
  "rand 0.10.4",
  "serde_json",
+ "serde_path_to_error",
  "tokio",
 ]
 

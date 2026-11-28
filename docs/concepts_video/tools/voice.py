@@ -19,8 +19,16 @@ from tools.timing import FRAMES_PER_SECOND, Timeline, sentence_key
 from tools.transcript import Transcript
 from tools.voice_durations import RecordedDuration, spoken_sentences
 
-# The `tts` runs at the same time. One run loads the model and uses several cores.
-PARALLEL_SYNTHESES = 4
+# Upper bound on concurrent `tts` runs. Each run loads Kokoro-82M into memory
+# and uses multiple ONNX Runtime threads, so scaling up to half the available
+# processors keeps all cores busy without thrashing.
+MAX_PARALLEL_SYNTHESES = 12
+
+
+def parallel_syntheses(processors: int | None = None) -> int:
+    """How many `tts` processes to run at the same time."""
+    count = hyperframes.available_processors() if processors is None else processors
+    return max(1, min(MAX_PARALLEL_SYNTHESES, count // 2))
 
 
 class OtherVoice(Exception):
@@ -47,7 +55,7 @@ def make_sentence_voices(transcript: Transcript, voice_tools_identity: str) -> l
             _synthesize(spoken, transcript, file)
         return SentenceVoice(key=key, spoken_sha256=sha256, file=file, seconds=_seconds_of(file))
 
-    with ThreadPoolExecutor(max_workers=PARALLEL_SYNTHESES) as pool:
+    with ThreadPoolExecutor(max_workers=parallel_syntheses()) as pool:
         return list(pool.map(make, wanted))
 
 

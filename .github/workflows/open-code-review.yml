@@ -1,0 +1,138 @@
+name: OpenCodeReview
+# The merge-set bot reads the pull request of a run from its name. The quotes
+# keep YAML from reading ` #` as the start of a comment.
+run-name: "OpenCodeReview of #${{ github.event.pull_request.number || github.event.issue.number }}"
+
+# A second review of each pull request of peppy, in the delegation mode of
+# OpenCodeReview (OCR, https://github.com/alibaba/open-code-review), next to
+# the Claude review of a set: the action open-code-review of peppy
+# (.github/actions/open-code-review) reviews the pull request and posts the
+# findings, and the action open-code-review/status sets the commit status
+# `open-code-review` of the head with the App `peppy-open-code-review`. The
+# run never approves and never requests changes, and no ruleset of peppy
+# requires the status. The actions serve platform too, from peppy `dev`.
+#
+# A review starts on each push of a pull request whose author has write access
+# to the repository (a push of another user or of a bot too), on a change of
+# its base branch, and on a comment that starts with `/open-code-review` from
+# such a user. An edit of the title or of the body starts no review, and nor
+# does a pull request or a comment of a bot. A user with write access reviews a
+# pull request of another author with the comment. Each run spends
+# the usage of the Claude login, which the Claude review of a set and the
+# release also use, so a push to a draft starts no run: the review starts when
+# the pull request is ready for review. A push whose head differs from the
+# head of the last complete review by a clean merge of the base branch alone
+# keeps that review, and Claude does not run.
+#
+# Nothing of a pull request can change what the jobs run. A
+# `pull_request_target` run and a comment run take this file and the actions
+# from `dev`, the default branch, whatever the base branch of the pull
+# request: a branch that only a user with write access changes. OCR comes from
+# a pinned release. The review job reads the pull request as data: it runs
+# none of its code. The key of the App of the status is a secret of the
+# environment `open-code-review`, which only `dev` reaches (GitHub checks
+# these runs against the default branch), and only the status job, which runs
+# no Claude run, uses it.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  # Whether the event starts a review. The condition takes the events of a
+  # review with no runner; the action then reads the permission of the author
+  # (open-code-review/author/action.yml tells why).
+  author:
+    if: >-
+      (
+        github.event_name == 'pull_request_target'
+        && (github.event.action != 'edited' || github.event.changes.base)
+        && !github.event.pull_request.draft
+        && github.event.pull_request.user.type != 'Bot'
+      )
+      || (
+        github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && github.event.issue.state == 'open'
+        && github.event.comment.user.type != 'Bot'
+        && startsWith(github.event.comment.body, '/open-code-review')
+      )
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      review: ${{ steps.author.outputs.review }}
+    steps:
+      - id: author
+        uses: $/.github/actions/open-code-review/author
+
+  review:
+    needs: author
+    if: needs.author.outputs.review == 'true'
+    # One review at a time for each pull request: the review job that enters
+    # the group last cancels the one in progress, and a review reads the head
+    # as it is when it starts. The jobs enter the group as their first jobs
+    # end, which need not be the order of the events. The group repeats the
+    # condition of the job, so that an event that starts no review goes to a
+    # group of its own run and cancels nothing.
+    concurrency:
+      group: >-
+        ${{
+          needs.author.outputs.review == 'true'
+          && format('open-code-review-{0}', github.event.pull_request.number || github.event.issue.number)
+          || format('open-code-review-noop-{0}', github.run_id)
+        }}
+      cancel-in-progress: true
+    # A small RunsOn runner: Claude reads and the job builds nothing.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    # Above the sum of the time limits of the steps of the action: a step at
+    # its limit fails, and the post step then posts the cause. The job at its
+    # limit is cancelled, which skips the post step: the run then reports a
+    # failure. (test_open_code_review.py checks the limits.)
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: read
+    outputs:
+      status: ${{ steps.review.outputs.status }}
+    steps:
+      - id: review
+        uses: $/.github/actions/open-code-review
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  # The status of the review on the head that it read, for a pull request
+  # into `dev` (the review job gives no status else), also when the review
+  # job failed or was cancelled. The statuses of a pull request go out in the
+  # order in which their review jobs end: the status job that enters the
+  # group last waits for the one in progress, and takes the place of one that
+  # waits. The group repeats the condition of the job, so that a run that
+  # sets no status takes the place of no status job that waits.
+  status:
+    needs: review
+    if: always() && needs.review.outputs.status != ''
+    concurrency:
+      group: >-
+        ${{
+          needs.review.outputs.status != ''
+          && format('open-code-review-status-{0}', github.event.pull_request.number || github.event.issue.number)
+          || format('open-code-review-status-noop-{0}', github.run_id)
+        }}
+      cancel-in-progress: false
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    environment:
+      name: open-code-review
+      deployment: false
+    permissions: {}
+    steps:
+      - uses: $/.github/actions/open-code-review/status
+        with:
+          status: ${{ needs.review.outputs.status }}
+          client-id: ${{ secrets.OPEN_CODE_REVIEW_CLIENT_ID }}
+          private-key: ${{ secrets.OPEN_CODE_REVIEW_PRIVATE_KEY }}

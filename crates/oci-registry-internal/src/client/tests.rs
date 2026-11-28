@@ -4,6 +4,9 @@
 
 use super::*;
 use httpmock::prelude::*;
+use loopback_test_support::ClosedPort;
+// The method of the client, which the glob of httpmock also names.
+use reqwest::Method;
 use std::assert_matches;
 use std::ffi::OsString;
 
@@ -639,14 +642,9 @@ async fn a_manifest_is_put_under_its_tag_with_the_image_manifest_media_type() {
 
 #[tokio::test]
 async fn an_unreachable_registry_names_itself_and_the_cause() {
-    // Bind and drop a listener so the port refuses connections.
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind")
-        .local_addr()
-        .expect("address")
-        .port();
-    let repository =
-        OciRepository::parse(&format!("oci://127.0.0.1:{port}/acme/nodes")).expect("repository");
+    let closed = ClosedPort::hold();
+    let repository = OciRepository::parse(&format!("oci://{}/acme/nodes", closed.address()))
+        .expect("repository");
     let client = RegistryClient::new(
         &repository,
         CredentialStore::new("/nonexistent".into(), OsString::new()),
@@ -658,7 +656,7 @@ async fn an_unreachable_registry_names_itself_and_the_cause() {
 
     assert_matches!(error, RegistryError::Unreachable { .. }, "{error}");
     assert!(
-        error.to_string().contains(&format!("127.0.0.1:{port}")),
+        error.to_string().contains(&closed.address().to_string()),
         "{error}"
     );
 }
@@ -757,4 +755,252 @@ async fn the_platform_of_a_single_manifest_is_the_one_of_its_config() {
         .expect("platforms");
 
     assert_eq!(platforms, [("linux".to_owned(), "amd64".to_owned())]);
+}
+
+/// A blob larger than the write buffer lands whole: the buffer goes to the
+/// file before the file is synced.
+#[tokio::test]
+async fn a_blob_larger_than_the_write_buffer_lands_whole() {
+    let registry = Registry::start().await;
+    let content: Vec<u8> = (0..DOWNLOAD_WRITE_BUFFER_BYTES * 2 + 12_345)
+        .map(|index| u8::try_from(index % 251).expect("a byte"))
+        .collect();
+    let digest = digest::of_bytes(&content);
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path(repository_path(&format!("blobs/{digest}")));
+            then.status(200).body(&content);
+        })
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let destination = dir.path().join("image.sif");
+
+    registry
+        .client(Access::Pull)
+        .download_blob(&digest, content.len() as u64, &destination, &mut |_| {})
+        .await
+        .expect("download");
+
+    assert_eq!(std::fs::read(&destination).expect("read"), content);
+}
+
+/// A challenge whose token service is at `realm`.
+fn bearer_challenge(realm: &str, registry: &Registry) -> String {
+    format!(
+        r#"Bearer realm="{realm}",service="{}",scope="repository:{REPOSITORY_PATH}:pull""#,
+        registry.registry()
+    )
+}
+
+/// A redirect of the token service would send the credential of the token
+/// request to a URL that the challenge did not name.
+#[tokio::test]
+async fn the_token_request_follows_no_redirect() {
+    let registry = Registry::start().await;
+    registry.log_in();
+    let challenge = bearer_challenge(&registry.server.url("/token"), &registry);
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(GET).path(repository_path("tags/list"));
+            then.status(401)
+                .header("WWW-Authenticate", challenge.clone());
+        })
+        .await;
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(GET).path("/token");
+            then.status(307)
+                .header("Location", registry.server.url("/elsewhere"));
+        })
+        .await;
+    let elsewhere = registry
+        .server
+        .mock_async(|when, then| {
+            when.any_request().path("/elsewhere");
+            then.status(200)
+                .json_body(serde_json::json!({"token": "stolen"}));
+        })
+        .await;
+
+    let error = registry
+        .client(Access::Pull)
+        .list_tags()
+        .await
+        .expect_err("a redirect is no token");
+
+    assert_matches!(error, RegistryError::Refused { status: 307, .. }, "{error}");
+    elsewhere.assert_calls_async(0).await;
+}
+
+/// A `Link` of the registry that names another origin gets the request with
+/// no `Authorization` header.
+#[tokio::test]
+async fn a_page_on_another_origin_gets_no_authorization() {
+    let registry = Registry::start().await;
+    registry.log_in();
+    let other = MockServer::start_async().await;
+    let next = other.url(repository_path("tags/list?n=1000&last=a"));
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path(repository_path("tags/list"))
+                .header_missing("authorization");
+            then.status(401)
+                .header("WWW-Authenticate", r#"Basic realm="Registry Realm""#);
+        })
+        .await;
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path(repository_path("tags/list"))
+                .header("authorization", BASIC_PEPPY);
+            then.status(200)
+                .header("Link", format!("<{next}>; rel=\"next\""))
+                .json_body(serde_json::json!({"tags": ["a"]}));
+        })
+        .await;
+    let foreign = other
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path(repository_path("tags/list"))
+                .header_missing("authorization");
+            then.status(200)
+                .json_body(serde_json::json!({"tags": ["b"]}));
+        })
+        .await;
+
+    let tags = registry
+        .client(Access::Pull)
+        .list_tags()
+        .await
+        .expect("tags");
+
+    assert_eq!(tags, ["a", "b"]);
+    foreign.assert_calls_async(1).await;
+}
+
+/// A challenge of another origin is not answered: the credential of the
+/// repository does not go there.
+#[tokio::test]
+async fn a_challenge_of_another_origin_is_an_error() {
+    let registry = Registry::start().await;
+    registry.log_in();
+    let other = MockServer::start_async().await;
+    let next = other.url(repository_path("tags/list?n=1000&last=a"));
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(GET).path(repository_path("tags/list"));
+            then.status(200)
+                .header("Link", format!("<{next}>; rel=\"next\""))
+                .json_body(serde_json::json!({"tags": ["a"]}));
+        })
+        .await;
+    let foreign = other
+        .mock_async(|when, then| {
+            when.method(GET).path(repository_path("tags/list"));
+            then.status(401)
+                .header("WWW-Authenticate", r#"Basic realm="Elsewhere""#);
+        })
+        .await;
+
+    let error = registry
+        .client(Access::Pull)
+        .list_tags()
+        .await
+        .expect_err("no credential for another origin");
+
+    assert_matches!(error, RegistryError::Refused { status: 401, .. }, "{error}");
+    foreign.assert_calls_async(1).await;
+}
+
+/// A client of a registry on another machine, which makes no request.
+fn remote_client() -> RegistryClient {
+    let dir = tempfile::tempdir().expect("tempdir");
+    RegistryClient::new(
+        &OciRepository::parse("oci://registry.example/acme/nodes").expect("repository"),
+        CredentialStore::new(dir.path().join("config.json"), OsString::new()),
+        Access::Pull,
+    )
+    .expect("client")
+}
+
+#[test]
+fn the_token_realm_of_a_remote_registry_is_https_on_another_machine() {
+    let client = remote_client();
+    for realm in [
+        "http://auth.example/token",
+        "https://127.0.0.1/token",
+        "https://127.1.2.3:8443/token",
+        "https://localhost/token",
+        "https://auth.localhost./token",
+        "https://[::1]/token",
+        "https://[::ffff:127.0.0.1]/token",
+        "https://0.0.0.0/token",
+        "not a url",
+        "",
+    ] {
+        client
+            .token_realm(realm, "the token request")
+            .expect_err(realm);
+    }
+    let realm = client
+        .token_realm("https://auth.example/token", "the token request")
+        .expect("an https realm on another machine");
+    assert_eq!(realm.as_str(), "https://auth.example/token");
+}
+
+/// A registry on the loopback interface is a registry of this machine or of
+/// a test, whose token service is there also.
+#[tokio::test]
+async fn the_token_realm_of_a_loopback_registry_may_be_on_this_machine() {
+    let registry = Registry::start().await;
+    let client = registry.client(Access::Pull);
+    client
+        .token_realm(&registry.server.url("/token"), "the token request")
+        .expect("a realm of a loopback registry");
+}
+
+#[tokio::test]
+async fn a_url_in_plain_http_for_a_registry_in_https_is_refused() {
+    let error = remote_client()
+        .send(
+            Method::GET,
+            "http://registry.example/v2/acme/nodes/tags/list",
+            HeaderMap::new(),
+            None,
+        )
+        .await
+        .expect_err("a downgrade");
+    assert_matches!(error, RegistryError::Protocol { .. }, "{error}");
+}
+
+/// A registry that sends a large error body takes no more memory than the
+/// start of it.
+#[tokio::test]
+async fn the_body_of_an_error_is_read_up_to_its_limit() {
+    let registry = Registry::start().await;
+    let body = "x".repeat(MAX_ERROR_BODY_BYTES * 4);
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(GET).path("/large");
+            then.status(500).body(&body);
+        })
+        .await;
+    let client = registry.client(Access::Pull);
+    let answer = client
+        .http
+        .get(registry.server.url("/large"))
+        .send()
+        .await
+        .expect("an answer");
+
+    assert_eq!(error_body(answer).await.len(), MAX_ERROR_BODY_BYTES);
 }

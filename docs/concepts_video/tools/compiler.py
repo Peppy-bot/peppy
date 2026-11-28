@@ -103,10 +103,10 @@ def compile_project(
     (destination / "compositions").mkdir(parents=True)
     environment = _environment(transcript, footage)
     for segment, slot in zip(transcript.segments, timeline.segments, strict=True):
-        composition = _render_composition(environment, segment, slot)
+        composition = _compact_lines(_render_composition(environment, segment, slot))
         (destination / "compositions" / f"{segment.id}.html").write_text(composition, encoding="utf-8")
     if transcript.splash is not None:
-        splash = _render_splash(environment, transcript.splash, timeline.splash_duration)
+        splash = _compact_lines(_render_splash(environment, transcript.splash, timeline.splash_duration))
         (destination / "compositions" / f"{SPLASH_ID}.html").write_text(splash, encoding="utf-8")
     root = environment.get_template(ROOT_TEMPLATE).render(
         splash_id=SPLASH_ID,
@@ -155,8 +155,17 @@ def literal_text_of_template(source: str) -> str:
     return HTML_ENTITY.sub(" ", HTML_TAG.sub(" ", without_code))
 
 
+def _compact_lines(source: str) -> str:
+    """Drop blank lines that Jinja macros and control blocks leave in compiled HTML."""
+    return "\n".join(line for line in source.splitlines() if line.strip()) + "\n"
+
+
 def _bundle_robot_view(destination: Path) -> None:
-    """Write the robot view and three.js as one script that gives `RobotView`."""
+    """Write the robot view and three.js as one script that gives `RobotView`.
+
+    `--tsconfig-raw={}` stops esbuild from walking up to the Astro
+    `tsconfig.json` of the parent `docs/` directory.
+    """
     subprocess.run(
         [
             str(ESBUILD),
@@ -164,6 +173,7 @@ def _bundle_robot_view(destination: Path) -> None:
             "--bundle",
             "--format=iife",
             "--global-name=RobotView",
+            "--tsconfig-raw={}",
             "--log-level=warning",
             f"--outfile={destination}",
         ],

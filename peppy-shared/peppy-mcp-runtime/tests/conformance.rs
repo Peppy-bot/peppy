@@ -159,6 +159,49 @@ async fn an_initialize_client_is_refused_with_the_supported_versions_listed() {
     set.stop().await;
 }
 
+/// No web page calls an endpoint: a browser sends an `Origin` header with
+/// the request of a page, and the endpoint refuses it (DNS rebinding, a page
+/// of another site on the machine of the user). A client that is not a
+/// browser sends none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_from_a_web_page_is_refused() {
+    let set = start_set().await;
+    let http = reqwest::Client::new();
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": ProtocolVersion::LATEST,
+            "capabilities": {},
+            "clientInfo": { "name": "conformance", "version": "0" },
+        },
+    });
+    for endpoint in &set.endpoints {
+        let request = || {
+            http.post(&endpoint.url)
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .json(&initialize)
+        };
+        for origin in ["https://attacker.example", "http://localhost:8080", "null"] {
+            let response = request()
+                .header("origin", origin)
+                .send()
+                .await
+                .expect("the listener answers");
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::FORBIDDEN,
+                "a request from {origin}"
+            );
+        }
+        let response = request().send().await.expect("the listener answers");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+    }
+    set.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_client_preferring_only_older_versions_cannot_connect() {
     let set = start_set().await;

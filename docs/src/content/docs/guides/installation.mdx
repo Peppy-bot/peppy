@@ -13,43 +13,46 @@ To install `peppy`, run the following command in your terminal:
 curl -fsSL https://peppy.bot/install.sh | sh
 ```
 
-The installer supports Ubuntu 24.04 or later and the Linux distributions built on it, Debian 13 or later (x86_64 and aarch64, tested on Ubuntu 24.04), Raspberry Pi OS (see [Raspberry Pi](#raspberry-pi)), and macOS on Apple Silicon. It recognises an Ubuntu-based distribution by `ID` or `ID_LIKE` in `/etc/os-release`, and Debian by `ID=debian` alone: a distribution that names Debian in `ID_LIKE` only, such as Devuan, is not supported.
+Supported platforms:
 
-On Linux, Peppy needs a 64-bit system with glibc 2.38 or later. The installer reads the architecture of the packages with `dpkg --print-architecture`, because a 64-bit kernel can run a 32-bit system, and the glibc version with `getconf GNU_LIBC_VERSION`. It reads the glibc and not the release number, because a distribution built on Ubuntu numbers its releases its own way: Linux Mint 21, for example, is built on Ubuntu 22.04. On a 32-bit system, on an older glibc (glibc 2.35 on Ubuntu 22.04 and the distributions built on it, 2.36 on Debian 12), and on any other system, Fedora and Arch Linux among them, the installer stops with an error before it changes anything.
+- **Linux (64-bit x86_64 or aarch64, glibc 2.38+)**: Ubuntu 24.04 or later (and derivatives identified via `ID` or `ID_LIKE` in `/etc/os-release`), Debian 13 or later (`ID=debian` only; Debian derivatives such as Devuan are not supported), and 64-bit Raspberry Pi OS (see [Raspberry Pi](#raspberry-pi)). Tested on Ubuntu 24.04.
+- **macOS**: Apple Silicon.
 
-On Linux, the installer runs `peppy container setup`, which installs the packages that container nodes need (`uidmap`, `squashfs-tools` and `fuse2fs`) and, where AppArmor restricts user namespaces, an AppArmor profile (see [Containers](/advanced_guides/containers/#setup-linux)). It does this in a Docker or Podman container also, where a bare image such as `ubuntu:24.04` or `debian:trixie` has none of these packages. In a container, the installer does not set up D-Bus and linger, which the background service of a host needs. A user that is not root in such a container starts each node from an unpacked copy of its image (see [Node images on overlayfs](/advanced_guides/containers/#node-images-on-overlayfs)).
+The installer checks the package architecture (`dpkg --print-architecture`, since a 64-bit kernel can run a 32-bit userland) and glibc version (`getconf GNU_LIBC_VERSION`, since Ubuntu derivatives use independent release numbers). On unsupported systems (32-bit, glibc < 2.38 such as Ubuntu 22.04 or Debian 12, Fedora, Arch Linux), the installer exits cleanly before changing anything.
 
-This installer also sets up the `peppy` background service and populates the repository index that name-based launches resolve from. To skip that step, set `PEPPY_NO_SERVICE_INSTALL=1`. The flag skips the repository setup along with the service, so a launch by name then fails with `nodes.json5 not found or empty` until you run `peppy repo init` and `peppy repo update` yourself.
+What the installer sets up:
+
+- **CLI binary**: places `peppy` on your `PATH`.
+- **Container prerequisites (Linux)**: runs `peppy container setup` to install `uidmap`, `squashfs-tools`, and `fuse2fs`, plus an AppArmor profile where user namespaces are restricted ([Containers](/advanced_guides/containers/#setup-linux)). This also works inside bare Docker or Podman images (`ubuntu:24.04`, `debian:trixie`); inside a container, host service setup (D-Bus/linger) is skipped, and non-root daemons run container nodes from unpacked images ([Node images on overlayfs](/advanced_guides/containers/#node-images-on-overlayfs)).
+- **Background service and repository index**: installs the `peppy` user service and indexes the default repositories. Set `PEPPY_NO_SERVICE_INSTALL=1` to skip both; name-based launches will then fail with `nodes.json5 not found or empty` until you run `peppy repo init` and `peppy repo update`.
 
 :::note
-To install a specific version, set the `PEPPY_VERSION` environment variable:
+To install a specific version, set `PEPPY_VERSION`:
 
 ```sh
 curl -fsSL https://peppy.bot/install.sh | PEPPY_VERSION="v0.20.0" sh
 ```
 :::
 
-The installer can also unpack a release archive you already have, instead of downloading one:
+To install from a local release archive instead of downloading one:
 
 ```sh
 curl -fsSL https://peppy.bot/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-gnu.tgz
 ```
 
-If a daemon is already running, the installer asks for confirmation before replacing it; set `PEPPY_FORCE_REINSTALL=1` for non-interactive installs.
+If a daemon is already running, the installer prompts before replacing it. Set `PEPPY_FORCE_REINSTALL=1` for non-interactive installs.
 
-Each Peppy version reads the content of the default repositories that was released with it (see [Repositories](/advanced_guides/repositories/)). Installing another Peppy version therefore also changes the hub content those repositories read, and the daemon reads it again at its next start.
+Each Peppy release reads the hub tags published for that version (see [Repositories](/advanced_guides/repositories/)). Upgrading or downgrading Peppy updates the default hub content automatically on the next daemon start.
 
 ### Raspberry Pi
 
-Of the Raspberry Pi boards, the installer supports those built on the BCM2712 SoC: the Raspberry Pi 5, the Raspberry Pi 500 and the Compute Module 5. It recognises a Raspberry Pi board by a `raspberrypi,` entry in the `compatible` list of the device tree (`/sys/firmware/devicetree/base`), and the BCM2712 by `brcm,bcm2712` in the same list. The rule holds whatever the distribution: on an older board, such as the Raspberry Pi 4 or the Raspberry Pi 3, the installer stops with an error that names the board, on Raspberry Pi OS, Ubuntu and Debian alike.
+Supported boards are those using the **BCM2712** SoC: **Raspberry Pi 5**, **Raspberry Pi 500**, and **Compute Module 5**. The installer checks `/sys/firmware/devicetree/base` (`compatible` must contain `raspberrypi,` and `brcm,bcm2712`). Older boards (Raspberry Pi 4, 3, etc.) are rejected regardless of OS.
 
-On these boards, the installer supports Raspberry Pi OS (64-bit) based on Debian 13 (trixie) or later, and the other distributions above. It recognises Raspberry Pi OS by the `/etc/rpi-issue` file of its image, and stops with an error before it changes anything on:
+On supported boards, install **Raspberry Pi OS (64-bit)** based on Debian 13 (`trixie`) or later via [Raspberry Pi Imager](https://www.raspberrypi.com/software/), or any supported Ubuntu/Debian distribution above. On Raspberry Pi OS (detected via `/etc/rpi-issue`), the installer stops before making changes if:
 
-- Raspberry Pi OS where the device tree names no board. Raspberry Pi OS runs on Raspberry Pi boards only.
-- the 32-bit Raspberry Pi OS. On a Raspberry Pi 5 it also runs a 64-bit kernel, and its packages are `armhf`, not `arm64`.
-- Raspberry Pi OS based on Debian 12 (bookworm), the release Raspberry Pi Imager lists as Legacy. Its glibc (2.36) is older than the 2.38 that Peppy needs.
-
-To install Raspberry Pi OS (64-bit), use [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
+- The device tree names no Raspberry Pi board.
+- The OS is 32-bit (`armhf` userland, even on a 64-bit kernel).
+- The OS is based on Debian 12 (`bookworm`, listed as Legacy in Raspberry Pi Imager), which ships glibc 2.36.
 
 ### Installer environment variables
 
@@ -60,11 +63,50 @@ To install Raspberry Pi OS (64-bit), use [Raspberry Pi Imager](https://www.raspb
 | `PEPPY_BIN_DIR` | Binary install directory (default: `$PEPPY_HOME/bin`) |
 | `PEPPY_REPOURL` | Base URL for downloads (default: `https://peppy.bot`) |
 | `PEPPY_DOWNLOAD_URL` | Override the full download URL |
-| `PEPPY_NO_PATH_UPDATE` | If set, do not update the shell PATH config |
-| `PEPPY_FORCE_REINSTALL` | If set, skip the confirmation prompt when a daemon is running |
-| `PEPPY_NO_ROOT_INSTALL` | If set, never use sudo and install no package. The installer stops with an error that names each missing package that a container build needs and the command that installs them; a missing `fuse2fs` is a warning. The AppArmor profile is left to `peppy container setup` |
-| `PEPPY_NO_SERVICE_INSTALL` | If set, skip the service install and the repository init/refresh |
-| `PEPPY_NO_CONTAINER_SETUP` | If set, skip the Apptainer container setup, and so the packages that it installs |
+| `PEPPY_NO_PATH_UPDATE` | Skip updating shell `PATH` config |
+| `PEPPY_FORCE_REINSTALL` | Skip confirmation prompt when a daemon is running |
+| `PEPPY_NO_ROOT_INSTALL` | Never run `sudo` or install packages. Fails with install commands if required container packages are missing (`fuse2fs` warns only). Leaves AppArmor setup to `peppy container setup`. |
+| `PEPPY_NO_SERVICE_INSTALL` | Skip service installation and repository init/refresh |
+| `PEPPY_NO_CONTAINER_SETUP` | Skip Apptainer container setup and package installation |
+
+## Updating Peppy
+
+To update an existing installation to the latest release:
+
+```sh
+peppy update
+```
+
+`peppy update` checks the latest release before it downloads the archive. If your installation is already at the latest release, it exits without changing the binary or restarting the daemon. When a newer release is available, `peppy update`:
+
+1. Downloads the release archive and checks its gzip checksum.
+2. Runs the new `peppy --version`, and stops before it changes anything if the new binary does not run on this machine or is not the release that it installs.
+3. Stops and uninstalls the background service if one is installed at the level of the update (user-level, or system-wide when you run it with sudo).
+4. Replaces `peppy`, `zenohd`, and the bundled Apptainer and Lima in the installation directory. If a replacement fails, it puts the previous files back and starts the service again.
+5. On Linux, runs `peppy container setup`.
+6. Syncs the default repositories (`peppy repo init`).
+7. If it stopped the background service: installs and starts the service with the new binary, then refreshes the repository indexes (`peppy repo update`).
+
+A failure in step 5 or 6 does not stop step 7. If a step from 5 to 7 fails, `peppy update` names each step that did not complete, with the commands that complete it. If a system-wide service is installed and you run `peppy update` without sudo, or if no service is installed, `peppy update` does not restart a daemon or refresh the repository indexes: restart the daemon that runs, if there is one, then run `peppy repo update`.
+
+`peppy update` reads the installer variables of the table above:
+
+- `PEPPY_NO_ROOT_INSTALL`: it runs `peppy container status --packages` in place of `peppy container setup`, uses no sudo, and fails when a package that container builds need is missing.
+- `PEPPY_NO_CONTAINER_SETUP`: it skips step 5.
+- `PEPPY_NO_SERVICE_INSTALL`: it skips steps 3, 6, and 7.
+
+If the background daemon currently runs user nodes, `peppy update` prompts before stopping the daemon. An idle daemon restarts without a prompt.
+
+If an update stops before it completes (for example, with Ctrl-C), the next `peppy update` removes the files that it left in the installation directory. Two `peppy update` commands cannot run at the same time on one installation.
+
+Available flags:
+
+| Flag | Effect |
+| --- | --- |
+| `--check` | Check the latest release without downloading or installing |
+| `--version <version>` | Install a specific release version (for example, `peppy update --version v0.39.0`) |
+| `--force` | Reinstall even when already at the target version |
+| `-y`, `--yes` | Skip confirmation prompts when active user nodes are running |
 
 ## Verifying the installation
 

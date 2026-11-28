@@ -14,8 +14,8 @@ use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, ComposedLaunch, CopyMembership,
     Deployment, DeploymentInstance, DeploymentSource, ExternallyCoveredSlots, MemberAddressing,
     PairingValidationItem, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks, ScopeCheck,
-    Starter, UnitSelection, VariableNeed, VariableNeeds, check_daemon_scopes, instance_restart,
-    resolve_clocks, resolve_restart, restart_request_of, validate_link_plan,
+    Starter, UnitSelection, VariableNeeds, check_daemon_scopes, instance_restart, resolve_clocks,
+    resolve_restart, restart_request_of, validate_link_plan,
 };
 use daemon_config::repository::EntryOrigin;
 use serde::{Deserialize, Serialize};
@@ -657,9 +657,14 @@ fn check_daemon_scope_rules(
 }
 
 /// Report the launch variables of the plan, as a launch checks them. First,
-/// one line for each variable that the launch needs from the shell that
-/// launches: each instance that takes it and what can start that instance,
-/// the launch itself or a join through a scope of the launch (`scoped`).
+/// one line for each variable of a list that the launch needs from the shell
+/// that launches: each instance that takes it and what can start that
+/// instance, the launch itself or a join through a scope of the launch
+/// (`scoped`). Then one line for each `any_of` of which the launch needs one
+/// complete set: its sets, in order, and each instance that takes a set of
+/// it and what can start that instance. A script reads the sets of the line
+/// between `needs one set of ` and `, from the shell that launches: `, each
+/// set after `, or of `, each name in backticks.
 /// Then one line for each instance with launch variables that a core node
 /// link or a word places off the coordinator, which the launch refuses: this
 /// command reads no daemon and no `--place` wiring, so the line names the
@@ -680,17 +685,19 @@ fn report_launch_variables(
     };
     let mut needs = VariableNeeds::default();
     for instance in instances() {
-        needs.extend(VariableNeed::each_of(
-            instance.instance_id.as_str(),
-            instance,
-            &Starter::Launch,
-        ));
+        needs.add_instance(instance.instance_id.as_str(), instance, &Starter::Launch);
     }
-    needs.extend(scoped);
+    needs.merge(scoped);
     for (variable, reasons) in needs.reasons() {
         report.push(format!(
             "launch variables: the launch needs `{variable}` from the shell that launches: \
              {reasons}"
+        ));
+    }
+    for (variables, reasons) in needs.choice_reasons() {
+        report.push(format!(
+            "launch variables: the launch needs {}, from the shell that launches: {reasons}",
+            variables.describe()
         ));
     }
     for instance in instances().filter(|instance| !instance.env_from_launch.is_empty()) {
@@ -701,7 +708,7 @@ fn report_launch_variables(
             "launch variables: `{}` takes {} from the launch and {placement}; an instance with \
              launch variables runs on the coordinator only",
             instance.instance_id,
-            daemon_config::format_quoted_list(instance.env_from_launch.iter()),
+            instance.env_from_launch.describe(),
         ));
     }
 }

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use config::consts::NODE_CONFIG_FILE;
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::NodeStage;
-use daemon_config::launcher::LaunchVariable;
+use daemon_config::launcher::{LaunchVariable, hosted_brain};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{
@@ -3783,6 +3783,65 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
             && refusal.contains("adjustments[0].set_env_from_launch")
             && refusal.contains("`PYTHONPATH` is never forwarded by the CLI"),
         "{refusal}"
+    );
+}
+
+/// `peppy stack resolve` writes an `any_of` back in the flat file, its sets in
+/// order, and gives one report line for it, which names each set and the
+/// instance that takes a set of it.
+#[test]
+fn stack_resolve_reports_the_sets_of_an_any_of() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let launcher = dir.path().join("arm.json5");
+    fs::write(
+        &launcher,
+        format!(
+            r#"{{
+            peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
+            deployments: [
+                {{ source: {{ name: "vlm_router_brain", tag: "v1" }}, instances: [
+                    {{ instance_id: "brain_inst", env_from_launch: {} }},
+                ] }},
+            ],
+        }}"#,
+            hosted_brain::ANY_OF
+        ),
+    )
+    .expect("launcher");
+
+    let (dirs, _root) = empty_peppy_root();
+    let (document, report) = resolve_rendered(&dirs, launcher, &[], &[]).expect("resolves");
+    let flat = daemon_config::launcher::PeppyLauncherParser::from_content(&document)
+        .expect("the flat document parses");
+    let brain = &flat.deployments[0].instances[0];
+    assert_eq!(
+        brain
+            .env_from_launch
+            .sets()
+            .iter()
+            .map(|set| set.iter().map(LaunchVariable::as_str).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        [
+            vec!["OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"],
+            vec!["GEMINI_API_KEY"],
+        ],
+        "{document}"
+    );
+    assert!(
+        report.contains(
+            &"launch variables: the launch needs one set of `OPENAI_COMPATIBLE_API_BASE` and \
+              `OPENAI_COMPATIBLE_API_KEY`, or of `GEMINI_API_KEY`, from the shell that launches: \
+              `brain_inst` takes the first complete set from the launch, and the launch starts it"
+                .to_owned()
+        ),
+        "{report:?}"
+    );
+    assert!(
+        !report
+            .iter()
+            .any(|line| line.starts_with("launch variables: the launch needs `")),
+        "an any_of is no list of required variables: {report:?}"
     );
 }
 

@@ -92,6 +92,22 @@ const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_POINTERS: &str = r#"
 }
 "#;
 
+/// Optional fields below the root: a time and a fixed-length array in a
+/// nested object, and a string in the object items of an array.
+const NESTED_OPTIONALS: &str = r#"
+{
+  target: {
+    $type: "object",
+    timestamp: { $type: "time", $optional: true },
+    orientation: { $type: "array", $items: "f64", $length: 4, $optional: true }
+  },
+  waypoints: {
+    $type: "array",
+    $items: { $type: "object", x: "f64", note: { $type: "string", $optional: true } }
+  }
+}
+"#;
+
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
     link_id: "uvc_camera",
@@ -572,6 +588,45 @@ fn consumed_service_optional_pointer_fields_use_has_checks() {
             "maybe_payload_1 = capnp_msg.maybePayload",
             "maybe_text_0 = None",
             "maybe_payload_1 = None",
+        ],
+    );
+}
+
+/// An optional field below the root is `Optional` in the dataclass of its
+/// object, written only when it is not `None`, and read only when the struct
+/// that holds it has it.
+#[test]
+fn consumed_service_nested_optional_fields_use_the_presence_of_their_own_struct() {
+    let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+    let format: MessageFormat = serde_json5::from_str(NESTED_OPTIONALS).unwrap();
+
+    let mut generator = PythonGenerator::new();
+    generator
+        .add_consumed_service(
+            &service,
+            &format,
+            &format,
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
+        )
+        .unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "from typing import Optional",
+            "timestamp: Optional[float]",
+            "orientation: Optional[list[float]]",
+            "note: Optional[str]",
+            "if request.target.timestamp is not None:",
+            "if request.target.orientation is not None:",
+            "if elem_3.note is not None:",
+            "if reader_0._has(\"timestamp\"):",
+            "if reader_0._has(\"orientation\"):",
+            "if elem_7._has(\"note\"):",
         ],
     );
 }

@@ -5,48 +5,32 @@ sidebar:
   order: 19
 ---
 
-Three commands reach the members of a running instance from the command line, with no code of your own:
+Three CLI commands let you inspect and interact with any running node instance directly from your terminal or scripts, without writing code:
 
-- `peppy node describe <instance>` shows the interfaces of the instance with their descriptions and their message formats.
-- `peppy node call <instance> <member>` calls one service or action and prints how the call ends.
-- `peppy node echo <instance> <topic>` prints the messages of one topic until Ctrl+C.
+- `peppy node describe <instance>`: prints all interfaces, descriptions, and message formats.
+- `peppy node call <instance> <member>`: calls a service or action and prints JSON output with structured exit codes.
+- `peppy node echo <instance> <topic>`: streams topic messages as JSON lines until Ctrl+C.
 
-People at a robot and scripts use the same commands. Example: a person sends an arm to its home position with `peppy node call`, and a CI script checks the exit status of the same command.
+Pass `--core-node <name>` to target a remote daemon instead of the local one.
 
 ## What the commands read
 
-The commands read the pinned documents of the instance, never the code of its node. The daemon that runs the instance gives them:
+These commands read the **pinned documents** stored by the daemon when the node was added (never source files on disk):
 
-- The manifest of the node, as the stack holds it.
-- Each contract document and each pairing document that the manifest names, at the bytes that the node's code was generated from. `peppy node add` reads each of these documents once and the daemon keeps their bytes with the node. An edit of a document file after the add changes nothing that the commands read; to use the edited document, add the node again.
+- The node's `peppy.json5` manifest (including any `refine` array-length overrides).
+- Every contract and pairing document referenced by that manifest, at the exact bytes used during codegen (with `name`, `tag`, and `sha256`). Re-add the node to pick up document edits.
 
-Each document comes with its name, its tag and the SHA-256 of its content.
-
-So the commands reach every member that the pinned manifest declares:
-
-- The members of the contracts that the node implements (`manifest.implements`).
-- The members that the node declares itself, such as `set_depth_gain` of a RealSense camera. These are the entries of `interfaces` with no `link_id`.
-- The topics that the node emits through its [pairing](/advanced_guides/pairing/) slots.
-
-Each message format is the one of the manifest. A manifest can [refine](/advanced_guides/contract_implementation/) the format of a contract, for example to give an array a fixed length, and the commands use the refined format.
-
-The `--core-node` flag selects the daemon that runs the instance. Without it, the commands ask the local daemon.
+This gives access to all exposed interfaces on the instance: implemented contract members (`manifest.implements`), native node members (no `link_id`), and topics emitted over [pairing](/advanced_guides/pairing/) slots.
 
 ## Naming a member
 
-Each member has a full name, which is its path in the code generated for its node:
+| Member source | Full name | Example |
+| --- | --- | --- |
+| Implemented contract | `<slot>.<member>` | `motion.move_arm` |
+| Emitted pairing topic | `<slot>.<topic>` | `controller.joint_states` |
+| Native node member | `<member>` | `set_depth_gain` |
 
-| Member | Full name |
-| --- | --- |
-| A member of a contract that the node implements | `<slot>.<member>`, for example `motion.move_arm` |
-| A topic that the node emits through a pairing slot | `<slot>.<topic>`, for example `controller.joint_states` |
-| A member of the node's own | `<member>`, for example `set_depth_gain` |
-
-`<slot>` is the `link_id` of the slot in the manifest of the node. The slots of a manifest have distinct names, so a node that implements two tags of one contract, or holds one pairing in two slots, gives each member a full name for each slot.
-
-The name of a member without its slot is enough when no member has that full name and one member of the instance has that name: `peppy node call arm_inst move_arm`. `peppy node call` looks among the services and the actions, and `peppy node echo` among the topics. A name that no member has, or that two members have, is refused, and the error lists the full names that it could mean.
-
-A service and an action can have one full name. `peppy node call --kind service` or `--kind action` then selects one of them.
+You can omit `<slot>.` whenever the short name is unambiguous among the matching kind (`call` searches services and actions; `echo` searches topics). If a service and an action share the same full name, disambiguate with `--kind service` or `--kind action`.
 
 ## `peppy node describe`
 
@@ -128,30 +112,24 @@ peppy node call arm_inst move_to --set 'joints=[0.1, 0.2, 0.3]'
 
 ### The message
 
-Three flags give the request of a service or the goal of an action:
+Build the service request or action goal using three flags:
 
-- `--args <file.json5>` gives the whole message.
-- `--set <field>=<value>` gives one field. A field whose JSON value is a string (a string, bytes, a time, a 64-bit integer) takes the value as written. Any other field takes the value as JSON5.
-- `--file <field>=@<path>` gives one field from a file: the text of the file for a string field, its bytes for a bytes field. A directory, `@<directory>`, gives a list of `{ path, content }`, one item for each file under the directory, with paths relative to it, in the order of the paths. The field must be a list of objects with a string `path` and a string or bytes `content`.
+- `--args <file.json5>`: load the base message from a JSON5 file.
+- `--set <field>=<value>`: set one field by dotted path (e.g., `--set pose.position.x=0.2`). String-encoded JSON types (`string`, `bytes`, `time`, `i64`/`u64`) take `<value>` literally; all other types parse `<value>` as JSON5.
+- `--file <field>=@<path>`: populate a field from disk (UTF-8 text for `string`, raw bytes for `bytes`). Passing `@<directory>` populates a list of `{ path, content }` objects (sorted by relative path) for fields matching that schema.
 
-`--set` and `--file` name a field by its path from the root of the message, with `.` between the names: `--set pose.position.x=0.2`. They complete the message that `--args` gives. A field that two flags name, or a field in an object that another flag gives, is refused.
-
-The values follow the JSON of the MCP server: a 64-bit integer is a decimal string, bytes are base64, and a time is an RFC 3339 string. So `--set count=18446744073709551615` and `--set stamp=2026-10-25T10:00:00Z` take the value as written.
-
-Message formats have no map type. A contract that carries a map, such as the roles of a run, declares a string field that holds JSON5 text, and `--set roles='{ arm: "openarm" }'` gives that text as written.
-
-The command checks the message against the format of the pinned manifest before it sends it, and names the field that does not fit.
+`--set` and `--file` merge on top of `--args`, and setting the same field (or overlapping parent/child paths) twice is rejected. Encoding matches the MCP JSON schema: 64-bit integers are decimal strings (`--set count=18446744073709551615`), bytes are base64, and timestamps are RFC 3339 (`--set stamp=2026-10-25T10:00:00Z`). Contracts representing maps as JSON5-encoded strings also take `--set` literally (e.g., `--set roles='{ arm: "openarm" }'`). The CLI validates the message against the pinned manifest before sending and points directly to any mismatched field.
 
 ### The output
 
-The command sends the call itself, as a client with no node, with the sender identity of its process. It prints JSON lines on standard output, and its log lines on standard error:
+The command sends the call directly using the CLI process's sender identity, printing newline-delimited JSON to stdout and diagnostics to stderr:
 
-- A `{"feedback": …}` line for each feedback message of a goal.
-- Then one line that says how the call ended, with an `outcome`:
+- One `{"feedback": ...}` line per action feedback message.
+- One final outcome line:
 
 | `outcome` | Fields | Exit status |
 | --- | --- | --- |
-| `completed` | `response` of a service, or `result` of a goal | 0 |
+| `completed` | `response` (service) or `result` (action) | 0 |
 | `refused` | `failure_kind`, `message` | 3 |
 | `failed` | `failure_kind`, `message` | 4 |
 | `cancelled` | `reason`, `result` | 5 |
@@ -164,27 +142,22 @@ The command sends the call itself, as a client with no node, with the sender ide
 {"outcome":"completed","result":{"reached":true}}
 ```
 
-An error reply of a service is a refusal by its provider: `outcome` is `refused`, and the command exits with 3. A response that lists errors, such as that of a checker, is a response: the command exits with 0, and the caller reads the errors in the output.
-
-A provider that gives a failure kind that the contract of the member does not list breaks its contract. The command writes a warning on standard error, and reports the refusal or the failure as the provider gave it, with its exit status.
-
-An error of the command itself, such as an instance that the daemon does not run, a member that the instance does not have, or a message that does not fit its format, prints no line on standard output and exits with 1. A command line that does not parse exits with 2.
+- A service error reply maps to `outcome: "refused"` (exit `3`). A normal response whose payload happens to list errors (such as a validator) still exits `0`.
+- If a provider returns an undeclared `failure_kind`, the CLI warns on stderr and still prints the outcome with its exit code.
+- Local command errors (unknown instance/member, invalid message) print nothing to stdout and exit `1`. CLI syntax errors exit `2`.
 
 ### Ctrl+C
 
-The first Ctrl+C during a goal sends the provider a cancel, and the command follows the goal to its end. A goal that the cancel ends gives `cancelled` and the exit status 5, also for a member whose normal end is a cancel, such as `record_episode`, which saves its episode at the cancel: the caller reads that status as the end that it asked for. A goal that ended before the cancel reached it keeps its end.
-
-A second Ctrl+C exits at once, with 130. The process of the command ends, so the provider cancels the goal of its sender, which is gone. A command whose process ends for another reason, for example when its terminal closes, cancels its goal the same way.
-
-A service cannot be cancelled: a Ctrl+C while the command waits for a response exits at once, with 130.
+- **Action (1st Ctrl+C):** Sends a cancel to the provider and waits for the terminal outcome. If the goal cancels, it prints `cancelled` and exits `5` (including actions like `record_episode` where cancelling is the normal way to finish and save). If the goal already finished before the cancel arrived, it keeps that outcome.
+- **Action (2nd Ctrl+C or process exit):** Exits immediately with `130`. Because the sender process is gone, the provider cancels the goal automatically.
+- **Service (Ctrl+C):** Services cannot be cancelled; Ctrl+C exits immediately with `130`.
 
 ### Members that move a robot
 
-For a member with the mark `moves_robot` (see [Marks](/advanced_guides/contract_implementation/#marks)), the command keeps the fleet rules of the stack, as an MCP server does (see [Robot leases and the halt](/advanced_guides/fleet/)). It has no scope: it acts for the person or the program that runs it.
+For members marked `moves_robot` ([Marks](/advanced_guides/contract_implementation/#marks)), `peppy node call` enforces the same [fleet safety rules](/advanced_guides/fleet/) as an MCP server (acting under the caller's own identity, with no scope restrictions):
 
-- Before it sends the call, the command asks `check_move` of the daemon of the coordinator of the stack, on the instance that it calls. When the daemon refuses the move, the command sends nothing to the provider, prints a `refused` line with the `failure_kind` (`halted`, `leased` or `not_leased`) and the `message` of the daemon, and exits with 3. For example, a person at the robot who sends an arm home gets a refusal while a run leases that robot.
-- While its goal on such a member runs, the command follows the changes of the fleet. At a halt it sends the provider a cancel, as at a first Ctrl+C, and follows the goal to its end.
-- With `--core-node`, the command reads the stack listing of the daemon that it targets, and asks the daemon of the coordinator of its launch.
+- Before sending, it calls `check_move` on the stack coordinator (discovered via the target daemon's stack listing when using `--core-node`). If refused, nothing is sent to the provider; it prints a `refused` line (`halted`, `leased`, or `not_leased`) and exits `3`.
+- While a `moves_robot` action runs, it watches fleet `changes` and cancels the goal on any stack halt, waiting for the provider's terminal outcome.
 
 ## `peppy node echo`
 
@@ -197,29 +170,27 @@ peppy node echo arm_inst limb_states
 {"joints":[0.11,0.2,0.3]}
 ```
 
-The command prints each message of the topic as one JSON object on a line, until Ctrl+C, and exits with 0. It subscribes to the topic by its key, as a client with no node, so it needs no slot that a launcher binds:
+Prints each published topic message as one JSON line until Ctrl+C (exits `0`). It subscribes directly by topic key without requiring a launcher slot:
 
-- A topic of a contract or of the node's own comes from the instance alone. A topic that keeps its newest messages for late subscribers (`retention`) gives them first.
-- A topic of a pairing comes as an observer of every pair that the slot of the instance holds. A slot that holds no pair publishes nothing, so the command prints nothing until the instance pairs.
+- **Contract or own topics:** Streams from that instance (replaying retained messages first if the topic uses `retention`).
+- **Pairing topics:** Observes all active pairs on that slot (prints nothing until the instance pairs).
 
-A message that does not fit the format of the pinned manifest is a warning on standard error. The command also ends with 0 when the program that reads its output closes it, for example `peppy node echo arm_inst limb_states | head -n 5`.
-
-The command never slows the instance down. When it prints slower than the topic publishes, for example on a paused terminal or behind a slow reader of its output, it skips the oldest messages that it did not print yet.
+Messages that fail schema validation log a warning on stderr. Closing stdout (e.g., `| head -n 5`) exits cleanly with `0`. Slow terminals or downstream pipes never stall the publisher; unread oldest messages are dropped to keep up.
 
 ## Exit statuses of the other commands
 
-The commands that send the daemon a goal give an exit status for each end of the goal, by the same rules: `peppy stack launch`, `build`, `join`, `remove` and `benchmark`, `peppy node add`, `build` and `run`, and `peppy repo refresh`.
+Daemon-goal CLI commands (`peppy stack launch`, `build`, `join`, `remove`, `benchmark`; `peppy node add`, `build`, `run`; `peppy repo refresh`) use the same exit codes:
 
-| Exit status | End |
+| Exit status | Meaning |
 | --- | --- |
-| 0 | The goal completed |
-| 1 | An error of the command, for example a budget that ran out |
-| 2 | The command line does not parse |
-| 3 | The daemon refused the goal, or answered a request with an error reply. A join or a removal that a lease refuses gives the failure kind `leased` |
-| 4 | The goal failed |
-| 5 | The goal was cancelled |
-| 6 | The daemon abandoned the goal |
-| 7 | The end of the goal expired before the command read it |
-| 130 | A second Ctrl+C stopped the wait for the end of the goal, or a Ctrl+C stopped a command with more goals to send, such as `peppy node add --run`, after a goal that completed before the cancel took effect |
+| 0 | Goal completed |
+| 1 | Local CLI error (for example, a command timeout expired) |
+| 2 | Invalid command-line arguments |
+| 3 | Daemon refused the goal or returned a service error reply (for example, `leased` on a blocked join/remove) |
+| 4 | Goal failed |
+| 5 | Goal was cancelled |
+| 6 | Daemon abandoned the goal |
+| 7 | Goal result expired before the CLI read it |
+| 130 | Interrupted by a second Ctrl+C while waiting, or by Ctrl+C between multi-step goals (e.g., `peppy node add --run`) |
 
-Each of these commands sends a cancel at the first Ctrl+C and exits with the status of the end that the goal then has (see [Stopping a stack command with Ctrl+C](/guides/launch_files/#stopping-a-stack-command-with-ctrlc)). `peppy node stop`, `remove`, `init` and `sync`, and `peppy repo add`, `list`, `exclude` and `remove` send the daemon a request that is not a goal, and exit with 3 when the daemon answers with an error reply.
+Each goal command cancels on the first Ctrl+C and exits with the resulting outcome code (see [Stopping a stack command with Ctrl+C](/guides/launch_files/#stopping-a-stack-command-with-ctrlc)). Request-only commands (`peppy node stop`, `remove`, `init`, `sync`; `peppy repo add`, `list`, `exclude`, `remove`) exit `3` on a daemon error reply.

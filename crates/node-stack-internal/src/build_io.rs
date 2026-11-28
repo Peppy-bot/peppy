@@ -339,7 +339,15 @@ pub(crate) enum LineTerminator {
     /// The stream ended before the fragment was terminated: a real line (a
     /// last message printed without its `\n`), so always forwarded.
     EndOfStream,
+    /// The fragment reached [`MAX_FRAGMENT_BYTES`] with no break: a part of a
+    /// real line, so always forwarded. The next fragment continues the line.
+    Cut,
 }
+
+/// The most bytes that [`LineSplitter`] holds for one fragment. A stream that
+/// writes more with no break (a binary or a minified file on stdout) is cut
+/// into fragments of this size, so the daemon never holds an unbounded line.
+pub(crate) const MAX_FRAGMENT_BYTES: usize = 64 << 10;
 
 /// Splits a byte stream into fragments on `\n`, `\r`, and `\r\n` (one break),
 /// decoding each fragment as lossy UTF-8.
@@ -381,7 +389,13 @@ impl LineSplitter {
                     emit(line, LineTerminator::Newline);
                 }
                 b'\r' => self.pending_cr = true,
-                _ => self.partial.push(byte),
+                _ => {
+                    self.partial.push(byte);
+                    if self.partial.len() >= MAX_FRAGMENT_BYTES {
+                        let line = self.take_partial();
+                        emit(line, LineTerminator::Cut);
+                    }
+                }
             }
         }
     }
@@ -430,7 +444,7 @@ impl RepaintCoalescer {
     /// Whether a fragment with `terminator` observed at `now` forwards.
     pub(crate) fn should_forward(&mut self, terminator: LineTerminator, now: Instant) -> bool {
         let forward = match terminator {
-            LineTerminator::Newline | LineTerminator::EndOfStream => true,
+            LineTerminator::Newline | LineTerminator::EndOfStream | LineTerminator::Cut => true,
             LineTerminator::CarriageReturn => self
                 .last_forward
                 .is_none_or(|last| now.duration_since(last) >= REPAINT_FORWARD_MIN_INTERVAL),
@@ -491,7 +505,9 @@ where
         let forward_line = |line: String, terminator: LineTerminator| {
             match terminator {
                 LineTerminator::CarriageReturn => log.repaint(stream, &line),
-                LineTerminator::Newline | LineTerminator::EndOfStream => log.output(stream, &line),
+                LineTerminator::Newline | LineTerminator::EndOfStream | LineTerminator::Cut => {
+                    log.output(stream, &line);
+                }
             }
             hooks.on_line(&line);
 
@@ -650,6 +666,38 @@ mod tests {
                 ("b".to_string(), LineTerminator::EndOfStream),
             ]
         );
+    }
+
+    /// A stream with no break holds at most one fragment of the maximum
+    /// size: each full fragment goes out, cut, and the line goes on in the
+    /// next one.
+    #[test]
+    fn splitter_cuts_a_line_at_the_maximum_fragment() {
+        let long = vec![b'x'; MAX_FRAGMENT_BYTES * 2 + 10];
+        let mut splitter = LineSplitter::default();
+        let mut got = Vec::new();
+        for chunk in long.chunks(8192) {
+            splitter.push(chunk, |line, terminator| got.push((line.len(), terminator)));
+            assert!(splitter.partial.len() < MAX_FRAGMENT_BYTES);
+        }
+        splitter.push(b"\n", |line, terminator| got.push((line.len(), terminator)));
+
+        assert_eq!(
+            got,
+            vec![
+                (MAX_FRAGMENT_BYTES, LineTerminator::Cut),
+                (MAX_FRAGMENT_BYTES, LineTerminator::Cut),
+                (10, LineTerminator::Newline),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cut_fragment_always_forwards() {
+        let t0 = Instant::now();
+        let mut coalescer = RepaintCoalescer::default();
+        assert!(coalescer.should_forward(LineTerminator::CarriageReturn, t0));
+        assert!(coalescer.should_forward(LineTerminator::Cut, t0 + Duration::from_millis(1)));
     }
 
     // -- RepaintCoalescer --

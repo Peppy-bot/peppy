@@ -96,15 +96,12 @@ The final argument is a response timeout. Rust accepts anything that converts to
 
 ## `store_exclusive`
 
-`store_exclusive` takes the same arguments as `store`. It stores the value and makes the calling instance the key's owner: every other instance's `store` and `remove` of the key fail with an error that names the owner, another copy of the same node included. The owner's own `store` and `store_exclusive` update the value and keep the key owned, and its `remove` deletes the key.
+`store_exclusive` takes the same arguments as `store`, writes the value, and makes the calling process the key's **exclusive owner**:
 
-The key lasts as long as the process that stored it. When that process ends, however it ends (a clean exit, a stop, a crash, a kill or a restart), the core node removes the key, and the next `store_exclusive` of any instance takes it. The core node sends no notice when a key goes: an instance that was refused calls `store_exclusive` again to take the key once its owner is gone. A restarted process does not own the key its previous process stored. It calls `store_exclusive` again, and is refused when another instance took the key in between.
-
-A request carries only its sender's `instance_id`, so a request still on its way when its process ends acts for the next process under that id: a `store_exclusive` sent just before a crash can make the restarted process the owner, and a `remove` sent just before a crash can delete the key the restarted process stored.
-
-When another instance owns the key, nothing is written and the answer is `ExclusiveStore::Refused { current }` (Rust) / `ExclusiveStore.Refused(current)` (Python). `current` is the `StoredValue` the owner stored, and `current.last_modified_by` is the owner's `instance_id`. Otherwise the answer is `ExclusiveStore::Stored` (Rust) / `ExclusiveStore.Stored()` (Python). `store_exclusive` takes a key that is absent, one whose owner's process ended, or one your instance already owns. A key's kind is fixed when it is created: an exclusive store of a key that exists with no owner, as `store` writes it, fails with an error reply of the kind `precondition_failed` (`PeppyError::ServiceFailed` in Rust, `peppylib.FailureError` in Python) whose message names the remedy, to remove the key or use another one.
-
-The owner is an instance the core node runs. `store_exclusive` from an `instance_id` the core node runs no process under fails with an error reply of the kind `precondition_failed`: `PeppyError::ServiceFailed` in Rust, `peppylib.FailureError` in Python.
+- **Ownership enforcement**: Every other instance's `store` or `remove` on that key fails with `precondition_failed` naming the owner (`PeppyError::ServiceFailed` in Rust, `peppylib.FailureError` in Python). The owner itself can update the value via `store` or `store_exclusive` and delete it via `remove`.
+- **Automatic cleanup on process exit**: Whenever the owning process ends (clean exit, stop, crash, kill, or restart), the core node automatically deletes the key so another instance can claim it on its next `store_exclusive`. Restarts do *not* inherit ownership; the restarted process must call `store_exclusive` again. *(Note: in-flight requests carry only `instance_id`, so a stale `store_exclusive` or `remove` arriving right across a fast restart can apply to the new process.)*
+- **Return value**: Returns `ExclusiveStore::Stored` (`ExclusiveStore.Stored()` in Python) on success, or `ExclusiveStore::Refused { current }` (`ExclusiveStore.Refused(current)`) when another instance owns the key (where `current.last_modified_by` names the owner).
+- **Fixed key kind & local-only owners**: Calling `store_exclusive` on an existing unowned key written by `store` fails with `precondition_failed` (remove the key or pick another name). Only instances running on the local core node may own exclusive keys; unknown `instance_id`s and remote federated instances are refused with `precondition_failed`.
 
 <Tabs>
   <TabItem label="Python">

@@ -36,16 +36,16 @@
 
       // A topic becomes a resource: the latest policy-approved snapshot,
       // which clients read and subscribe to. Under a representation a read
-      // serves the message without its frame, and the frame as a blob.
+      // serves the message without its picture, and the picture as a blob.
       topics: [
         {
           member: "video_stream",
           resource: "front_camera.latest_frame",
-          description: "Latest frame from the front-facing camera, JPEG encoded.",
+          description: "Latest picture from the front-facing camera, JPEG encoded.",
           // A snapshot older than this reads as stale rather than serving
-          // yesterday's frame as if it were current.
+          // yesterday's picture as if it were current.
           freshness: { max_age_ms: 2000 },
-          // Frames arriving faster than this are dropped before any decoding
+          // Pictures arriving faster than this are dropped before any decoding
           // or transcoding runs. A 30 Hz camera does not become 30 Hz of
           // JPEG encoding for a client that reads twice a minute.
           update: { max_hz: 2 },
@@ -55,22 +55,22 @@
             image: "jpeg",
             quality: 80,
             fields: {
-              data: "frame",
+              data: "data",
               encoding: "encoding",
               width: "width",
               height: "height",
             },
           },
-          // The frame is a variable-length byte array, so its serialized size
+          // The picture is a variable-length byte array, so its serialized size
           // has no static maximum and the runtime size policy is mandatory.
           max_result_bytes: 524288,
           on_oversize: "downscale",
-          // The same frame through a tool: a model that calls it gets the
+          // The same picture through a tool: a model that calls it gets the
           // picture as an image, beside the rest of the message. It reads
           // the snapshot the resource serves and takes no argument.
           picture: {
             tool: "front_camera.look",
-            description: "Look through the front-facing camera: the latest frame as a picture.",
+            description: "Look through the front-facing camera: its latest picture.",
           },
         },
       ],

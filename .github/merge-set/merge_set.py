@@ -59,6 +59,11 @@ each pull request that lacks an approval, whether the App bypasses every
 ruleset that requires one. When it does not, GitHub refuses the merge of the
 App, so that pull request blocks the set for every user, before the bot merges
 any pull request of it. A review that requests changes blocks every user.
+A required check that has not passed follows the same rule: when the App
+bypasses every ruleset that requires the check, the bot enforces the check
+itself, and such an admin merges the set without it. A check that a ruleset
+requires and the App does not bypass, such as the `test` of the CI, blocks
+every user.
 
 A hub run is out of date when a job of it ran with another commit of a branch
 of the set than the head of that branch, unless that head differs from the
@@ -92,23 +97,33 @@ the review of a person without end. When each open pull request of a set was
 opened by a member of the team `peppy-devs`, the dashboard has the section
 "Review by Claude", and the bot writes that dashboard on a pull request that
 is alone too: a pull request that is alone is a set of one. A person has 12
-hours to review the set first, from the time each of its open pull requests
-is ready for review. During that time the section shows the time left, and
-no box. A pull request that joins the set (a reopened one too), or that
-leaves the draft state, starts the 12 hours again, unless Claude reviewed
-each open pull request of the set: its authors then chose Claude, no wait
+hours to review the set first, from the time each of its open pull requests is
+ready for review. During that time the section shows the time left. A pull
+request that joins the set (a reopened one too), or that leaves the draft
+state, starts the 12 hours again, unless Claude reviewed each open pull
+request of the set: its authors or an admin then chose Claude, no wait
 applies, and the section says so. When a person who did not open a pull
-request of the set and has write access to its repository reviews one of
-them before the 12 hours end, a person reviews the set and the section gets
-no box. Otherwise the section gets a box that asks for the review when the
-12 hours end, and the bot tells the authors of the set in a comment, because
-an edit of the dashboard sends no notification. A review of a person after
-that does not remove the box, until the 12 hours start again: each review
-of a person before their new end counts. No event of GitHub comes when the
-time passes, so the workflow merge-set-wait.yml runs `wait-syncs` every 30
-minutes: it starts the sync of each set that waits, until one hour after the
-end of its 12 hours.
-The bot acts on the box for the same users as on its other boxes. It starts
+request of the set and has write access to its repository reviews one of them
+before the 12 hours end, a person reviews the set. Otherwise the authors can
+ask for the review of Claude when the 12 hours end, and the bot tells them in
+a comment, because an edit of the dashboard sends no notification; while a
+review that an admin asked for runs, the posts of that review tell them in its
+place. A review of a person after that does not take that right of the authors
+back, until the 12 hours start again: each review of a person before their new
+end counts. No event of GitHub comes when the time passes, so every 30
+minutes a schedule of AWS has the webhook function (webhook.py) start the
+workflow merge-set-wait.yml, which runs `wait-syncs`: it starts the sync of
+each set that waits, and of each set whose dashboard still counts down a wait
+that is over, so that a late run only puts the box of the authors off.
+The section always has the box that asks for the review. A tick asks for the
+review of every open pull request of the set, on whichever dashboard of the
+set it is. The bot acts on the box for the same users as on its other boxes,
+and for them the wait for a person applies, but not for a user with the admin
+role on every repository of the set: the box says so while the wait holds, and
+an admin can ask for the review at any time, also while a pull request of the
+set is a draft or after a person reviewed the set. When a review that an admin
+asked for posted on each open pull request of the set, no wait applies (see
+above), so the authors ask for the next rounds. It starts
 the workflow `Claude review` of the private repository
 peppy-superproject (claude_review.py runs in it) when no pull request of the
 set has a conflict with its base and no review of the set is in progress, and
@@ -129,9 +144,11 @@ set workflow of peppy (merge-set.yml) for the branch of the event. The start
 and the end of each CI run, a re-run included, are such events, so the
 dashboard follows the state of the CI. So is the end of each run of the PR
 title check (pr-title), so the dashboard follows that check when a title
-changes, and so are the reviews, so it follows the approvals. So is the end of
-each review run of peppy-superproject, so the dashboard follows a review that
-did not complete. When the event is a box that a user ticked, the relay also
+changes, and the end of each run of the OpenCodeReview review of peppy and of
+platform, so it follows the `open-code-review` status that the review sets.
+So are the reviews, so it follows the approvals. So is the end of each review
+run of peppy-superproject, so the dashboard follows a review that did not
+complete. When the event is a box that a user ticked, the relay also
 answers at once on that pull request, with a link to the run it started. The
 Merge set workflow runs `sync`, one run at a time for each set. `sync` holds
 no state of its own: it reads the whole set from GitHub on every run (the
@@ -227,7 +244,7 @@ PEPPY = Repository("peppy", resolve.PEPPY_DEV_BRANCH, None)
 # The libraries that the nodes of the hubs build on. No hub CI reads its branch
 # of a set.
 PUBLIC_PEPPY_LIBS = Repository("public-peppy-libs", "main", None)
-# The platform, whose simulation chat drives a stack through the MCP endpoints
+# The platform, whose studio chat drives a stack through the MCP endpoints
 # that peppy and the hubs serve and shows the viewer page of the simulation. No
 # hub CI reads it. Each commit of its `main` is one squashed pull request, so
 # that a deploy names one change.
@@ -543,7 +560,7 @@ def dashboard_edit_subject(payload: Mapping, bot_login: str) -> RelaySubject | N
 
 def workflow_run_subject(payload: Mapping) -> RelaySubject | None:
     """The start or the end of a CI run, the end of a run of the PR title
-    check, or the end of a review run."""
+    check or of the OpenCodeReview review, or the end of a review run."""
     workflow = payload["workflow"]["name"]
     if is_review_repository(payload["repository"]["full_name"]):
         if workflow != REVIEW_WORKFLOW_NAME:
@@ -553,6 +570,8 @@ def workflow_run_subject(payload: Mapping) -> RelaySubject | None:
         return ci_run_subject(payload)
     if workflow == TITLE_CHECK_WORKFLOW:
         return title_check_run_subject(payload)
+    if workflow == OPEN_CODE_REVIEW_WORKFLOW:
+        return open_code_review_run_subject(payload)
     return None
 
 
@@ -577,6 +596,29 @@ def title_check_run_subject(payload: Mapping) -> RelaySubject | None:
     if payload["action"] != "completed" or run["event"] != "pull_request_target":
         return None
     return subject_of_run(run)
+
+
+def open_code_review_run_subject(payload: Mapping) -> RelaySubject | None:
+    """The end of a run of the OpenCodeReview review: the pull request that
+    the name of the run gives, whose branch the relay reads, as for a comment.
+    The relay hands on the end alone: the sync that runs after it reads the
+    status that the review set. A run whose jobs their conditions skip (each
+    comment on a pull request starts a run) changes nothing, so it starts no
+    sync, and nor does a run whose name has another form. A run whose first
+    job found that the author has no write access, and so skipped the review,
+    ends with `success`: the payload gives no jobs, so it starts a sync that
+    changes nothing."""
+    run = payload["workflow_run"]
+    if (
+        payload["action"] != "completed"
+        or run["event"] not in OPEN_CODE_REVIEW_EVENTS
+        or run["conclusion"] == "skipped"
+    ):
+        return None
+    named = OPEN_CODE_REVIEW_RUN_NAME.fullmatch(run["display_title"])
+    if named is None:
+        return None
+    return RelaySubject(int(named["number"]), None, None)
 
 
 def is_review_repository(full_name: str) -> bool:
@@ -871,7 +913,8 @@ class BranchRules:
     """What the rulesets of an integration branch require of a pull request
     before it merges, the `merge-set` check aside."""
 
-    required_checks: tuple[RequiredCheck, ...]
+    # Each required check, with the ids of the rulesets that require it.
+    required_checks: Mapping[RequiredCheck, tuple[int, ...]]
     # Whether the pull request must be up to date with its base.
     strict: bool
     # The rulesets whose pull request rule requires an approval, by id.
@@ -890,7 +933,7 @@ def requires_approval(pull_request_rule: Mapping) -> bool:
 def parse_branch_rules(rules: Sequence[Mapping]) -> BranchRules:
     """The rules of a branch as `GET /repos/{repo}/rules/branches/{branch}`
     lists them, one entry per rule of each ruleset that applies."""
-    checks: list[RequiredCheck] = []
+    checks: dict[RequiredCheck, list[int]] = {}
     strict = False
     approval_rulesets: list[int] = []
     for rule in rules:
@@ -906,9 +949,16 @@ def parse_branch_rules(rules: Sequence[Mapping]) -> BranchRules:
         strict = strict or bool(parameters.get("strict_required_status_checks_policy"))
         for check in parameters["required_status_checks"]:
             required = RequiredCheck(check["context"], check.get("integration_id"))
-            if required.context != STATUS_CONTEXT and required not in checks:
-                checks.append(required)
-    return BranchRules(tuple(checks), strict, tuple(approval_rulesets))
+            if required.context == STATUS_CONTEXT:
+                continue
+            rulesets = checks.setdefault(required, [])
+            if rule["ruleset_id"] not in rulesets:
+                rulesets.append(rule["ruleset_id"])
+    return BranchRules(
+        {check: tuple(rulesets) for check, rulesets in checks.items()},
+        strict,
+        tuple(approval_rulesets),
+    )
 
 
 # The values of `current_user_can_bypass` that let the App merge a pull request
@@ -956,6 +1006,7 @@ class CommitStatus:
     state: str
     description: str
     target_url: str | None
+    # The login of the user or of the bot user of the App that created it.
     creator: str | None
 
 
@@ -1000,11 +1051,47 @@ def run_state(completed: bool, conclusion: str | None) -> CheckState:
     return CheckState.FAILED
 
 
+# The suffix of the login of the bot user of a GitHub App, after the slug of
+# the App. A login of a user holds no bracket.
+BOT_LOGIN_SUFFIX = "[bot]"
+
+
+def bot_app_slug(login: str) -> str | None:
+    """The slug of the App whose bot user has the login; None for the login
+    of a user."""
+    if not login.endswith(BOT_LOGIN_SUFFIX):
+        return None
+    return login.removesuffix(BOT_LOGIN_SUFFIX) or None
+
+
+def status_answers(
+    check: RequiredCheck, status: CommitStatus, creator_apps: Mapping[str, int]
+) -> bool:
+    """Whether a commit status answers a required check: it has the context of
+    the check, and, when the check names an App, the bot user of that App
+    created it. `creator_apps` gives the App of each bot creator, by login."""
+    if status.context != check.context:
+        return False
+    if check.integration_id is None:
+        return True
+    return (
+        status.creator is not None
+        and creator_apps.get(status.creator) == check.integration_id
+    )
+
+
 def required_check_state(
-    check: RequiredCheck, runs: Sequence[CheckRun], statuses: Sequence[CommitStatus]
+    check: RequiredCheck,
+    runs: Sequence[CheckRun],
+    statuses: Sequence[CommitStatus],
+    creator_apps: Mapping[str, int],
 ) -> CheckState:
     """The state of a required check on a commit: its newest check run, else
-    its newest commit status."""
+    its newest commit status, of the App that the check names. A user with
+    write access can create a status of any context, so a status of another
+    creator does not answer a check that names an App, as GitHub does not
+    count it for the ruleset either. `creator_apps` gives the App of each bot
+    creator of the statuses, by login (creator_apps_of)."""
     matching = [
         run
         for run in runs
@@ -1015,7 +1102,8 @@ def required_check_state(
         newest = max(matching, key=lambda run: run.id)
         return run_state(newest.completed, newest.conclusion)
     status = next(
-        (status for status in statuses if status.context == check.context), None
+        (status for status in statuses if status_answers(check, status, creator_apps)),
+        None,
     )
     if status is None:
         return CheckState.MISSING
@@ -1062,6 +1150,17 @@ CI_WORKFLOW = "Tests"
 # (.github/actions/pr-title), whose ends the relay hands on: a change of a
 # title can pass or fail that check.
 TITLE_CHECK_WORKFLOW = "pr-title"
+# The name of the workflow of the OpenCodeReview review of a pull request
+# (open-code-review.yml in peppy and in platform), whose ends the relay hands
+# on: the review sets the `open-code-review` status of the head that it read.
+# The review runs on `pull_request_target` and on `issue_comment`, and GitHub
+# lists no pull request for either, so its `run-name` names the pull request
+# (OPEN_CODE_REVIEW_RUN_NAME).
+OPEN_CODE_REVIEW_WORKFLOW = "OpenCodeReview"
+OPEN_CODE_REVIEW_EVENTS = frozenset({"pull_request_target", "issue_comment"})
+OPEN_CODE_REVIEW_RUN_NAME = re.compile(
+    rf"\A{re.escape(OPEN_CODE_REVIEW_WORKFLOW)} of #(?P<number>[1-9][0-9]*)\Z"
+)
 
 
 @dataclass(frozen=True)
@@ -1446,6 +1545,10 @@ class PullRequestReport:
     # not bypass, by name. GitHub refuses the merge of the App until the pull
     # request gets that approval, so no admin merges it without one.
     unbypassed_approval_rulesets: tuple[str, ...]
+    # The required checks that have not passed and that only rulesets the App
+    # bypasses require, so an admin of every repository of the set merges
+    # without them.
+    waivable_checks: tuple[RequiredCheck, ...]
 
 
 class BlockerKind(Enum):
@@ -1454,10 +1557,20 @@ class BlockerKind(Enum):
     # A missing approval that only rulesets the App bypasses require, so an
     # admin of every repository of the set merges without it.
     MISSING_APPROVAL = "missing approval"
+    # A required check that has not passed and that only rulesets the App
+    # bypasses require, so an admin of every repository of the set merges
+    # without it.
+    WAIVABLE_CHECK = "waivable check"
     # A hub job that ran with another commit of a branch of the set, or with a
     # branch that left the set, or whose set record expired: a re-run of its
     # run clears it.
     OUT_OF_DATE_CI = "out-of-date CI"
+
+
+# The blockers that an admin of every repository of the set merges without.
+ADMIN_WAIVED_KINDS = frozenset(
+    {BlockerKind.MISSING_APPROVAL, BlockerKind.WAIVABLE_CHECK}
+)
 
 
 @dataclass(frozen=True)
@@ -1468,7 +1581,7 @@ class Blocker:
 
     @property
     def waived_for_admins(self) -> bool:
-        return self.kind is BlockerKind.MISSING_APPROVAL
+        return self.kind in ADMIN_WAIVED_KINDS
 
     @property
     def out_of_date_ci(self) -> bool:
@@ -1575,7 +1688,12 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     for check, state in report.checks:
         if state is not CheckState.PASSED:
             block(
-                f"The required check `{check.context}` of {label} {CHECK_STATE_TEXTS[state]}."
+                f"The required check `{check.context}` of {label} {CHECK_STATE_TEXTS[state]}.",
+                (
+                    BlockerKind.WAIVABLE_CHECK
+                    if check in report.waivable_checks
+                    else BlockerKind.BLOCKING
+                ),
             )
     for stale in report.stale:
         block(stale_job_text(label, stale), BlockerKind.OUT_OF_DATE_CI)
@@ -1722,8 +1840,8 @@ def render_set_dashboard(
     set_review: SetReview | None,
 ) -> str:
     """The dashboard of a set. Reports are keyed by pull request label. It
-    has the section of the Claude review when `set_review` is not None, and
-    that section has the box of the review when Claude can review the set."""
+    has the section of the Claude review, with the box of the review, when
+    `set_review` is not None."""
     blockers = set_blockers(state, reports)
     stale_run_count = len(stale_runs(reports))
     lines = [
@@ -1811,15 +1929,15 @@ def member_state(repository: Repository, blockers: Sequence[Blocker]) -> str:
         return "ready"
     hard = blockers_for(own, admin=True)
     if not hard:
-        return "not approved"
+        if all(blocker.kind is BlockerKind.MISSING_APPROVAL for blocker in own):
+            return "not approved"
+        return "ready for an admin"
     if all(blocker.out_of_date_ci for blocker in hard):
         return "CI out of date"
     return "blocked"
 
 
-ADMIN_WAIVER = (
-    "An admin of every repository of the set merges it without the approvals."
-)
+ADMIN_WAIVER = "An admin of every repository of the set merges it without them."
 # What makes the hub runs of a set current, as the dashboard and the reports
 # word it.
 CURRENT_HUB_RUNS = (
@@ -1828,6 +1946,40 @@ CURRENT_HUB_RUNS = (
     "alone, or, for a branch that merged, with a commit of its base that holds "
     "that head, and with no branch that is no longer in the set"
 )
+
+
+def sentence_start(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def waived_clause(waived: Sequence[Blocker]) -> str:
+    """What an admin of every repository of the set merges it without: the
+    approvals that are missing, the required checks that have not passed, or
+    both."""
+    kinds = {blocker.kind for blocker in waived}
+    parts = []
+    if BlockerKind.MISSING_APPROVAL in kinds:
+        parts.append("approvals are missing")
+    if BlockerKind.WAIVABLE_CHECK in kinds:
+        parts.append("required checks have not passed")
+    return " and ".join(parts)
+
+
+def admin_readiness(waived: Sequence[Blocker]) -> str:
+    """The first line of a dashboard whose blockers an admin of every
+    repository of the set waives, each of them: what the set meets, and what
+    it lacks."""
+    kinds = {blocker.kind for blocker in waived}
+    if BlockerKind.MISSING_APPROVAL not in kinds:
+        met = f"each pull request is approved and {CURRENT_HUB_RUNS}"
+    elif BlockerKind.WAIVABLE_CHECK not in kinds:
+        met = f"each required check passed and {CURRENT_HUB_RUNS}"
+    else:
+        met = CURRENT_HUB_RUNS
+    return (
+        f"**Ready to merge for an admin.** {sentence_start(met)}, but "
+        f"{waived_clause(waived)}. {ADMIN_WAIVER}"
+    )
 
 
 def readiness_lines(blockers: Sequence[Blocker]) -> list[str]:
@@ -1843,22 +1995,21 @@ def readiness_lines(blockers: Sequence[Blocker]) -> list[str]:
     hard = blockers_for(blockers, admin=True)
     if not hard:
         return [
-            (
-                "**Ready to merge for an admin.** Each required check passed and "
-                f"{CURRENT_HUB_RUNS}, but approvals are missing. {ADMIN_WAIVER}"
-            ),
+            admin_readiness(blockers),
             "",
             *(f"- {blocker.text}" for blocker in blockers),
         ]
-    unapproved = [blocker for blocker in blockers if blocker.waived_for_admins]
+    waived = [blocker for blocker in blockers if blocker.waived_for_admins]
     lines = [
         "**What blocks the merge**",
         "",
         *(f"- {blocker.text}" for blocker in hard),
     ]
-    if unapproved:
-        lines.extend(["", f"Approvals are missing too. {ADMIN_WAIVER}", ""])
-        lines.extend(f"- {blocker.text}" for blocker in unapproved)
+    if waived:
+        lines.extend(
+            ["", f"{sentence_start(waived_clause(waived))} too. {ADMIN_WAIVER}", ""]
+        )
+        lines.extend(f"- {blocker.text}" for blocker in waived)
     return lines
 
 
@@ -1870,8 +2021,8 @@ def render_alone_dashboard(state: SetState, set_review: SetReview | None) -> str
     """The dashboard of a set that is alone. The bot writes it on the merged
     pull requests of the set too, so with merged members it names the pull
     request that is alone and the ones that merged. It has the section of
-    the Claude review when `set_review` is not None, and that section has the
-    box of the review when Claude can review the pull request."""
+    the Claude review, with the box of the review, when `set_review` is not
+    None."""
     lines = [DASHBOARD_MARKER, f"### Set `{state.name}`", ""]
     if not state.merged:
         lines.append(
@@ -2166,18 +2317,19 @@ class PullRequestReview:
 # The wait for a person -------------------------------------------------------
 
 # A person has this long to review a set of developers, from the time each of
-# its open pull requests is ready for review, before Claude can review it.
+# its open pull requests is ready for review, before its authors can ask for
+# the review of Claude. An admin can ask for it at any time.
 PERSON_REVIEW_WAIT = timedelta(hours=12)
 
-# The workflow of peppy that starts the sync of each set that waits for a
-# person, at this interval, so that the dashboard shows the time left and
-# shows the box of the review when the wait ends: no event of GitHub comes
-# when the time passes. It goes on for WAIT_SYNC_MARGIN after the end of the
-# wait, so that a scheduled run that GitHub delays or drops does not keep the
-# box hidden.
+# The workflow of peppy that starts the sync of each set whose dashboard
+# changes as the time passes (`changes_with_time`), so that the dashboard
+# shows the time left, and gives the box of the review to the authors when
+# the wait ends: no event of GitHub comes when the time passes. The webhook
+# function starts it at this interval, at the event of a schedule of
+# aws/peppy-ci-pipelines in Peppy-bot/infraops (webhook.py), and the
+# dashboard names the interval.
 WAIT_SYNC_WORKFLOW = "merge-set-wait.yml"
 WAIT_SYNC_INTERVAL = timedelta(minutes=30)
-WAIT_SYNC_MARGIN = 2 * WAIT_SYNC_INTERVAL
 
 # The mark of the dashboard that counts down the wait: the sync that finds
 # it and offers the review tells the authors of the set. It ends the line of
@@ -2206,7 +2358,8 @@ class DraftWait:
 
 @dataclass(frozen=True)
 class PersonWait:
-    """A person can review the set until `ends_at`; Claude cannot yet."""
+    """A person can review the set until `ends_at`; until then only an admin
+    can ask for the review of Claude."""
 
     ends_at: datetime
     left: timedelta
@@ -2215,16 +2368,17 @@ class PersonWait:
 @dataclass(frozen=True)
 class ReviewedByPerson:
     """A person reviewed the set before the end of the wait, so a person
-    reviews it and Claude does not. `review` is the first such review."""
+    reviews it, and only an admin can ask for the review of Claude. `review`
+    is the first such review."""
 
     review: PersonReview
 
 
 @dataclass(frozen=True)
 class ClaudeOffered:
-    """Claude can review the set: no person reviewed it before the end of
-    the wait, or Claude reviewed each of its open pull requests, so that no
-    wait applies."""
+    """The authors of the set can ask for the review of Claude: no person
+    reviewed the set before the end of the wait, or Claude reviewed each of
+    its open pull requests, so that no wait applies."""
 
     # The end of the wait; None when no wait applies.
     wait_ended_at: datetime | None
@@ -2296,9 +2450,9 @@ def review_offer(
     reviews: Sequence[PersonReview],
     now: datetime,
 ) -> ReviewOffer:
-    """Whether Claude can review the open pull requests of a set at `now`,
-    from the end of the wait for a person (None while one of them is a
-    draft) and the reviews of persons on them. Each review before the end of
+    """Whether the authors of the open pull requests of a set can ask for
+    the review of Claude at `now`, from the end of the wait for a person
+    (None while one of them is a draft) and the reviews of persons on them. Each review before the end of
     the wait counts, also one from before the wait started again, and each
     review counts while one of them is a draft. A review after the end of
     the wait does not take the offer back."""
@@ -2338,13 +2492,27 @@ def section_subject(alone: bool) -> str:
     return "this pull request" if alone else "this set"
 
 
-def wait_rule_text(alone: bool) -> str:
+def admins_text(pull_requests: Sequence[PullRequest], alone: bool) -> str:
+    """The users who can ask for the review of Claude at any time, as the
+    section of the Claude review of the open `pull_requests` calls them: an
+    admin of every repository of the set. The text names the repository of a
+    pull request that is alone, as the bot writes the same section on the
+    merged pull requests of the set, which are in other repositories."""
+    if not alone:
+        return "an admin of every repository of this set"
+    return f"an admin of {pull_requests[0].repository.name}"
+
+
+def wait_rule_text(alone: bool, admins: str) -> str:
+    """The rule of the wait for a person; `admins` names the users who can
+    ask for the review of Claude at any time (admins_text)."""
     subject = section_subject(alone)
     ready = "it is" if alone else "each of its pull requests is"
     return (
         f"A person has {hours_text(PERSON_REVIEW_WAIT)} to review {subject} from "
         f"the time {ready} ready for review. Claude can review {subject} only if "
-        "no person reviewed it in that time."
+        f"no person reviewed it in that time, or at any time when {admins} asks "
+        "for it."
     )
 
 
@@ -2362,7 +2530,7 @@ def wait_state_text(
         case ReviewedByPerson(review):
             return (
                 f"`{review.author}` reviewed {review.pull_request.link}, so a "
-                f"person reviews {section_subject(alone)}, not Claude."
+                f"person reviews {section_subject(alone)}."
             )
         case _:
             raise ValueError(f"no wait for a person is left in {offer}")
@@ -2372,7 +2540,8 @@ def wait_state_text(
 class SetReview:
     """The Claude review of a set whose dashboard has its section."""
 
-    # Whether Claude can review the set.
+    # Whether the authors of the set can ask for the review of Claude. An
+    # admin can ask for it with each offer.
     offer: ReviewOffer
     # Ordered as the open pull requests of the set.
     pull_requests: tuple[PullRequestReview, ...]
@@ -2398,22 +2567,27 @@ def counted(count: int, noun: str) -> str:
 
 
 def review_section(set_review: SetReview, alone: bool) -> list[str]:
-    """The section "Review by Claude" of a dashboard: the wait for a person
-    and where it is, or why Claude can review the set, then the box and the
-    state of the review."""
-    lines = ["### Review by Claude", ""]
+    """The section "Review by Claude" of a dashboard: why the authors can ask
+    for the review of Claude, or the wait for a person and where it is, then
+    the box and the state of the review. While the wait holds, the box is for
+    an admin."""
     offer = set_review.offer
+    admins = admins_text(
+        [review.pull_request for review in set_review.pull_requests], alone
+    )
     if isinstance(offer, ClaudeOffered):
-        return [
-            *lines,
-            *offer_reason_lines(offer, alone),
-            "",
-            *offered_review_lines(set_review, alone),
-        ]
-    lines.extend([wait_rule_text(alone), "", wait_line(offer, alone)])
-    if set_review.in_progress:
-        lines.extend(["", *review_state_lines(set_review)])
-    return lines
+        reason = offer_reason_lines(offer, alone, admins)
+        admins_while_waiting = None
+    else:
+        reason = [wait_rule_text(alone, admins), "", wait_line(offer, alone)]
+        admins_while_waiting = admins
+    return [
+        "### Review by Claude",
+        "",
+        *reason,
+        "",
+        *review_box_lines(set_review, alone, admins_while_waiting),
+    ]
 
 
 def wait_line(offer: DraftWait | PersonWait | ReviewedByPerson, alone: bool) -> str:
@@ -2426,11 +2600,12 @@ def wait_line(offer: DraftWait | PersonWait | ReviewedByPerson, alone: bool) -> 
     return f"{text} The bot updates this time every {minutes} minutes. {WAIT_MARKER}"
 
 
-def offer_reason_lines(offer: ClaudeOffered, alone: bool) -> list[str]:
-    """Why Claude can review the set: no person reviewed it before the end of
-    the wait, or Claude reviewed each of its open pull requests. In that
-    second case no wait applies, so the lines do not give the rule of the
-    wait."""
+def offer_reason_lines(offer: ClaudeOffered, alone: bool, admins: str) -> list[str]:
+    """Why the authors can ask for the review of Claude: no person reviewed
+    the set before the end of the wait, or Claude reviewed each of its open
+    pull requests. In that second case no wait applies, so the lines do not
+    give the rule of the wait. `admins` names the users who can ask for the
+    review at any time (admins_text)."""
     subject = section_subject(alone)
     choice = (
         f"This is your choice: a person can also review and approve {subject} as usual."
@@ -2444,7 +2619,7 @@ def offer_reason_lines(offer: ClaudeOffered, alone: bool) -> list[str]:
             )
         ]
     return [
-        wait_rule_text(alone),
+        wait_rule_text(alone, admins),
         "",
         (
             f"No person reviewed {subject} in that time, so Claude can review it "
@@ -2453,9 +2628,24 @@ def offer_reason_lines(offer: ClaudeOffered, alone: bool) -> list[str]:
     ]
 
 
-def offered_review_lines(set_review: SetReview, alone: bool) -> list[str]:
-    """The box of the review of Claude, what a tick does, and the state of
-    the review."""
+def review_box_lines(
+    set_review: SetReview, alone: bool, admins_while_waiting: str | None
+) -> list[str]:
+    """Who ticks the box of the review of Claude, what a tick does, the box,
+    and the state of the review. A tick asks for the review of every open
+    pull request of the set. `admins_while_waiting` names the admins who
+    alone can tick the box while the wait for a person holds; None when the
+    authors can tick it."""
+    if admins_while_waiting is None:
+        asker = "To choose Claude, tick the box below."
+        tick = "tick the box"
+        box_suffix = ""
+    else:
+        asker = (
+            f"To ask for the review now, {admins_while_waiting} ticks the box below."
+        )
+        tick = f"ask {admins_while_waiting} to tick the box"
+        box_suffix = " now (admin only)"
     pull_requests = counted(len(set_review.pull_requests), "pull request")
     posts_on = "this pull request" if alone else "each pull request of the set"
     approves = "this pull request" if alone else f"the {pull_requests}"
@@ -2466,19 +2656,21 @@ def offered_review_lines(set_review: SetReview, alone: bool) -> list[str]:
     )
     return [
         (
-            f"To choose Claude, tick the box below. Claude posts its findings on "
-            f"{posts_on}. Correct each finding or answer in its thread, then "
-            "tick the box again. When no blocking finding is open, Claude "
-            f"approves {approves}."
+            f"{asker} Claude posts its findings on {posts_on}. Correct each "
+            f"finding or answer in its thread, then {tick} again. When no "
+            f"blocking finding is open, Claude approves {approves}."
         ),
         "",
-        box_line(Action.REVIEW, box),
+        box_line(Action.REVIEW, box + box_suffix),
         "",
-        *review_state_lines(set_review),
+        *review_state_lines(set_review, tick),
     ]
 
 
-def review_state_lines(set_review: SetReview) -> list[str]:
+def review_state_lines(set_review: SetReview, tick: str) -> list[str]:
+    """The state of the review of Claude. `tick` is the phrase that tells
+    the reader to tick the box for a new review, or to ask an admin to tick
+    it (review_box_lines)."""
     run = set_review.run
     if set_review.in_progress:
         return [f"**Review in progress** in [this run]({run.url})."]
@@ -2488,7 +2680,7 @@ def review_state_lines(set_review: SetReview) -> list[str]:
         )
         return [
             f"**Review not completed.** {cause} See [the run]({run.url}), and "
-            "tick the box to ask again."
+            f"{tick} again."
         ]
     reviews = set_review.pull_requests
     if set_review.approved:
@@ -2513,7 +2705,7 @@ def review_state_lines(set_review: SetReview) -> list[str]:
         )
         return [
             f"**{counted(total, 'open blocking finding')}** ({where}). Correct "
-            "each finding or answer in its thread, then tick the box again."
+            f"each finding or answer in its thread, then {tick} again."
         ]
     if any(review.reviewed for review in reviews):
         unapproved = ", ".join(
@@ -2521,7 +2713,7 @@ def review_state_lines(set_review: SetReview) -> list[str]:
         )
         return [
             "**Not approved.** No blocking finding is open, but Claude did not "
-            f"read the head of {unapproved}: tick the box to ask for a new review."
+            f"read the head of {unapproved}: {tick} for a new review."
         ]
     return ["**No review asked.**"]
 
@@ -2530,18 +2722,22 @@ def review_refusal_reasons(
     state: SetState,
     set_review: SetReview | None,
     mergeable: Mapping[str, bool | None],
+    asked_by_an_admin: bool,
 ) -> list[str]:
     """Why the bot does not start a review of the set; none when it starts
     one. `mergeable` tells, for each open pull request by label, whether it
-    merges into its base without conflicts (None while GitHub computes it)."""
+    merges into its base without conflicts (None while GitHub computes it).
+    The wait for a person does not hold a review that an admin of every
+    repository of the set asked for (`asked_by_an_admin`)."""
     if set_review is None:
         return [
             "Claude reviews only a set whose every open pull request a member of "
             f"`{DEVELOPER_TEAM}` opened."
         ]
-    if not isinstance(set_review.offer, ClaudeOffered):
+    if not isinstance(set_review.offer, ClaudeOffered) and not asked_by_an_admin:
+        admins = admins_text(state.open_pull_requests(), state.is_alone)
         return [
-            f"{wait_rule_text(state.is_alone)} "
+            f"{wait_rule_text(state.is_alone, admins)} "
             f"{wait_state_text(set_review.offer, state.is_alone)}"
         ]
     if set_review.in_progress:
@@ -2616,16 +2812,26 @@ def render_review_started(
 
 def wait_ended(set_review: SetReview, dashboards: Mapping[str, Dashboard]) -> bool:
     """Whether the wait for a person ended since the dashboards of the set
-    were written: one of them counts down the wait, and Claude can now
-    review the set because no person reviewed it before the end of the wait.
-    When Claude can review the set because it reviewed each of its open pull
-    requests, no wait ended."""
+    were written, so that the bot tells the authors: one of them counts down
+    the wait, and the authors can now ask for the review of Claude because no
+    person reviewed the set before the end of the wait. When they can ask
+    because Claude reviewed each of its open pull requests, no wait ended.
+    While a review that an admin asked for runs, a tick of the authors gets
+    no review, so the bot does not tell them: the review posts on each pull
+    request of the set, and that tells them."""
     offer = set_review.offer
     return (
         isinstance(offer, ClaudeOffered)
         and offer.wait_ended_at is not None
-        and any(WAIT_MARKER in dashboard.body for dashboard in dashboards.values())
+        and not set_review.in_progress
+        and any(counts_down(dashboard) for dashboard in dashboards.values())
     )
+
+
+def counts_down(dashboard: Dashboard) -> bool:
+    """Whether the dashboard shows the time left until the end of the wait
+    for a person."""
+    return WAIT_MARKER in dashboard.body
 
 
 def render_wait_ended(state: SetState) -> str:
@@ -2812,23 +3018,67 @@ def merge_commit(
     return MergeCommit(method, None, f"{pull_request.title}\n\n{together}")
 
 
-def merged_line(merged: MergedPullRequest, unapproved: Sequence[PullRequest]) -> str:
+@dataclass(frozen=True)
+class AdminWaiver:
+    """What a merge of an admin of every repository of the set takes a pull
+    request in without: its approval, the required checks that have not
+    passed, or both."""
+
+    approval: bool
+    checks: tuple[RequiredCheck, ...]
+
+    @property
+    def waives_anything(self) -> bool:
+        return self.approval or bool(self.checks)
+
+
+NO_WAIVER = AdminWaiver(approval=False, checks=())
+
+
+def admin_waiver(report: PullRequestReport) -> AdminWaiver:
+    """What an admin merges the pull request of the report without. A merge
+    that goes on has no other blocker: the other blockers stop it first."""
+    return AdminWaiver(
+        approval=report.review is ReviewDecision.REVIEW_REQUIRED,
+        checks=report.waivable_checks,
+    )
+
+
+def waiver_text(waiver: AdminWaiver) -> str:
+    """The part of a merge report line that names what a pull request merged
+    without; empty when it merged with everything that its rules require."""
+    parts = []
+    if waiver.approval:
+        parts.append("an approval")
+    if waiver.checks:
+        noun = "check" if len(waiver.checks) == 1 else "checks"
+        names = ", ".join(f"`{check.context}`" for check in waiver.checks)
+        parts.append(f"the required {noun} {names}")
+    if not parts:
+        return ""
+    return f" without {' and '.join(parts)}"
+
+
+def merged_line(merged: MergedPullRequest, waiver: AdminWaiver) -> str:
     """The line of a merge report for a pull request that merged."""
-    line = f"- {merged.pull_request.label} merged as `{short(merged.commit)}`"
-    if merged.pull_request in unapproved:
-        return f"{line} without an approval."
-    return f"{line}."
+    return (
+        f"- {merged.pull_request.label} merged as `{short(merged.commit)}`"
+        f"{waiver_text(waiver)}."
+    )
 
 
 def render_merge_report(
     set_name: str,
     requesters: Sequence[str],
     outcome: MergeOutcome,
-    unapproved: Sequence[PullRequest],
+    waivers: Mapping[str, AdminWaiver],
 ) -> str:
-    """The report of a merge, on every pull request of the set. `unapproved`
-    are the pull requests an admin merged without an approval."""
-    merged_lines = [merged_line(merged, unapproved) for merged in outcome.merged]
+    """The report of a merge, on every pull request of the set. `waivers`
+    give, by label, what an admin merged each pull request without."""
+    merged_lines = [
+        merged_line(merged, waivers.get(merged.pull_request.label, NO_WAIVER))
+        for merged in outcome.merged
+    ]
     if outcome.failure is None:
         lines = [
             f"The set `{set_name}` merged, as {mention(requesters)} asked:",
@@ -3137,6 +3387,7 @@ class GitHubGateway:
         self.held_commits: dict[tuple[str, str, str], bool] = {}
         self.rules: dict[str, BranchRules] = {}
         self.bypasses: dict[tuple[str, int], RulesetBypass] = {}
+        self.app_ids: dict[str, int | None] = {}
         self.permissions: dict[tuple[str, str], str] = {}
         self.ci_workflows: dict[str, frozenset[int]] = {}
         self.developers: dict[str, bool] = {}
@@ -3219,6 +3470,22 @@ class GitHubGateway:
                 )
             )
         return self.bypasses[key]
+
+    def app_id(self, slug: str) -> int | None:
+        """The id of the GitHub App of a slug; None when GitHub has no App of
+        that slug."""
+        if slug not in self.app_ids:
+            try:
+                item = self.api.request(
+                    "GET", f"/apps/{urllib.parse.quote(slug, safe='')}"
+                )
+            except ApiError as error:
+                if error.status != 404:
+                    raise
+                self.app_ids[slug] = None
+            else:
+                self.app_ids[slug] = item["id"]
+        return self.app_ids[slug]
 
     def check_runs(self, repository: Repository, commit: str) -> list[CheckRun]:
         return parse_check_runs(
@@ -3457,20 +3724,8 @@ class GitHubGateway:
     def permission(self, repository: Repository, login: str) -> str:
         key = (repository.name, login)
         if key not in self.permissions:
-            self.permissions[key] = self.read_permission(repository, login)
+            self.permissions[key] = read_permission(self.api, repository, login)
         return self.permissions[key]
-
-    def read_permission(self, repository: Repository, login: str) -> str:
-        try:
-            response = self.api.request(
-                "GET",
-                f"/repos/{repository.full_name}/collaborators/{login}/permission",
-            )
-        except ApiError as error:
-            if error.status != 404:
-                raise
-            return NO_PERMISSION
-        return response["permission"]
 
     def merge(self, pull_request: PullRequest, commit: MergeCommit) -> str:
         """Merge the pull request at its head commit, and return the merge
@@ -3631,6 +3886,20 @@ class GitError(MergeSetError):
     """A git command that failed."""
 
 
+def read_permission(api: GitHubApi, repository: Repository, login: str) -> str:
+    """The permission of a user on a repository (`admin`, `write`, `read`),
+    or NO_PERMISSION for a user that GitHub does not know there."""
+    try:
+        response = api.request(
+            "GET", f"/repos/{repository.full_name}/collaborators/{login}/permission"
+        )
+    except ApiError as error:
+        if error.status != 404:
+            raise
+        return NO_PERMISSION
+    return response["permission"]
+
+
 def github_remote(repository: Repository) -> str:
     return f"https://github.com/{repository.full_name}.git"
 
@@ -3754,14 +4023,16 @@ def read_report(
     statuses = gateway.statuses(repository, pull_request.head_commit)
     mergeable, _ = computed_merge_state(gateway, pull_request, {MERGE_STATE_UNKNOWN})
     review = gateway.review_decision(pull_request)
+    creator_apps = creator_apps_of(gateway, rules, statuses)
+    checks = tuple(
+        (check, required_check_state(check, runs, statuses, creator_apps))
+        for check in rules.required_checks
+    )
     return PullRequestReport(
         pull_request=pull_request,
         mergeable=mergeable,
         review=review,
-        checks=tuple(
-            (check, required_check_state(check, runs, statuses))
-            for check in rules.required_checks
-        ),
+        checks=checks,
         ci=gateway.ci_run(pull_request),
         behind=rules.strict and gateway.is_behind(pull_request),
         stale=(
@@ -3781,6 +4052,54 @@ def read_report(
             if review is ReviewDecision.REVIEW_REQUIRED
             else ()
         ),
+        waivable_checks=waivable_checks(gateway, repository, rules, checks),
+    )
+
+
+def creator_apps_of(
+    gateway: GitHubGateway, rules: BranchRules, statuses: Sequence[CommitStatus]
+) -> dict[str, int]:
+    """The App of each bot user that created a status of a required check that
+    names an App, by login. The bot asks GitHub only for these creators: the
+    status of any other creator answers no such check. A creator that is a
+    user, or whose App GitHub does not have, is not in it."""
+    contexts = {
+        check.context for check in rules.required_checks if check.integration_id
+    }
+    creators = {
+        status.creator
+        for status in statuses
+        if status.context in contexts and status.creator is not None
+    }
+    apps = {}
+    for creator in sorted(creators):
+        slug = bot_app_slug(creator)
+        app_id = None if slug is None else gateway.app_id(slug)
+        if app_id is not None:
+            apps[creator] = app_id
+    return apps
+
+
+def waivable_checks(
+    gateway: GitHubGateway,
+    repository: Repository,
+    rules: BranchRules,
+    checks: Sequence[tuple[RequiredCheck, CheckState]],
+) -> tuple[RequiredCheck, ...]:
+    """The required checks that have not passed and that only rulesets the App
+    bypasses require: GitHub merges the pull request of the App without them,
+    so the bot enforces them itself, and an admin of every repository of the
+    set merges without them. The bot asks for the bypass of a ruleset only for
+    a check that has not passed."""
+    return tuple(
+        check
+        for check, state in checks
+        if state is not CheckState.PASSED
+        and rules.required_checks[check]
+        and all(
+            gateway.ruleset_bypass(repository, ruleset_id).bypassed
+            for ruleset_id in rules.required_checks[check]
+        )
     )
 
 
@@ -3914,26 +4233,25 @@ def computed_merge_state(
     return mergeable, state
 
 
-def mergeable_states(unapproved: bool) -> frozenset[str]:
+def mergeable_states(waived: bool) -> frozenset[str]:
     """The merge states of a pull request the bot merges. GitHub reports a
-    pull request that lacks an approval as blocked, and the App, a bypass
-    actor of the rulesets that require one, merges it all the same."""
-    if unapproved:
+    pull request that lacks an approval, or a required check, as blocked, and
+    the App, a bypass actor of the rulesets that require them, merges it all
+    the same when an admin waives them (`waived`)."""
+    if waived:
         return MERGEABLE_STATES | {MERGE_STATE_BLOCKED}
     return MERGEABLE_STATES
 
 
 def final_merge_state(
-    gateway: GitHubGateway, pull_request: PullRequest, unapproved: bool
+    gateway: GitHubGateway, pull_request: PullRequest, waived: bool
 ) -> str:
     """The merge state of a pull request right after the bot set its gate
     green. GitHub can answer blocked from before the gate turned green, so the
-    bot asks again while it does, unless the pull request lacks an approval
-    and stays blocked for that alone."""
+    bot asks again while it does, unless an admin waives an approval or a
+    required check of the pull request (`waived`), which keeps it blocked."""
     waiting = (
-        {MERGE_STATE_UNKNOWN}
-        if unapproved
-        else {MERGE_STATE_UNKNOWN, MERGE_STATE_BLOCKED}
+        {MERGE_STATE_UNKNOWN} if waived else {MERGE_STATE_UNKNOWN, MERGE_STATE_BLOCKED}
     )
     return computed_merge_state(gateway, pull_request, waiting)[1]
 
@@ -3994,11 +4312,10 @@ def merge_the_set(
         )
         return
     pull_requests = [member.pull_request for member in state.members]
-    unapproved = [
-        pull_request
+    waivers = {
+        pull_request.label: admin_waiver(reports[pull_request.label])
         for pull_request in pull_requests
-        if reports[pull_request.label].review is ReviewDecision.REVIEW_REQUIRED
-    ]
+    }
     for pull_request in pull_requests:
         gateway.post_gate(
             pull_request, merging_gate(state.name, request.requester, run_url)
@@ -4006,14 +4323,17 @@ def merge_the_set(
     merge_states = [
         (
             pull_request,
-            final_merge_state(gateway, pull_request, pull_request in unapproved),
+            final_merge_state(
+                gateway, pull_request, waivers[pull_request.label].waives_anything
+            ),
         )
         for pull_request in pull_requests
     ]
     unmergeable = [
         (pull_request, merge_state)
         for pull_request, merge_state in merge_states
-        if merge_state not in mergeable_states(pull_request in unapproved)
+        if merge_state
+        not in mergeable_states(waivers[pull_request.label].waives_anything)
     ]
     if unmergeable:
         block_again(gateway, state.name, pull_requests, dashboards)
@@ -4024,7 +4344,7 @@ def merge_the_set(
         return
     outcome = merge_in_order(gateway, state.name, pull_requests)
     block_again(gateway, state.name, outcome.unmerged, dashboards)
-    report = render_merge_report(state.name, requesters, outcome, unapproved)
+    report = render_merge_report(state.name, requesters, outcome, waivers)
     # The merged pull requests of the set get the report too: a box ticked on
     # the dashboard of one of them asked for the merge.
     for pull_request in [*pull_requests, *state.merged_pull_requests()]:
@@ -4063,14 +4383,35 @@ def rerun_out_of_date(
     )
 
 
+def first_admin_request(
+    gateway: GitHubGateway, state: SetState, requests: Sequence[Request]
+) -> Request | None:
+    """The first of the requests whose user has the admin role on every
+    repository of the set; None when no such user asked."""
+    return next(
+        (
+            request
+            for request in requests
+            if is_admin_of_the_set(
+                state, permissions_in_the_set(gateway, state, request.requester)
+            )
+        ),
+        None,
+    )
+
+
 def start_review(
     gateway: GitHubGateway,
     state: SetState,
-    request: Request,
+    requests: Sequence[Request],
     requesters: Sequence[str],
 ) -> ReviewRun | None:
-    """Start the Claude review of the set, or answer why not; the run it
-    started, if any."""
+    """Start the Claude review of every open pull request of the set, or
+    answer why not; the run it started, if any. The review is for the first
+    of the `requests` of an admin of every repository of the set, as the
+    wait for a person does not hold it, else for the first of them."""
+    admin_request = first_admin_request(gateway, state, requests)
+    request = admin_request or requests[0]
     asked_on = request.dashboard.pull_request
     mergeable = {
         pull_request.label: computed_merge_state(
@@ -4079,7 +4420,10 @@ def start_review(
         for pull_request in state.open_pull_requests()
     }
     reasons = review_refusal_reasons(
-        state, read_set_review(gateway, state, started=None), mergeable
+        state,
+        read_set_review(gateway, state, started=None),
+        mergeable,
+        asked_by_an_admin=admin_request is not None,
     )
     if not reasons:
         try:
@@ -4113,9 +4457,10 @@ def handle_requests(
     bot does not act for them, and the reports name the users it acts for
     alone. The re-run goes first. Both read the reports from before the
     re-run, so a merge asked for at the same time stops on the CI that the
-    re-run finds out of date. The review goes last, and a set that is alone
-    has the review box alone. Returns the review run that it started, if
-    any."""
+    re-run finds out of date. The review goes last, for the first admin of
+    every repository of the set who asked for it, if one did (see
+    start_review), and a set that is alone has the review box alone. Returns
+    the review run that it started, if any."""
     actions = (
         (Action.REVIEW,)
         if state.is_alone
@@ -4147,7 +4492,7 @@ def handle_requests(
                     gateway, state, reports, dashboards, allowed[0], requesters, run_url
                 )
             case Action.REVIEW:
-                started = start_review(gateway, state, allowed[0], requesters)
+                started = start_review(gateway, state, allowed, requesters)
     return started
 
 
@@ -4181,9 +4526,10 @@ def read_review_offer(
     reviews_of: Mapping[str, Sequence[Review]],
     now: datetime,
 ) -> ReviewOffer:
-    """Whether Claude can review the open pull requests of a set at `now`,
-    whose reviews are in `reviews_of` by label. When Claude reviewed each of
-    them, the authors of the set chose Claude, so no wait applies: a pull
+    """Whether the authors of the open pull requests of a set can ask for
+    the review of Claude at `now`, whose reviews are in `reviews_of` by
+    label. When Claude reviewed each of them, the authors of the set or an
+    admin chose Claude, so no wait applies: a pull
     request that leaves the draft state then does not start the wait again.
     A pull request that joins the set and that Claude did not review starts
     the wait again."""
@@ -4329,11 +4675,11 @@ def sync(gateway: GitHubGateway, event: Event, run_url: str) -> None:
 
 # The relay -------------------------------------------------------------------
 
-# The workflow of peppy that the relay starts, and the branch it runs from:
-# that branch alone reaches the `merge-set` environment, which holds the key of
-# the App for the sync.
+# The workflow of peppy that the relay starts, and the branch that each
+# workflow of peppy that the bot starts runs from: that branch alone reaches
+# the `merge-set` environment, which holds the key of the App.
 SYNC_WORKFLOW = "merge-set.yml"
-SYNC_WORKFLOW_REF = resolve.PEPPY_DEV_BRANCH
+PEPPY_WORKFLOW_REF = resolve.PEPPY_DEV_BRANCH
 
 
 def dispatch_inputs(repository: Repository, subject: RelaySubject) -> dict[str, str]:
@@ -4413,14 +4759,26 @@ def dispatched_run(response: object, workflow: str) -> tuple[int, str]:
     return run_id, url
 
 
-def start_sync(api: GitHubApi, inputs: Mapping[str, str]) -> str:
-    """Start the Merge set workflow of peppy, and return the URL of its run."""
+def start_workflow(api: GitHubApi, workflow: str, inputs: Mapping[str, str]) -> str:
+    """Start a workflow of peppy from PEPPY_WORKFLOW_REF, and return the URL
+    of its run."""
     response = api.request(
         "POST",
-        f"/repos/{resolve.PEPPY_REPOSITORY}/actions/workflows/{SYNC_WORKFLOW}/dispatches",
-        body={"ref": SYNC_WORKFLOW_REF, "inputs": inputs, "return_run_details": True},
+        f"/repos/{resolve.PEPPY_REPOSITORY}/actions/workflows/{workflow}/dispatches",
+        body={"ref": PEPPY_WORKFLOW_REF, "inputs": inputs, "return_run_details": True},
     )
-    return dispatched_run(response, SYNC_WORKFLOW)[1]
+    return dispatched_run(response, workflow)[1]
+
+
+def start_sync(api: GitHubApi, inputs: Mapping[str, str]) -> str:
+    """Start the Merge set workflow of peppy, and return the URL of its run."""
+    return start_workflow(api, SYNC_WORKFLOW, inputs)
+
+
+def start_wait_syncs_workflow(api: GitHubApi) -> str:
+    """Start the Merge set wait workflow of peppy, and return the URL of its
+    run."""
+    return start_workflow(api, WAIT_SYNC_WORKFLOW, {})
 
 
 @dataclass(frozen=True)
@@ -4432,9 +4790,9 @@ class TokenScope:
     permissions: tuple[tuple[str, str], ...]
 
 
-# The token that starts the Merge set workflow: it can start the workflows of
-# peppy and do nothing else.
-SYNC_START_SCOPE = TokenScope((PEPPY.name,), (("actions", "write"),))
+# The token that starts the Merge set workflow and the Merge set wait
+# workflow: it can start the workflows of peppy and do nothing else.
+WORKFLOW_START_SCOPE = TokenScope((PEPPY.name,), (("actions", "write"),))
 
 
 def pull_request_scope(repository: Repository) -> TokenScope:
@@ -4468,7 +4826,7 @@ def relay(
             )
         )
     inputs = dispatch_inputs(repository, subject)
-    run_url = start_sync(api_for(SYNC_START_SCOPE), inputs)
+    run_url = start_sync(api_for(WORKFLOW_START_SCOPE), inputs)
     started = f"Started {SYNC_WORKFLOW} of peppy for {json.dumps(inputs)}: {run_url}"
     if event_name != "issue_comment":
         return started
@@ -4501,18 +4859,28 @@ def open_sets(gateway: GitHubGateway) -> dict[str, list[PullRequest]]:
     return sets
 
 
-def changes_with_time(offer: ReviewOffer, now: datetime) -> bool:
-    """Whether the dashboard of a set whose offer is `offer` at `now` changes
-    as the time passes: it counts down the wait, or the wait ended less than
-    WAIT_SYNC_MARGIN ago, so that a sync shows the box of the review and
-    tells the authors. Every other change of the offer comes with an event of
-    GitHub that starts a sync: a pull request that opens, reopens, leaves the
-    draft state or closes, and a review."""
+def changes_with_time(
+    offer: ReviewOffer, dashboards: Iterable[Dashboard | None]
+) -> bool:
+    """Whether the dashboards of a set whose offer is `offer` change as the
+    time passes: the set waits for a person, so they count down the wait, or
+    one of `dashboards` (the dashboard of each open pull request of the set,
+    None where there is none) still counts down a wait that is over, so that
+    a sync gives the box of the review to the authors and tells them. A run
+    of the wait syncs that comes late, or that does not come, only puts that
+    sync off. Every other change of the offer comes with an event of GitHub
+    that starts a sync: a pull request that opens, reopens, leaves the draft
+    state or closes, and a review. When the sync of such an event does not
+    run, the dashboard that still counts down gets a sync here too. While the
+    set waits, `dashboards` is not read. A set whose sync fails before it
+    writes its dashboards keeps its countdown, so it gets a sync at each run
+    of the wait syncs until a sync passes, and each failed run shows in the
+    Actions of peppy."""
     if isinstance(offer, PersonWait):
         return True
-    if isinstance(offer, ClaudeOffered) and offer.wait_ended_at is not None:
-        return now < offer.wait_ended_at + WAIT_SYNC_MARGIN
-    return False
+    return any(
+        dashboard is not None and counts_down(dashboard) for dashboard in dashboards
+    )
 
 
 def waiting_sets(gateway: GitHubGateway) -> list[PullRequest]:
@@ -4525,7 +4893,8 @@ def waiting_sets(gateway: GitHubGateway) -> list[PullRequest]:
             continue
         reviews_of = read_reviews(gateway, pull_requests)
         offer = read_review_offer(gateway, pull_requests, reviews_of, now)
-        if changes_with_time(offer, now):
+        dashboards = (gateway.dashboard(pull_request) for pull_request in pull_requests)
+        if changes_with_time(offer, dashboards):
             waiting.append(pull_requests[0])
     return waiting
 
@@ -4590,7 +4959,7 @@ def run_wait_syncs(environment: Mapping[str, str]) -> None:
     )
     dispatch_api = GitHubApi(required(environment, "MERGE_SET_DISPATCH_TOKEN"))
     for run_url in start_wait_syncs(gateway, dispatch_api):
-        print(f"Started the sync of a set that waits for a person: {run_url}")
+        print(f"Started the sync of a set whose dashboard changes in time: {run_url}")
 
 
 def run_repositories() -> None:
@@ -4616,7 +4985,7 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     )
     commands.add_parser(
         "wait-syncs",
-        help="Start the sync of each set that waits for the review of a person.",
+        help="Start the sync of each set whose dashboard changes with the time.",
     )
     return parser.parse_args(argv)
 

@@ -635,8 +635,12 @@ impl ExposureServer {
         self,
         shutdown: &CancellationToken,
     ) -> StreamableHttpService<Self, LocalSessionManager> {
+        // No web page calls the endpoint: a request that carries an `Origin`
+        // header (a browser sends one for a page of another site) is
+        // refused, and a client that is not a browser sends none.
         let config = StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)
+            .enforce_origin_validation()
             .with_cancellation_token(shutdown.child_token());
         StreamableHttpService::new(move || Ok(self.clone()), Default::default(), config)
     }

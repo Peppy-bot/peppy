@@ -243,7 +243,7 @@ impl ZenohAdapter {
         tls: Option<TlsConfig>,
         router_id: RouterId,
     ) -> Result<Self> {
-        let zenohd_config_path = zenohd::router_config_path(
+        let zenohd_config = zenohd::router_config_file(
             protocol,
             host,
             port,
@@ -251,7 +251,7 @@ impl ZenohAdapter {
             tls.clone(),
             &router_id,
         )?;
-        let facade = zenohd::ZenohdFacade::managed(zenohd_config_path)?;
+        let facade = zenohd::ZenohdFacade::managed(zenohd_config)?;
         let client_config =
             Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls);
 
@@ -923,7 +923,7 @@ impl MessengerBackend for ZenohAdapter {
         session
             .get(&selector)
             .payload(payload.into_zbytes())
-            .attachment(attachment.to_vec())
+            .attachment(attachment)
             .target(zenoh::query::QueryTarget::All)
             .consolidation(zenoh::query::ConsolidationMode::None)
             .accept_replies(zenoh::query::ReplyKeyExpr::Any)
@@ -1401,8 +1401,8 @@ impl ZenohAdapter {
         // routing interference between successive service polls with different
         // targeting.
         session
-            .put(keyexpr, payload.as_bytes().as_ref())
-            .attachment(TopicAttachment { is_primary }.encode().to_vec())
+            .put(keyexpr, payload.into_zbytes())
+            .attachment(TopicAttachment { is_primary }.encode())
             .congestion_control(zenoh_qos.congestion_control)
             .priority(zenoh_qos.priority)
             .express(zenoh_qos.express)
@@ -1509,8 +1509,10 @@ struct RetainingPublisher {
     publisher: AdvancedPublisher<'static>,
     /// Held across each put: a message takes its timestamp, enters the cache
     /// and goes out before the next one starts, so the cache and every
-    /// subscriber end on the same newest message.
-    put_order: Mutex<()>,
+    /// subscriber end on the same newest message. An async lock: a put that
+    /// waits for room in the network (congestion control `Block`) holds it
+    /// across its await and leaves the worker thread to other tasks.
+    put_order: tokio::sync::Mutex<()>,
 }
 
 /// Declares the publisher of a retaining topic. It keeps its newest `depth`
@@ -1542,7 +1544,7 @@ fn declare_retaining_publisher(
         .map(|publisher| {
             Arc::new(RetainingPublisher {
                 publisher,
-                put_order: Mutex::default(),
+                put_order: tokio::sync::Mutex::default(),
             })
         })
         .map_err(|e| Error::PublisherCreationError(e.to_string()))
@@ -1733,7 +1735,7 @@ impl ZenohPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
         // A pre-bound publisher has one keyexpr, so each publish is the only
         // one of its emit and is marked primary.
-        let attachment = TopicAttachment { is_primary: true }.encode().to_vec();
+        let attachment = TopicAttachment { is_primary: true }.encode();
         let published = match &self.0 {
             PublishRoute::Live {
                 session,
@@ -1741,7 +1743,7 @@ impl ZenohPublisher {
                 qos,
             } => {
                 session
-                    .put(topic, payload.as_ref())
+                    .put(topic, payload)
                     .attachment(attachment)
                     .congestion_control(qos.congestion_control)
                     .priority(qos.priority)
@@ -1749,15 +1751,12 @@ impl ZenohPublisher {
                     .await
             }
             PublishRoute::Retaining(retaining) => {
-                let _in_order = retaining
-                    .put_order
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let _in_order = retaining.put_order.lock().await;
                 retaining
                     .publisher
-                    .put(payload.as_ref())
+                    .put(payload)
                     .attachment(attachment)
-                    .wait()
+                    .await
             }
         };
         published.map_err(|e| Error::PublishError {

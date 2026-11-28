@@ -30,14 +30,14 @@ A contract lives in its own file under a repository Peppy scans (see [Repositori
     topics: [
       {
         name: "video_stream",
-        description: "Each frame of the camera, with its size and its encoding.",
+        description: "Each picture of the camera, with its size and its encoding.",
         qos_profile: "sensor_data",
         message_format: {
-          header: { $type: "object", stamp: "time", frame_id: "u32" },
+          header: { $type: "object", frame: "string", timestamp: "time", capture_index: "u32" },
           encoding: "string",
           width: "u32",
           height: "u32",
-          frame: { $type: "array", $items: "u8", $description: "The pixels of the frame, row by row, in its encoding." },
+          data: { $type: "array", $items: "u8", $description: "The pixels of the picture, row by row, in its encoding." },
         },
       },
     ],
@@ -59,17 +59,17 @@ A contract lives in its own file under a repository Peppy scans (see [Repositori
 
 #### Failure kinds
 
-A refused or failed goal, and the error reply of a service, give a **failure kind**: why the provider refused or failed, from a closed set. Every provider can give the kinds of peppy:
+Service error replies and refused/failed action goals always return a typed **failure kind** from a closed set. Every provider can return Peppy's five built-in kinds:
 
 | `failure_kind` | Meaning |
 | --- | --- |
-| `attempt_failed` | The attempt gave no result |
-| `timeout` | The bound of the provider passed |
-| `precondition_failed` | A precondition failed |
-| `resource_unavailable` | A robot, limb or host is gone |
-| `rejected` | The provider refused the goal, and no other kind says why |
+| `attempt_failed` | Execution failed to produce a result. |
+| `timeout` | Provider's internal timeout elapsed. |
+| `precondition_failed` | Required precondition was not met. |
+| `resource_unavailable` | Target robot, limb, or host is gone. |
+| `rejected` | Request or goal refused for another reason. |
 
-A contract declares the kinds of its own in its `failure_kinds` block, between `manifest` and `interfaces`: each name with its meaning, a short sentence. Each service and action then lists in a `failure_kinds` list of its own the kinds of the block that it gives. A member gives a kind of peppy or a kind that it lists, and no other:
+A contract can add domain-specific kinds in a top-level `failure_kinds` map (name -> description), then reference them in each service or action's `failure_kinds` list:
 
 ```json5
 {
@@ -84,20 +84,18 @@ A contract declares the kinds of its own in its `failure_kinds` block, between `
       { name: "move_arm", /* ... */ failure_kinds: ["unreachable", "leader_streaming"] },
       { name: "move_gripper", /* ... */ failure_kinds: ["leader_streaming"] },
     ],
-    services: [
-      { name: "stop", /* ... */ },
-    ],
   },
 }
 ```
 
-A kind name is 1 to 64 lowercase ASCII letters, digits and `_`, and starts with a letter. A contract does not declare a kind of peppy, and no meaning is blank. A member lists only kinds that the block declares, each once, and each declared kind is listed by at least one member: the parser refuses the contract otherwise. The block and the lists are optional; a member that lists no kind, such as `stop` above, gives the kinds of peppy only.
-
-The generated code of each action and service declares the kinds of its member, the kinds of peppy first and then the kinds it lists, as a `FailureKind` enum with a `Failure` type: the generated provider can give no other kind, and the generated client and the [MCP server](/advanced_guides/mcp/) refuse any other kind from the wire. So a new kind of a node changes that node and its contract, never peppy. See [How a goal ends](/advanced_guides/actions/#how-a-goal-ends) and [Error replies](/advanced_guides/services/#error-replies).
+Rules:
+- Kind names are 1 to 64 lowercase ASCII letters, digits, and `_`, starting with a letter, and cannot shadow Peppy's built-in kinds.
+- Every description must be non-blank, every listed kind must be declared in `failure_kinds` (no duplicates), and every declared kind must be used by at least one member.
+- Code generation emits a per-member `FailureKind` enum and `Failure` type; undeclared kinds are rejected by providers, clients, and the [MCP server](/advanced_guides/mcp/). See [How a goal ends](/advanced_guides/actions/#how-a-goal-ends) and [Error replies](/advanced_guides/services/#error-replies).
 
 #### Marks
 
-A contract can give marks, names, to its members: a `marks` list on a topic, a service or an action. Peppy defines one mark, `moves_robot`: the mark of a member that can move a part of a robot, the gripper included, or change the state of a device. A member that only stops a motion, such as `stop`, has no mark:
+A contract can attach semantic tags to any topic, service, or action using a `marks` list. Peppy assigns special behavior to one built-in mark: **`moves_robot`**, for any member that can move a robot (including grippers) or change physical device state. Members that only stop motion (like robot_stop's `stop`) omit it, and so do members that only check a move (like `check_arm_move`):
 
 ```json5
 {
@@ -108,21 +106,21 @@ A contract can give marks, names, to its members: a `marks` list on a topic, a s
       { name: "move_arm", marks: ["moves_robot"], /* ... */ },
     ],
     services: [
-      { name: "stop", /* ... */ },
+      { name: "check_arm_move", /* ... */ },
     ],
   },
 }
 ```
 
-A mark name follows the rule of a failure kind name: words of lowercase ASCII letters and digits that each start with a letter, joined by one `_`, 64 bytes at most. A `marks` list holds at least one mark, each once; a member with no mark leaves the key out. Peppy keeps each other mark as written and gives it to the clients of the contract, such as the [codec API](/advanced_guides/codec_api/): each client defines the marks that it reads. The fields of a message format carry marks with `$marks`, and a `string` field declares a closed set of strings with `$enum` (see [Message format](/reference/message_format/#enum-modifier)).
+Mark names use `snake_case` (1 to 64 bytes, lowercase ASCII letters/digits, each word starting with a letter, single `_` separators). Lists must be non-empty and deduplicated. Custom marks are preserved verbatim and exposed through the [codec API](/advanced_guides/codec_api/). Individual message fields can also declare `$marks` and `$enum` ([Message format](/reference/message_format/#enum-modifier)).
 
 #### Descriptions
 
-A contract describes itself and each of its members as data. `manifest.description` gives the paragraphs of the contract, the first one its summary. Each topic, service and action gives a `description` after its `name`, and a field can give a [`$description`](/reference/message_format/#description-modifier), as `video_stream` and its `frame` field do above. The rules are in [Descriptions](/reference/concepts/#descriptions).
+Every contract requires `manifest.description` (a list of paragraphs; the first is the summary) and a `description` on every topic, service, and action. Message fields may also include `$description` ([Descriptions](/reference/concepts/#descriptions)).
 
-The [codec API](/advanced_guides/codec_api/#parse-a-contract) gives these descriptions with the document, `peppy repo show` and [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe) print them, and the [MCP server](/advanced_guides/mcp/#the-published-schemas) publishes the description of each field. The comments of a contract are notes for its maintainers, and no reader shows them.
+These descriptions are exposed by the [codec API](/advanced_guides/codec_api/#parse-a-contract), `peppy repo show`, [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe), and the [MCP server](/advanced_guides/mcp/#the-published-schemas). JSON5 comments are ignored by all tools.
 
-After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like as long as it ends in `.json5`; Peppy identifies a `contract/v1` document by its `peppy_schema` field. `peppy repo show <name>:<tag>` lists the indexed nodes that implement or consume it (see [Show what a query matches](/advanced_guides/repositories/#show-what-a-query-matches)).
+After `peppy repo refresh`, contracts are cached by `name:tag` regardless of filename (identified by `peppy_schema: "contract/v1"`). Run `peppy repo show <name>:<tag>` to list all nodes implementing or consuming a contract ([Show what a query matches](/advanced_guides/repositories/#show-what-a-query-matches)).
 
 ### 2. A producer that implements the contract
 
@@ -253,8 +251,8 @@ The block mirrors the member's structure down to the array and carries `{ $lengt
 ```json5
 refine: {
   message_format: {
-    header: { frame: { $length: 4 } },
-    transforms: { $items: { translation: { $length: 3 } } },
+    arm: { joint_positions: { $length: 7 } },
+    fingers: { $items: { joint_positions: { $length: 3 } } },
   },
 },
 ```

@@ -558,6 +558,37 @@ mod tests {
         assert_matches!(parse_error(json5), ParsingError::CannotParseConfig(_));
     }
 
+    /// The refusal of `$optional` on a scalar below the root names where the
+    /// field sits: the path to the root field of the format, then the field
+    /// inside it.
+    #[test]
+    fn an_optional_scalar_in_a_nested_object_is_refused_with_its_path() {
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "pose_node", tag: "v1", description: ["A test node."] },
+            interfaces: {
+                topics: {
+                    emits: [{
+                        name: "pose",
+                        description: "A test member.",
+                        message_format: {
+                            pose: { $type: "object", capture_index: { $type: "u32", $optional: true } },
+                        },
+                    }],
+                },
+            },
+            execution: { language: "rust", run_cmd: ["./pose_node"] },
+        }"#;
+        let error = parse_error(json5).to_string();
+        assert!(
+            error.contains(
+                "interfaces.topics.emits[0].message_format.pose: field `capture_index`: \
+                 `$optional` is not supported on a field of type `u32`"
+            ),
+            "got: {error}"
+        );
+    }
+
     #[test]
     fn test_parse_container_config() {
         let json5 = r#"{
@@ -1404,6 +1435,33 @@ mod tests {
         assert_eq!(c.apptainer_build_extra_args.as_deref(), Some([].as_slice()));
         assert_eq!(c.apptainer_run_extra_args.as_deref(), Some([].as_slice()));
         assert_eq!(c.lima_shell_extra_args.as_deref(), Some([].as_slice()));
+    }
+
+    /// A container node gets the paths of the host through `mount_paths`
+    /// alone, which keep the data root of peppy out of the container.
+    #[test]
+    fn a_run_flag_that_binds_a_path_of_the_host_does_not_parse() {
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "container_node",
+                tag: "v1",
+                description: ["A test node."],
+            },
+            execution: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    apptainer_run_extra_args: ["--nv", "--bind", "~/.peppy:/mnt/stolen"],
+                },
+            },
+        }"#;
+        let error = parse_error(json5).to_string();
+        assert!(
+            error.contains("`apptainer_run_extra_args` cannot hold `--bind`"),
+            "{error}"
+        );
+        assert!(error.contains("mount_paths"), "{error}");
     }
 
     /// A manifest with the given `execution.endpoints` body, the rest minimal.

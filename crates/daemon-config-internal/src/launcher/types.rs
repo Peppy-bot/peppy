@@ -985,11 +985,15 @@ pub struct DeploymentInstance {
     pub env_vars: BTreeMap<String, String>,
     /// The variables this instance takes from the environment of the launch,
     /// by name, so no launcher file holds a value: an API key, for example.
-    /// The launch gives this instance the value of each one; the daemon keeps
-    /// them, in memory, and a later join that starts this instance gives
-    /// it each one that the join's own forwarded environment does not hold.
-    /// A name is never also a key of `env_vars`, which would give the
-    /// variable two values.
+    /// The instance takes each variable of a list, or the variables of the
+    /// first complete set of an `any_of`. The launch gives this instance the
+    /// value of each variable that it takes; the daemon keeps them, in
+    /// memory. A later join that starts this instance gives it each variable
+    /// of a list that the join's own forwarded environment does not hold,
+    /// and for an `any_of`, the first set that the kept values hold complete
+    /// when the join's own forwarded environment holds none complete
+    /// ([`LaunchVariables::values_taken`]). A name is never also a key of
+    /// `env_vars`, which would give the variable two values.
     #[serde(default, skip_serializing_if = "LaunchVariables::is_empty")]
     pub env_from_launch: LaunchVariables,
     #[serde(default)]

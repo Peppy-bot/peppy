@@ -39,6 +39,14 @@ const READ_TIMEOUT: Duration = Duration::from_secs(300);
 /// its object storage.
 const MAX_REDIRECTS: usize = 10;
 
+/// The most bytes peppy reads of the body of an error answer: the detail of
+/// the error is at its start.
+const MAX_ERROR_BODY_BYTES: usize = 64 << 10;
+
+/// The size of the buffer between a blob download and its file: one write
+/// to the file for many parts of the answer.
+const DOWNLOAD_WRITE_BUFFER_BYTES: usize = 256 << 10;
+
 /// What the client may do in the repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
@@ -62,9 +70,17 @@ impl Access {
 /// for its later requests.
 pub struct RegistryClient {
     http: reqwest::Client,
+    /// The client of the token requests, which follows no redirect: a
+    /// redirect would send the credential of the request (a basic header, or
+    /// a refresh token in the body of a POST) to a URL that the challenge did
+    /// not name.
+    token_http: reqwest::Client,
     repository: OciRepository,
     /// `<scheme>://<api host>/v2/<repository path>`.
     base: String,
+    /// The origin of `base`: the client sends its `Authorization` header to
+    /// that origin alone.
+    base_origin: url::Origin,
     access: Access,
     credentials: CredentialStore,
     /// The `Authorization` header of the requests, once the registry asked
@@ -107,23 +123,35 @@ impl RegistryClient {
         } else {
             "https"
         };
-        let http = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .read_timeout(READ_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
-            .user_agent(format!("peppy/{}", daemon_config::consts::PEPPY_VERSION))
-            .build()
-            .map_err(|e| RegistryError::Unreachable {
+        let http_client = |redirects: reqwest::redirect::Policy| {
+            reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .read_timeout(READ_TIMEOUT)
+                .redirect(redirects)
+                .user_agent(format!("peppy/{}", daemon_config::consts::PEPPY_VERSION))
+                .build()
+                .map_err(|e| RegistryError::Unreachable {
+                    registry: repository.registry().to_owned(),
+                    cause: format!("cannot make an HTTP client: {e}"),
+                })
+        };
+        let base = format!(
+            "{scheme}://{}/v2/{}",
+            api_host(repository.registry()),
+            repository.path()
+        );
+        let base_origin = url::Url::parse(&base)
+            .map_err(|e| RegistryError::Protocol {
                 registry: repository.registry().to_owned(),
-                cause: format!("cannot make an HTTP client: {e}"),
-            })?;
+                request: "the address of the repository".to_owned(),
+                detail: format!("{base} is not a URL: {e}"),
+            })?
+            .origin();
         Ok(Self {
-            http,
-            base: format!(
-                "{scheme}://{}/v2/{}",
-                api_host(repository.registry()),
-                repository.path()
-            ),
+            http: http_client(reqwest::redirect::Policy::limited(MAX_REDIRECTS))?,
+            token_http: http_client(reqwest::redirect::Policy::none())?,
+            base,
+            base_origin,
             repository: repository.clone(),
             access,
             credentials,
@@ -313,10 +341,13 @@ impl RegistryClient {
             .suffix(".partial")
             .tempfile_in(&parent)
             .map_err(|e| RegistryError::io(&parent, e))?;
-        let mut file = tokio::fs::File::from_std(
-            temporary
-                .reopen()
-                .map_err(|e| RegistryError::io(temporary.path(), e))?,
+        let mut file = tokio::io::BufWriter::with_capacity(
+            DOWNLOAD_WRITE_BUFFER_BYTES,
+            tokio::fs::File::from_std(
+                temporary
+                    .reopen()
+                    .map_err(|e| RegistryError::io(temporary.path(), e))?,
+            ),
         );
         let mut answer = self.get_blob(digest).await?;
         let what = format!("the blob {digest} of {}", self.repository);
@@ -352,6 +383,10 @@ impl RegistryClient {
                 actual: actual.to_string(),
             });
         }
+        file.flush()
+            .await
+            .map_err(|e| RegistryError::io(temporary.path(), e))?;
+        let file = file.into_inner();
         file.sync_all()
             .await
             .map_err(|e| RegistryError::io(temporary.path(), e))?;
@@ -575,6 +610,12 @@ impl RegistryClient {
     }
 
     /// [`Self::send`] with a body that may go to the connection in parts.
+    ///
+    /// The `Authorization` header goes to the origin of the repository
+    /// alone. A `Link` or a `Location` of the registry can name another
+    /// origin: the request goes there with no `Authorization` header, and a
+    /// challenge from it is an error. A URL in plain HTTP for a repository in
+    /// HTTPS is refused.
     async fn send_body(
         &self,
         method: Method,
@@ -582,6 +623,16 @@ impl RegistryClient {
         headers: HeaderMap,
         body: Option<RequestBody>,
     ) -> Result<Answer> {
+        let request = format!("{method} {url}");
+        let target = url::Url::parse(url)
+            .map_err(|e| self.protocol(&request, format!("a URL that does not parse: {e}")))?;
+        if target.scheme() != "https" && self.base.starts_with("https:") {
+            return Err(self.protocol(
+                &request,
+                "a URL in plain HTTP for a repository in HTTPS".to_owned(),
+            ));
+        }
+        let to_the_repository = target.origin() == self.base_origin;
         let attempt = |authorization: Option<HeaderValue>| {
             let mut builder = self
                 .http
@@ -595,12 +646,18 @@ impl RegistryClient {
             }
             builder.send()
         };
-        let known = self.authorization.lock().await.clone();
-        let answer = attempt(known.clone())
-            .await
-            .map_err(|e| self.unreachable(&e))?;
+        let known = if to_the_repository {
+            self.authorization.lock().await.clone()
+        } else {
+            None
+        };
+        let answer = attempt(known).await.map_err(|e| self.unreachable(&e))?;
         if answer.status() != StatusCode::UNAUTHORIZED {
             return Ok(answer);
+        }
+        if !to_the_repository {
+            let detail = error_detail(answer).await;
+            return Err(self.refused(&request, StatusCode::UNAUTHORIZED, detail));
         }
         let challenge = answer
             .headers()
@@ -609,7 +666,7 @@ impl RegistryClient {
             .and_then(Challenge::parse);
         let Some(challenge) = challenge else {
             let detail = error_detail(answer).await;
-            return Err(self.refused(&format!("{method} {url}"), StatusCode::UNAUTHORIZED, detail));
+            return Err(self.refused(&request, StatusCode::UNAUTHORIZED, detail));
         };
         let credential = self
             .credentials
@@ -651,14 +708,15 @@ impl RegistryClient {
             }
             Challenge::Bearer { params } => params,
         };
-        let realm = &params["realm"];
+        let realm = params.get("realm").map_or("", String::as_str);
+        let request = format!("the token request to {realm}");
+        let realm = self.token_realm(realm, &request)?;
         let scope = format!(
             "repository:{}:{}",
             self.repository.path(),
             self.access.scope_actions()
         );
         let service = params.get("service").cloned().unwrap_or_default();
-        let request = format!("the token request to {realm}");
         let token_answer = match credential {
             Some(Credential::IdentityToken(token)) => {
                 let form = url::form_urlencoded::Serializer::new(String::new())
@@ -668,7 +726,7 @@ impl RegistryClient {
                     .append_pair("scope", &scope)
                     .append_pair("client_id", "peppy")
                     .finish();
-                self.http
+                self.token_http
                     .post(realm)
                     .header(
                         header::CONTENT_TYPE,
@@ -679,13 +737,11 @@ impl RegistryClient {
                     .await
             }
             basic => {
-                let mut url = url::Url::parse(realm).map_err(|e| {
-                    self.protocol(&request, format!("a token realm that is not a URL: {e}"))
-                })?;
+                let mut url = realm;
                 url.query_pairs_mut()
                     .append_pair("service", &service)
                     .append_pair("scope", &scope);
-                let mut builder = self.http.get(url);
+                let mut builder = self.token_http.get(url);
                 if let Some(header) = basic.and_then(Credential::basic_header) {
                     builder = builder.header(header::AUTHORIZATION, header);
                 }
@@ -712,6 +768,32 @@ impl RegistryClient {
             .filter(|token| !token.is_empty())
             .ok_or_else(|| self.protocol(&request, "no token".to_owned()))?;
         Ok(header_value(&format!("Bearer {token}")))
+    }
+
+    /// The token realm `realm` of a challenge, as the URL that the client
+    /// sends the credential to. For a registry that is not on the loopback
+    /// interface, the realm is in HTTPS and not on the loopback interface: a
+    /// hostile registry could else make the daemon send the credential in
+    /// clear, or to a service of this machine.
+    fn token_realm(&self, realm: &str, request: &str) -> Result<url::Url> {
+        let url = url::Url::parse(realm)
+            .map_err(|e| self.protocol(request, format!("a token realm that is not a URL: {e}")))?;
+        if self.repository.registry_is_loopback() {
+            return Ok(url);
+        }
+        if url.scheme() != "https" {
+            return Err(self.protocol(
+                request,
+                "a token realm that is not in HTTPS, for a registry in HTTPS".to_owned(),
+            ));
+        }
+        if url_is_on_this_machine(&url) {
+            return Err(self.protocol(
+                request,
+                "a token realm on this machine, for a registry on another machine".to_owned(),
+            ));
+        }
+        Ok(url)
     }
 
     /// `answer` when its status is one of `expected`, else the error that
@@ -878,6 +960,40 @@ async fn read_json<T: serde::de::DeserializeOwned>(
         .map_err(|e| client.protocol(request, format!("JSON that is not the expected one: {e}")))
 }
 
+/// Whether the host of `url` is this machine: a loopback or unspecified
+/// address, or `localhost`.
+fn url_is_on_this_machine(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            domain == "localhost" || domain.ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(address)) => address.is_loopback() || address.is_unspecified(),
+        Some(url::Host::Ipv6(address)) => {
+            address.is_loopback()
+                || address.is_unspecified()
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| mapped.is_loopback() || mapped.is_unspecified())
+        }
+        None => false,
+    }
+}
+
+/// The start of the body of `answer`, up to [`MAX_ERROR_BODY_BYTES`]. A
+/// part that does not arrive ends the body.
+async fn error_body(mut answer: Answer) -> Vec<u8> {
+    let mut body = Vec::new();
+    while body.len() < MAX_ERROR_BODY_BYTES {
+        let Ok(Some(part)) = answer.chunk().await else {
+            break;
+        };
+        let room = MAX_ERROR_BODY_BYTES - body.len();
+        body.extend_from_slice(&part[..part.len().min(room)]);
+    }
+    body
+}
+
 /// What a registry said in an error answer: the `code: message` of each
 /// error of the OCI error body, else the start of the body.
 async fn error_detail(answer: Answer) -> String {
@@ -893,7 +1009,7 @@ async fn error_detail(answer: Answer) -> String {
         message: String,
     }
     let status = answer.status();
-    let body = answer.bytes().await.unwrap_or_default();
+    let body = error_body(answer).await;
     if let Ok(parsed) = serde_json::from_slice::<ErrorBody>(&body)
         && !parsed.errors.is_empty()
     {

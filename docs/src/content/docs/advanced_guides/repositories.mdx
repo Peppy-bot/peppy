@@ -106,28 +106,40 @@ repository over SSH.
 
 ### OCI repositories
 
-An `oci` repository holds container nodes as prebuilt Apptainer images: one artifact for each node, Peppy version and platform, which [`peppy node publish`](/advanced_guides/publishing/) pushes. A machine that reads the repository pulls the image of a node in the time of a download, instead of building it. Add one with its URL:
+An `oci` repository stores container nodes as prebuilt Apptainer `.sif` images pushed by [`peppy node publish`](/advanced_guides/publishing/) (one artifact per node, Peppy version, and platform). Adding one lets machines download ready-to-run images instead of building from source:
 
 ```sh
 peppy repo add oci://ghcr.io/acme/peppy-nodes --top
 peppy repo refresh
 ```
 
-The URL has the form `oci://<registry host>/<repository path>`. The host is lowercase and can have a port. Each component of the path holds lowercase letters and digits, joined by `.`, `_`, `__` or `-`. The URL holds no credentials, query, or fragment: Peppy reads the credentials of the registry from the auth file of Apptainer (see [Registry credentials](/advanced_guides/publishing/#registry-credentials)), and a public repository needs none. Peppy reaches a registry on this machine (`localhost`, a `127.0.0.0/8` address, or `::1`) over plain HTTP, and every other registry over HTTPS. An `oci` entry has no `ref`, so `--ref` is refused for it.
+**URL rules and authentication:**
 
-The artifacts of a repository are made for one Peppy version each, so only a release build of Peppy reads an `oci` repository. A build of Peppy without a release version refuses `peppy repo add` of an `oci` URL, and a refresh reports an `oci` entry of `repositories.json5` as `unreachable`.
+- Format: `oci://<registry host>/<repository path>` (lowercase host with optional port; lowercase letters, digits, `.`, `_`, `__`, or `-` in path components; no credentials, query, or fragment; `--ref` is not allowed).
+- Credentials come from Apptainer's auth file (see [Registry credentials](/advanced_guides/publishing/#registry-credentials)); public repositories need none.
+- Local registries (`localhost`, `127.0.0.0/8`, `::1`) use plain HTTP; all others use HTTPS.
+- Only release builds of Peppy can use `oci` repositories. Non-release builds reject `peppy repo add` on `oci://` URLs and report existing `oci` entries as `unreachable` on refresh.
 
-A refresh lists the tags of the repository and reads the artifacts of the version of this Peppy only: Peppy `v0.32.0` reads the tags that end with `.v0.32.0.linux-amd64` and `.v0.32.0.linux-arm64`. It records a node when the repository holds an artifact of the node for the platform of this machine: `linux/amd64` or `linux/arm64`, after the architecture of the machine, also on macOS. A node that the repository holds no artifact of for this platform is not recorded, and the refresh shows a line for it, so a repository with a higher `id` that holds the sources of the node supplies it. The refresh also leaves out a node, with a line that tells why, when one of its tags holds no node artifact, when the registry does not give the manifest of one of its tags, when two of its tags claim the same platform, or when its platforms were built from different revisions of the node. Without that last rule, a stack across an amd64 and an arm64 machine could run two revisions of one node. A registry that cannot be reached, or that does not take the credential of this machine, fails the read of the whole repository as `unreachable`.
+**How refresh works:**
 
-The refresh keeps the `peppy.json5` of each node it records in `~/.peppy/cache/oci_node_manifests/`, under its digest, so `peppy repo search`, `peppy repo show` and `peppy stack resolve` read it without the registry. A later refresh reads a `peppy.json5` that this directory holds from it, not from the registry.
+`peppy repo refresh` lists the repository's tags and inspects only those matching this Peppy release (for example, `.v0.32.0.linux-amd64` and `.v0.32.0.linux-arm64`). It records a node if an artifact exists for this machine's Linux architecture (`linux/amd64` or `linux/arm64`, matching host architecture on macOS too).
 
-`peppy node add <name>:<tag>` of a node that an `oci` repository supplies pulls the `.sif` of the platform of this machine by its digest, checks the bytes against the digest while they arrive, and adds the node ready to start: there is nothing to stage, generate or build. A pull that fails fails the add, with the repository, the tag, the digest and the cause; Peppy does not build the node from sources instead. A machine of a federated launch pulls the artifact of its own platform.
+A node is skipped (with an explanation line) if:
+- No artifact exists for this machine's platform (allowing a higher-`id` source repository to supply it instead).
+- One of its tags does not hold a valid node artifact, or its manifest cannot be fetched.
+- Two tags claim the same platform.
+- Its `amd64` and `arm64` artifacts were built from different source digests (preventing mixed-revision stacks across architectures).
 
-A node of an `oci` repository has no sources on this machine, so:
+If the registry is unreachable or rejects credentials, the entire repository fails refresh as `unreachable`. Each recorded node's `peppy.json5` is cached by digest in `~/.peppy/cache/oci_node_manifests/`, so `peppy repo search`, `peppy repo show`, `peppy stack resolve`, and subsequent refreshes read it locally without querying the registry.
 
-- `peppy node build` and `peppy node rebuild` refuse it: `` `<name>:<tag>` comes from the oci repository `<url>` and has no sources. To build it, add a git or fs repository that holds it, with a lower id. ``
-- `peppy node publish` refuses it, and `peppy stack build --publish` shows it in its report as not published.
-- A repository with a lower `id` that holds the same `name:tag` supplies the node, as for every other source type. To pull a node that a `git` repository also holds, give the `oci` repository the lower `id` (`--top`). To build it from its sources again, give the `git` or `fs` repository the lower `id`.
+**Using OCI-sourced nodes:**
+
+`peppy node add <name>:<tag>` pulls the `.sif` for this machine's platform by digest, verifies its bytes during download, and marks the node ready to run with no staging or build step. If the pull fails, the add fails immediately (reporting repository, tag, digest, and cause) instead of falling back to a source build. In a federated launch, each machine pulls its own platform's artifact.
+
+Because an OCI-sourced node has no local source tree:
+- `peppy node build` and `peppy node rebuild` refuse it (to build from source, give a `git` or `fs` repository a lower `id`).
+- `peppy node publish` refuses it, and `peppy stack build --publish` reports it as not published.
+- Standard repository priority applies: give the `oci` repository a lower `id` (`--top`) to pull prebuilt images, or give your `git`/`fs` repository a lower `id` to build from source.
 
 ## Commands
 
@@ -204,7 +216,7 @@ A report's first lines name each document of the identity with its kind, reposit
     A color camera: its frames, the settings of its stream and its brightness.
 
     Members:
-      topic video_stream: Each frame of the camera, with its size and its encoding.
+      topic video_stream: Each picture of the camera, with its size and its encoding.
       service video_stream_info: The size, the frame rate and the encoding of the stream.
       service set_brightness: Set the brightness of the camera, and give the brightness that it applied.
 
@@ -587,7 +599,7 @@ A dependency that is missing from **both** the node stack and every configured r
 dep `gps_module:v2` not found in node stack or repository cache; run `peppy repo refresh`
 ```
 
-`peppy node add` applies the same stack-then-cache lookup automatically, without a flag, but only for the direct dependencies of empty-admitting slots (`cardinality: "zero_or_one"` or `"zero_or_more"`) that are absent from the stack: their interfaces still feed code generation, each cache resolution is reported in the add output, and a dependency missing from both sources refuses the add with the same error. A dependency whose slot demands an instance must still be in the stack before the add.
+`peppy node add` automatically applies this same stack-then-cache lookup (without any flag) for optional direct dependencies (`cardinality: "zero_or_one"` or `"zero_or_more"`) so code generation can read their interfaces even when they are not in the stack. Each cache lookup is printed in the add output, and a dependency missing from both sources still fails the add. Required dependencies (`cardinality: "one"` or `"one_or_more"`) must already be in the stack before `peppy node add`.
 
 ### Tip: register your local workspace as a repository
 

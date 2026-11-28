@@ -9,6 +9,13 @@ for an event that can change a set, and answers a box that a user ticked. It
 answers GitHub with what the relay did, which the App settings show next to
 each delivery, and writes the same line to its log.
 
+A schedule of AWS also invokes the function, every WAIT_SYNC_INTERVAL of
+merge_set.py, with WAIT_SYNCS_EVENT. The function then starts the Merge set
+wait workflow of peppy (.github/workflows/merge-set-wait.yml), which starts
+the sync of each set whose dashboard changes as the time passes. A schedule
+of GitHub Actions cannot do it: GitHub starts a scheduled run late, or drops
+it, when its runners are busy.
+
 The private key of the App is in AWS KMS, which signs the JSON Web Token of
 the App and never gives out the key. With that token, the function makes the
 installation tokens that the relay asks for, each for one scope, and keeps
@@ -17,12 +24,13 @@ in AWS Secrets Manager, which the function reads again when a signature does
 not match, so it takes a new secret without a restart.
 
 The stack aws/peppy-ci-pipelines of Peppy-bot/infraops holds the AWS side of
-the function: the function, its role, the App key, the webhook secret, and the
-role the Merge set webhook workflow (.github/workflows/merge-set-webhook.yml)
-deploys the archive of the `package` subcommand with. It fixes the contract of
-this file: HANDLER, the variables of the function (the *_VARIABLE names) and
-WEBHOOK_SECRET_KEY. A runbook of infraops imports the App key and puts the
-webhook secret.
+the function: the function, its role, the App key, the webhook secret, the
+schedule, and the role the Merge set webhook workflow
+(.github/workflows/merge-set-webhook.yml) deploys the archive of the `package`
+subcommand with. It fixes the contract of this file: HANDLER, the variables of
+the function (the *_VARIABLE names), WEBHOOK_SECRET_KEY, WAIT_SYNCS_EVENT and
+the interval of the schedule. A runbook of infraops imports the App key and
+puts the webhook secret.
 
 The decisions are functions of their inputs, tested in test_webhook.py: the
 clock, KMS and GitHub are parameters. Standard library only, and the boto3
@@ -52,13 +60,15 @@ from merge_set import resolve
 
 # The contract with aws/peppy-ci-pipelines of Peppy-bot/infraops, which sets
 # the function up: the entry point of its runtime, the variables it sets on
-# the function, and the one key of the JSON document of the webhook secret.
+# the function, the one key of the JSON document of the webhook secret, and
+# the event its schedule sends every WAIT_SYNC_INTERVAL of merge_set.py.
 HANDLER = "webhook.lambda_handler"
 APP_CLIENT_ID_VARIABLE = "APP_CLIENT_ID"
 APP_SLUG_VARIABLE = "APP_SLUG"
 APP_KEY_ID_VARIABLE = "APP_KEY_ID"
 WEBHOOK_SECRET_ARN_VARIABLE = "WEBHOOK_SECRET_ARN"
 WEBHOOK_SECRET_KEY = "webhook_secret"
+WAIT_SYNCS_EVENT = {"merge_set": "wait-syncs"}
 
 
 class WebhookError(Exception):
@@ -310,12 +320,29 @@ class AppTokens:
             )
         return self.jwt.value
 
+    def app_api(self) -> merge_set.GitHubApi:
+        """The API as the App, which makes its installation tokens."""
+        return merge_set.GitHubApi(self.app_jwt())
+
+    def installation_of(self, repository: merge_set.Repository) -> int:
+        """The installation of the App on the repository."""
+        answer = self.app_api().request(
+            "GET", f"/repos/{repository.full_name}/installation"
+        )
+        installation = answer.get("id") if isinstance(answer, Mapping) else None
+        if not isinstance(installation, int):
+            raise merge_set.MergeSetError(
+                f"GitHub names no installation of the App on "
+                f"{repository.full_name}: {json.dumps(answer)}"
+            )
+        return installation
+
     def installation_token(self, installation: int, scope: merge_set.TokenScope) -> str:
         key = (installation, scope)
         token = self.installation_tokens.get(key)
         if not self.is_usable(token):
             token = parse_installation_token(
-                merge_set.GitHubApi(self.app_jwt()).request(
+                self.app_api().request(
                     "POST",
                     f"/app/installations/{installation}/access_tokens",
                     body={
@@ -326,6 +353,12 @@ class AppTokens:
             )
             self.installation_tokens[key] = token
         return token.value
+
+    def installation_api(
+        self, installation: int, scope: merge_set.TokenScope
+    ) -> merge_set.GitHubApi:
+        """The API with the installation token of the scope."""
+        return merge_set.GitHubApi(self.installation_token(installation, scope))
 
 
 # The function -----------------------------------------------------------------
@@ -342,12 +375,43 @@ def response(status: int, text: str) -> dict:
 
 class Webhook:
     """The function: it checks each delivery, and hands its event to the
-    relay."""
+    relay; at the event of the schedule, it starts the wait syncs."""
 
     def __init__(self, secret: WebhookSecret, bot_login: str, tokens: AppTokens):
         self.secret = secret
         self.bot_login = bot_login
         self.tokens = tokens
+
+    def invoke(self, event: Mapping) -> dict | str:
+        """The answer to an invocation of the function. A request of the
+        function URL is never WAIT_SYNCS_EVENT: the URL hands the function a
+        document of its own, with the request in it, so only a caller that
+        AWS lets invoke the function sends that event."""
+        if event == WAIT_SYNCS_EVENT:
+            return self.start_wait_syncs_workflow()
+        return self.handle(event)
+
+    def start_wait_syncs_workflow(self) -> str:
+        """Start the Merge set wait workflow of peppy, and return what the
+        function did. The schedule invokes the function asynchronously, so a
+        failure raises: Lambda then invokes it again, as it does for each
+        asynchronous invocation that fails, and counts the error. A failure
+        after GitHub started the run (an answer without the run) gives one
+        more run, which the concurrency group of the workflow cancels or runs
+        after it; each run reads every set again."""
+        try:
+            installation = self.tokens.installation_of(merge_set.PEPPY)
+            run_url = merge_set.start_wait_syncs_workflow(
+                self.tokens.installation_api(
+                    installation, merge_set.WORKFLOW_START_SCOPE
+                )
+            )
+        except merge_set.MergeSetError as error:
+            print(f"Schedule: failed: {error}")
+            raise
+        text = f"Started {merge_set.WAIT_SYNC_WORKFLOW} of peppy: {run_url}"
+        print(f"Schedule: {text}")
+        return text
 
     def verified_delivery(self, request: Mapping) -> Delivery:
         """The delivery of the request, checked with the webhook secret, and
@@ -383,8 +447,8 @@ class Webhook:
             return "pong"
 
         def api_for(scope: merge_set.TokenScope) -> merge_set.GitHubApi:
-            return merge_set.GitHubApi(
-                self.tokens.installation_token(installation_id(delivery.payload), scope)
+            return self.tokens.installation_api(
+                installation_id(delivery.payload), scope
             )
 
         return merge_set.relay(
@@ -427,14 +491,14 @@ def required(environment: Mapping[str, str], name: str) -> str:
 @functools.cache
 def lambda_webhook() -> Webhook:
     """The function, made once for each instance of it, at its first
-    delivery: it keeps its webhook secret and its tokens."""
+    invocation: it keeps its webhook secret and its tokens."""
     import boto3
 
     return webhook_of_environment(os.environ, boto3.client)
 
 
-def lambda_handler(event: Mapping, context: object) -> dict:
-    return lambda_webhook().handle(event)
+def lambda_handler(event: Mapping, context: object) -> dict | str:
+    return lambda_webhook().invoke(event)
 
 
 # The package ------------------------------------------------------------------

@@ -193,10 +193,14 @@ Additionally, the tag and name assigned to your node provide contract isolation.
 
 ## Graceful shutdown
 
-A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides/node_stack/#stopping-your-node) stops it on demand, `peppy node add` stops running instances when it replaces a node, the daemon tears every node down when it shuts down cleanly, the daemon stops a start that it gives up after the node answered ready (a setup that outlasts its [setup budget](/guides/node_stack/#how-an-instance-starts), a `peppy stack reset`), and a plain `SIGINT`/`SIGTERM` works too. Every one of these paths gives your node the same two things:
+A node instance can be stopped at any time: by [`peppy node stop`](/guides/node_stack/#stopping-your-node), by `peppy node add` replacing the node, by a clean daemon shutdown, by an aborted startup (a timed-out [setup budget](/guides/node_stack/#how-an-instance-starts) or `peppy stack reset` after the node signalled ready), or by `SIGINT`/`SIGTERM`.
 
-- The **cancellation token** (`node_runner.cancellation_token()`) fires. This is the signal to *stop working*: have long-running tasks watch it and break out of their loops.
-- **Shutdown hooks** registered with `node_runner.on_shutdown(...)` then run to completion, with messaging still connected. This is where *cleanup* belongs (parking actuators, releasing hardware, flushing state): unlike a task watching the token, a hook is awaited before the node exits on every path above. A node that ends any other way runs no hook: a `SIGKILL`, an abort, the OOM killer and a power cut end the process where it stands. So a hook carries the work only the node can do. Exclusivity belongs on something that ends with the process: a file lock for a device, or a key owned through [`store_exclusive`](/advanced_guides/datastore/#store_exclusive) for something only one peppy instance may drive at a time. The [shutdown lifecycle guide](/advanced_guides/shutdown/) says what a killed node leaves behind.
+All of these paths trigger the same two-step shutdown:
+
+1. **Cancellation token** (`node_runner.cancellation_token()`): fires first to tell background tasks to *stop working* and exit their loops.
+2. **Shutdown hooks** (`node_runner.on_shutdown(...)`): run next to completion while messaging is still connected. Put guaranteed *cleanup* here (parking actuators, releasing hardware, flushing state).
+
+Hard exits (`SIGKILL`, aborts, OOM kills, power cuts) never run shutdown hooks. Only use hooks for work the node process itself must perform. For exclusivity locks that must release even after a crash, rely on OS file locks (for devices) or [`store_exclusive`](/advanced_guides/datastore/#store_exclusive) (for Peppy-level resources). See the [shutdown lifecycle guide](/advanced_guides/shutdown/) for details.
 
 <Tabs>
   <TabItem label="Python">
@@ -211,10 +215,10 @@ A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides
         node_runner.on_shutdown(clear_latest)
     ```
 
-    The background tasks returned from `setup` are cancelled automatically after the hooks: their pending `await` raises `asyncio.CancelledError`, and the node exits once they finish. Keep `try`/`finally` for last-moment tidy-up; cleanup that must be guaranteed belongs in `on_shutdown`.
+    After hooks finish, Peppy cancels the background tasks returned from `setup` (`asyncio.CancelledError`) and exits once they complete. Keep `try`/`finally` for minor tidy-up; put critical cleanup in `on_shutdown`.
   </TabItem>
   <TabItem label="Rust">
-    The hello_world node above already follows the recommended pattern for stopping work: every spawned task `select!`s on `token.cancelled()` next to its work. Cleanup goes in a hook:
+    The `hello_world` node above follows the recommended pattern: spawned tasks `select!` on `token.cancelled()` to stop work, and cleanup goes in a hook:
 
     ```rust
     let runner = node_runner.clone();
@@ -226,15 +230,20 @@ A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides
     });
     ```
 
-    Do **not** put cleanup in a spawned task that watches the token instead: once the token fires the runtime begins tearing down, and a detached task is not guaranteed to run again.
+    Do **not** put cleanup inside a spawned task watching the token: once the token fires, the runtime tears down and detached tasks are not guaranteed to finish.
   </TabItem>
 </Tabs>
 
-The whole shutdown is bounded by a grace period (`lifecycle.shutdown_grace_secs`, 5 seconds by default) for your cleanup to run: a node that shuts down cooperatively is reported as a clean stop, one that ignores the ask is force-killed, and `peppy node stop` warns about the latter. The [shutdown lifecycle guide](/advanced_guides/shutdown/) covers the full contract: every stop path, hook ordering, the grace windows, and Python's task-teardown mechanics.
+Cleanup has a shared grace period (`lifecycle.shutdown_grace_secs`, default 5 seconds). Nodes that exit in time report a clean stop; nodes that exceed the deadline are force-killed with a warning from `peppy node stop`. See the [shutdown lifecycle guide](/advanced_guides/shutdown/) for the full contract.
 
 ## Serving a page or an MCP endpoint
 
-A node that serves something over the network, an operator panel, a viewer page, an MCP server, declares the sockets it binds under `execution.endpoints`. Each entry has a label, a `kind` (`page` for a URL an operator opens in a browser, `mcp` for one an MCP client attaches to) and a `description`. The declaration says *that* a socket is served under the label, never *where*: the port stays an ordinary parameter, the node decides the address at bind time (a port that is already taken can fall back to one the operating system picks) and announces what it got.
+Nodes that serve HTTP endpoints (operator panels, viewers, MCP servers) declare their socket labels under `execution.endpoints`. Each entry sets:
+
+- `kind`: `"page"` for a browser UI, or `"mcp"` for an MCP endpoint.
+- `description`: a non-empty summary of what the endpoint serves.
+
+The manifest declares *what* is served, never the port. Keep the bind host and port as normal parameters so the node can choose the actual socket at runtime (including falling back to an OS-assigned port if the preferred port is busy) and announce the result.
 
 ```json5 title="peppy.json5"
 {
@@ -252,7 +261,7 @@ A node that serves something over the network, an operator panel, a viewer page,
 }
 ```
 
-Inside `setup`, right after the bind, the node announces the socket under its label. Every declared label must be announced before `setup` returns, and nothing can be announced after: a label left unannounced fails the start with a message naming it.
+Inside `setup`, announce every declared label immediately after binding its socket. Every declared label must be announced before `setup` returns (and none may be announced afterward); missing a label fails startup.
 
 <Tabs>
   <TabItem label="Python">
@@ -284,6 +293,6 @@ Inside `setup`, right after the bind, the node announces the socket under its la
   </TabItem>
 </Tabs>
 
-A Rust node that treats its port as a preference binds with `peppylib::runtime::bind_preferred(address)` in place of `TcpListener::bind`: it takes the address asked for, or a port the operating system picks on the same host address when another process holds that one, and answers the listener with whether it fell back. Any other bind failure is returned as it is. Announcing `listener.local_addr()` reports the port taken either way, which is how several copies of one node run side by side on one machine.
+In Rust, use `peppylib::runtime::bind_preferred(address)` instead of `TcpListener::bind` when the port is only a preference. If the port is busy, it falls back to an OS-assigned port on the same host address (other bind errors still fail) and reports whether fallback occurred. Announcing `listener.local_addr()` then reports the actual port, allowing multiple instances to share one machine without port conflicts.
 
-The daemon that hosts the instance reads the announced sockets once the node is healthy and turns each one into the URLs an operator opens, one per address of that machine (a socket bound on `0.0.0.0` answers on every interface, so loopback comes first, then the others). Every command that starts or inspects instances prints them: `peppy node run` and `peppy stack launch` end with a `Web pages:` block and an `MCP endpoints:` block, `peppy stack list` has an `Instance endpoints` table, and `peppy node info` lists them under each instance.
+Once the instance is healthy, the daemon expands each announced socket into reachable URLs for every network interface on that machine (loopback first for `0.0.0.0`). These URLs appear in `peppy node run`, `peppy stack launch` (`Web pages:` and `MCP endpoints:` blocks), `peppy stack list` (`Instance endpoints` table), and `peppy node info`.

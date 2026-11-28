@@ -169,28 +169,6 @@ impl<'de> Deserialize<'de> for MessageFormat {
 carries no fields",
             ));
         }
-        // Only root-level fields are checked because only they can be
-        // optional at all: `ObjectSchema` rejects `$optional` on its nested
-        // fields and `$items` rejects it on array items, both at parse time.
-        //
-        // The check lives here rather than in `PrimitiveSchema` because
-        // `SchemaType` is `untagged`: an error raised inside a variant is
-        // discarded and reported as "data did not match any variant", which
-        // tells a node author nothing. `MessageFormat` is the nearest
-        // enclosing type whose errors reach them intact.
-        for (name, schema) in &fields {
-            let SchemaType::Primitive(primitive) = schema else {
-                continue;
-            };
-            if primitive.optional && primitive.kind.is_scalar() {
-                return Err(de::Error::custom(format!(
-                    "`$optional` is not supported on field `{name}` of type `{}`: it encodes as \
-a fixed-width Cap'n Proto scalar, which is always present on the wire. Only `string`, `bytes`, \
-`time`, objects, and arrays can be optional",
-                    type_token_name(&primitive.kind)
-                )));
-            }
-        }
         Ok(Self(fields))
     }
 }
@@ -354,11 +332,10 @@ impl<'de> Deserialize<'de> for SchemaType {
 /// A primitive field in its structured form: a `$type` token plus modifiers.
 ///
 /// `$optional` is accepted only on the pointer-backed tokens (`string`,
-/// `bytes`, `time`); [`MessageFormat`] enforces that, and
-/// [`TypeToken::is_scalar`] explains why a scalar cannot carry it. `$enum`
-/// is accepted only on `string`: the closed set of values the field holds.
-/// `$marks` names the marks of the field, and `$description` says what the
-/// field holds.
+/// `bytes`, `time`), at any depth; [`TypeToken::is_scalar`] explains why a
+/// scalar cannot carry it. `$enum` is accepted only on `string`: the closed
+/// set of values the field holds. `$marks` names the marks of the field, and
+/// `$description` says what the field holds.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "RawPrimitiveSchema")]
 pub struct PrimitiveSchema {
@@ -391,8 +368,8 @@ impl PrimitiveSchema {
     }
 }
 
-/// Wire shape of [`PrimitiveSchema`], whose `$enum` is refused on a field
-/// that is not a `string`.
+/// Wire shape of [`PrimitiveSchema`], whose `$optional` is refused on a
+/// scalar and whose `$enum` is refused on a field that is not a `string`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPrimitiveSchema {
@@ -412,6 +389,14 @@ impl TryFrom<RawPrimitiveSchema> for PrimitiveSchema {
     type Error = String;
 
     fn try_from(raw: RawPrimitiveSchema) -> Result<Self, String> {
+        if raw.optional && raw.kind.is_scalar() {
+            let kind = type_token_name(&raw.kind);
+            return Err(format!(
+                "`$optional` is not supported on a field of type `{kind}`: a `{kind}` is always \
+present on the wire. Leave out `$optional`, or hold the value in an optional object: \
+`{{ $type: \"object\", $optional: true, value: \"{kind}\" }}`"
+            ));
+        }
         if raw.enum_values.is_some() && raw.kind != TypeToken::String {
             return Err(format!(
                 "`$enum` is only for a `string` field, and this field is a `{}`",
@@ -479,12 +464,16 @@ fn deserialize_array_items<'de, D>(deserializer: D) -> Result<Box<SchemaType>, D
 where
     D: Deserializer<'de>,
 {
-    let schema = SchemaType::deserialize(deserializer)?;
-    if schema.is_optional() {
+    // The items' `$optional` is read before their schema, so an optional
+    // scalar item gets this refusal.
+    let items = serde_json::Value::deserialize(deserializer)?;
+    if items.get("$optional") == Some(&serde_json::Value::Bool(true)) {
         return Err(de::Error::custom(
-            "`$optional` is not supported on array items",
+            "`$optional` is not supported on array items: each item of an array is present. \
+Put `$optional` on the array, or on a field of its object items",
         ));
     }
+    let schema = SchemaType::deserialize(items).map_err(de::Error::custom)?;
     if matches!(schema, SchemaType::Array(_)) {
         return Err(de::Error::custom(
             "nested arrays (arrays of arrays) are not supported as array items",
@@ -555,11 +544,6 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
                     let value: SchemaType = map
                         .next_value()
                         .map_err(|error| de::Error::custom(format!("field `{key}`: {error}")))?;
-                    if value.is_optional() {
-                        return Err(de::Error::custom(format!(
-                            "`$optional` is not supported on nested field `{key}`"
-                        )));
-                    }
                     if fields.insert(key.clone(), value).is_some() {
                         return Err(de::Error::custom(format!("duplicate object field `{key}`")));
                     }
@@ -2120,6 +2104,8 @@ impl<'a> DocumentReference<'a> {
 // `config::node::is_blocked_mount_source`, part of this crate's public API.
 pub use super::mount_policy::is_blocked_mount_source;
 
+use super::apptainer_run_args::ApptainerRunArgs;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerConfig {
@@ -2129,7 +2115,7 @@ pub struct ContainerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apptainer_build_extra_args: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub apptainer_run_extra_args: Option<Vec<String>>,
+    pub apptainer_run_extra_args: Option<ApptainerRunArgs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lima_shell_extra_args: Option<Vec<String>>,
 }
@@ -3097,69 +3083,108 @@ mod tests {
         assert_eq!(parsed, reparsed);
     }
 
-    #[test]
-    fn root_level_optional_is_accepted() {
-        let json5 = r#"{
-            error_msg: { 
-              $type: "string", 
-              $optional: true 
-            },
-            code: "u32"
-        }"#;
-
-        let parsed: MessageFormat = serde_json5::from_str(json5).expect("should parse");
-        assert!(parsed.0["error_msg"].is_optional());
-        assert!(!parsed.0["code"].is_optional());
+    /// A format that holds `field` under the key `maybe`, beside a required
+    /// `count`, at each depth a field takes: the root, a nested object, and
+    /// the objects an array holds.
+    fn formats_with_maybe_at_every_depth(field: &str) -> [String; 3] {
+        [
+            format!("{{ maybe: {field}, count: \"u32\" }}"),
+            format!("{{ pose: {{ $type: \"object\", maybe: {field}, count: \"u32\" }} }}"),
+            format!(
+                "{{ poses: {{ $type: \"array\", $items: {{ $type: \"object\", maybe: {field}, \
+                 count: \"u32\" }} }} }}"
+            ),
+        ]
     }
 
+    /// The fields that hold `maybe` in a format of
+    /// [`formats_with_maybe_at_every_depth`].
+    fn fields_holding_maybe(format: &MessageFormat) -> &IndexMap<String, SchemaType> {
+        if format.0.contains_key("maybe") {
+            return &format.0;
+        }
+        let (key, field) = format.0.get_index(0).expect("the format holds one field");
+        match field {
+            SchemaType::Object(object) => &object.fields,
+            SchemaType::Array(ArraySchema { items, .. }) => match items.as_ref() {
+                SchemaType::Object(object) => &object.fields,
+                other => panic!("the items of `{key}` are an object, got {other:?}"),
+            },
+            other => panic!("`{key}` holds `maybe`, got {other:?}"),
+        }
+    }
+
+    /// `string`, `bytes` and `time` encode as Cap'n Proto pointers, and an
+    /// object or an array is a pointer too, so each is null when unset and
+    /// can carry `$optional`, in whatever struct it sits, while its sibling
+    /// stays required. Each round-trips with its `$optional`.
     #[test]
-    fn optional_scalar_is_rejected() {
+    fn optional_pointer_backed_fields_are_accepted_at_every_depth() {
+        for field in [
+            r#"{ $type: "string", $optional: true }"#,
+            r#"{ $type: "bytes", $optional: true }"#,
+            r#"{ $type: "time", $optional: true }"#,
+            r#"{ $type: "object", $optional: true, x: "f64" }"#,
+            r#"{ $type: "array", $items: "f64", $length: 4, $optional: true }"#,
+        ] {
+            for json5 in formats_with_maybe_at_every_depth(field) {
+                let parsed = serde_json5::from_str::<MessageFormat>(&json5)
+                    .unwrap_or_else(|err| panic!("`{json5}` must parse: {err}"));
+                let fields = fields_holding_maybe(&parsed);
+                assert!(fields["maybe"].is_optional(), "in `{json5}`");
+                assert!(!fields["count"].is_optional(), "in `{json5}`");
+                let serialized = serde_json5::to_string(&parsed).expect("serializes");
+                let reparsed: MessageFormat =
+                    serde_json5::from_str(&serialized).expect("re-parses");
+                assert_eq!(parsed, reparsed, "`{json5}` round-trips");
+            }
+        }
+    }
+
+    /// A scalar has no presence on the wire, so `$optional` on it is refused
+    /// in whatever struct it sits, and the error names its type and the
+    /// optional object that holds such a value.
+    #[test]
+    fn optional_scalar_is_rejected_at_every_depth_naming_what_to_write() {
         for token in [
             "bool", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64",
         ] {
-            let json5 = format!(r#"{{ maybe: {{ $type: "{token}", $optional: true }} }}"#);
+            let field = format!(r#"{{ $type: "{token}", $optional: true }}"#);
+            for json5 in formats_with_maybe_at_every_depth(&field) {
+                let message = serde_json5::from_str::<MessageFormat>(&json5)
+                    .expect_err("`$optional` on a scalar is refused")
+                    .to_string();
+                let advice = format!(
+                    "Leave out `$optional`, or hold the value in an optional object: \
+                     `{{ $type: \"object\", $optional: true, value: \"{token}\" }}`"
+                );
+                assert!(
+                    message.contains(&format!("a field of type `{token}`"))
+                        && message.contains(&advice),
+                    "the error of `{json5}` names `{token}` and what to write, got: {message}"
+                );
+            }
+        }
+    }
+
+    /// Each item of an array is present, so the refusal of `$optional` on
+    /// the items, scalar or not, names the places that take it.
+    #[test]
+    fn optional_array_items_error_names_where_optional_goes() {
+        for items in [
+            r#"{ $type: "string", $optional: true }"#,
+            r#"{ $type: "f64", $optional: true }"#,
+        ] {
+            let message = serde_json5::from_str::<MessageFormat>(&format!(
+                "{{ values: {{ $type: \"array\", $items: {items} }} }}"
+            ))
+            .expect_err("`$optional` on array items is refused")
+            .to_string();
             assert!(
-                serde_json5::from_str::<MessageFormat>(&json5).is_err(),
-                "`$optional` on `{token}` must be rejected"
+                message.contains("Put `$optional` on the array, or on a field of its object items"),
+                "for items `{items}`, got: {message}"
             );
         }
-    }
-
-    #[test]
-    fn optional_scalar_error_names_the_type() {
-        let json5 = r#"{ maybe_code: { $type: "u32", $optional: true } }"#;
-        let err = serde_json5::from_str::<MessageFormat>(json5)
-            .expect_err("`$optional` on `u32` must be rejected");
-        let message = err.to_string();
-        assert!(
-            message.contains("`u32`") && message.contains("$optional"),
-            "error should name the offending type, got: {message}"
-        );
-    }
-
-    /// `string`, `bytes`, and `time` encode as Cap'n Proto pointers, so they
-    /// are null when unset and can carry `$optional`.
-    #[test]
-    fn optional_pointer_backed_primitives_are_accepted() {
-        for token in ["string", "bytes", "time"] {
-            let json5 = format!(r#"{{ maybe: {{ $type: "{token}", $optional: true }} }}"#);
-            let parsed = serde_json5::from_str::<MessageFormat>(&json5)
-                .unwrap_or_else(|err| panic!("`$optional` on `{token}` must parse: {err}"));
-            assert!(parsed.0["maybe"].is_optional());
-        }
-    }
-
-    #[test]
-    fn optional_object_and_array_are_accepted() {
-        let json5 = r#"{
-            header: { $type: "object", $optional: true, frame_id: "u32" },
-            samples: { $type: "array", $items: "f32", $optional: true }
-        }"#;
-
-        let parsed: MessageFormat =
-            serde_json5::from_str(json5).expect("pointer-backed structures may be optional");
-        assert!(parsed.0["header"].is_optional());
-        assert!(parsed.0["samples"].is_optional());
     }
 
     /// A string field can hold a closed set of values, and every field form
@@ -3336,7 +3361,8 @@ mod tests {
     }
 
     /// Schemas that `MessageFormat` refuses: an array without `$type`,
-    /// `$optional` below the root, and arrays of arrays.
+    /// `$optional` on array items, arrays of arrays, and a description on
+    /// array items.
     #[test]
     fn message_format_rejects_invalid_schemas() {
         for (json5, reason) in [
@@ -3348,22 +3374,10 @@ mod tests {
             ),
             (
                 r#"{
-                    header: {
-                        $type: "object",
-                        debug: {
-                          $type: "string",
-                          $optional: true
-                        }
-                    }
-                }"#,
-                "optional on nested object field should fail",
-            ),
-            (
-                r#"{
                     values: {
                       $type: "array",
                       $items: {
-                        $type: "u8",
+                        $type: "string",
                         $optional: true
                       }
                     }
@@ -3395,22 +3409,6 @@ mod tests {
                     }
                 }"#,
                 "a description on array items should fail",
-            ),
-            (
-                r#"{
-                    frames: {
-                        $type: "array",
-                        $items: {
-                            $type: "object",
-                            name: "string",
-                            debug: {
-                              $type: "string",
-                              $optional: true
-                            }
-                        }
-                    }
-                }"#,
-                "optional on field inside array-of-objects should fail",
             ),
         ] {
             assert!(

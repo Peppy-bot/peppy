@@ -1,0 +1,190 @@
+name: OpenCodeReview
+description: >-
+  Reviews the pull request of the event of the run in the delegation mode of
+  OpenCodeReview (OCR, https://github.com/alibaba/open-code-review): the OCR
+  CLI selects the files and gives their rules, the Claude CLI reviews them by
+  the skill `open-code-review-delegate` of OCR with the Claude login of the
+  subscription, and the poster of the OCR GitHub Action posts the findings:
+  inline comments, and one summary comment that each run updates. For a pull
+  request into the integration branch of its repository, the output `status`
+  gives the commit status `open-code-review` of the head that the run read,
+  which tells whether that head has a review: the action
+  open-code-review/status sets it in a job of its own, with the token of the
+  App of the status, which this job never holds. The run never approves and
+  never requests changes. open_code_review.py gives the design.
+
+  A workflow `OpenCodeReview` of peppy or of platform runs the action on
+  `pull_request_target` (opened, synchronize, reopened, ready_for_review, and
+  edited for a change of the base branch) and on `issue_comment` (created),
+  when its first job, which runs open-code-review/author, says that the
+  author of the event has write access to the repository. It runs the action
+  in a job whose token has the permissions `contents: read`,
+  `pull-requests: write` and `statuses: read` (a push keeps a review only
+  when the App of the status set success on its head), with the run name
+  `OpenCodeReview of #<number>` that the merge-set bot reads.
+  open_code_review.py check-workflow checks such a workflow. The job checks
+  out nothing: the action brings its script, the merge-set bot that the
+  script imports and the installer of the Claude CLI, from the commit of
+  peppy that the workflow names.
+
+  Each step that runs a command has a time limit, the `timeout` of its
+  command, so that a step at its limit fails and the post step then posts the
+  cause. A step of a composite action takes no `timeout-minutes`, so the
+  checkout of OCR and the post step have no limit of their own: the job holds
+  them, with a `timeout-minutes` above the sum of the limits of the steps
+  (test_open_code_review.py checks it for peppy). The step that records the
+  status runs also after a cancellation, of the run or of the job at its
+  limit.
+
+inputs:
+  claude-code-oauth-token:
+    description: >-
+      The Claude login of the subscription, the secret CLAUDE_CODE_OAUTH_TOKEN
+      of the repository. Only the environment of the Claude CLI gets it.
+    required: true
+
+outputs:
+  status:
+    description: >-
+      The status that the run reports on the head that it read, as JSON
+      (`head`, `state`, `description`), for the action
+      open-code-review/status; empty when the run gives no status: the pull
+      request goes into another branch, or the run stopped before it read the
+      pull request.
+    value: ${{ steps.status.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    # The skill that Claude follows and the poster of the OCR GitHub Action,
+    # at the commit of the release of OCR whose CLI the next step installs.
+    - name: Check out the skill and the poster of OCR
+      uses: actions/checkout@v7.0.1
+      with:
+        repository: alibaba/open-code-review
+        ref: f6379f71edba1e59dbc056e8f455df1f84396498
+        path: open-code-review
+        sparse-checkout: |
+          /skills/open-code-review-delegate/SKILL.md
+          /scripts/github-actions/post-review-comments.js
+        sparse-checkout-cone-mode: false
+        persist-credentials: false
+
+    # The release of OCR whose CLI the job runs, and the sha256 of its CLI
+    # for linux/amd64, as the sha256sum.txt of the release gives it. Change
+    # them together with the commit of the checkout above. The curl options
+    # are those of every download of a release (scripts/functions/download.py).
+    - name: Install the OCR CLI
+      shell: bash
+      env:
+        OCR_VERSION: 1.14.3
+        OCR_SHA256: 17ee32cdf0af6c006a199d758defb6c2abe05ec5b4d164df3a703c0208d5155e
+      run: |
+        dir="$RUNNER_TEMP/ocr"
+        mkdir -p "$dir"
+        timeout --kill-after=1m 5m \
+          curl --fail --silent --show-error --location \
+          --retry 10 --retry-max-time 180 --retry-connrefused \
+          --output "$dir/ocr" \
+          "https://github.com/alibaba/open-code-review/releases/download/v${OCR_VERSION}/opencodereview-linux-amd64"
+        echo "${OCR_SHA256}  $dir/ocr" | sha256sum -c -
+        chmod +x "$dir/ocr"
+
+    # The version of the Claude CLI is pinned, as the model and the effort
+    # are, so that a new release does not change the reviewer: the
+    # CLAUDE_CLI_VERSION of claude_review.py, which the tests check here and
+    # in the workflow of the Claude review of a set.
+    - name: Install the Claude CLI
+      shell: bash
+      env:
+        CLAUDE_CLI_VERSION: 2.1.327
+      run: |
+        timeout --kill-after=1m 10m \
+          "$GITHUB_ACTION_PATH/../../../scripts/run_installer.sh" https://claude.ai/install.sh "$CLAUDE_CLI_VERSION"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    # Every value reaches the script through the environment rather than a
+    # `${{ }}` expansion in its source, so it is data the script parses. The
+    # limit holds the Claude run, the two OCR commands and the git commands.
+    - name: Review the pull request
+      shell: bash
+      env:
+        REVIEW_TOKEN: ${{ github.token }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}
+        REVIEW_OCR: ${{ runner.temp }}/ocr/ocr
+        REVIEW_SKILL: ${{ github.workspace }}/open-code-review/skills/open-code-review-delegate/SKILL.md
+        REVIEW_WORKSPACE: ${{ runner.temp }}/open-code-review
+      run: |
+        timeout --kill-after=1m 80m \
+          python3 "$GITHUB_ACTION_PATH/open_code_review.py" review --result "$RUNNER_TEMP/ocr-result.json" --errors "$RUNNER_TEMP/ocr-errors.log" --poster "$RUNNER_TEMP/ocr-poster.json" --status "$RUNNER_TEMP/ocr-status.json"
+
+    # The poster posts the result, or the cause of a review that did not
+    # complete, with the options that the review step chose
+    # (open_code_review.py gives them). Incremental: a comment that overlaps
+    # an inline comment of an earlier run is not posted again. A run that
+    # stopped before the review step wrote the options (a step that failed
+    # or reached its time limit) gets a cause in a new comment. The poster
+    # ends with no error when it cannot write the summary comment, which
+    # holds the warnings and the findings that GitHub did not take inline:
+    # the step then fails, so that the run reports no review.
+    - name: Post the review
+      id: post
+      if: ${{ !cancelled() }}
+      uses: actions/github-script@v9.0.0
+      env:
+        REVIEW_PULL_REQUEST: ${{ github.event.pull_request.number || github.event.issue.number }}
+      with:
+        script: |
+          const fs = require('fs');
+          const { runPostReviewComments } = require(
+            `${process.env.GITHUB_WORKSPACE}/open-code-review/scripts/github-actions/post-review-comments.js`
+          );
+          const resultPath = `${process.env.RUNNER_TEMP}/ocr-result.json`;
+          const stderrPath = `${process.env.RUNNER_TEMP}/ocr-errors.log`;
+          const posterPath = `${process.env.RUNNER_TEMP}/ocr-poster.json`;
+          let options = { stickySummary: false };
+          if (fs.existsSync(posterPath)) {
+            options = JSON.parse(fs.readFileSync(posterPath, 'utf8'));
+          } else {
+            fs.writeFileSync(
+              stderrPath,
+              'The run stopped before the review completed: the log of the run gives the cause.\n'
+            );
+          }
+          const outputs = {};
+          const recordingCore = {
+            ...core,
+            setOutput: (name, value) => {
+              outputs[name] = value;
+              core.setOutput(name, value);
+            },
+          };
+          await runPostReviewComments({
+            github,
+            context,
+            core: recordingCore,
+            fs,
+            prNumber: Number(process.env.REVIEW_PULL_REQUEST),
+            resultPath,
+            stderrPath,
+            incremental: true,
+            appSlug: 'github-actions',
+            ...options,
+          });
+          if (!options.checkpointNoop && !outputs.summary_comment_url) {
+            core.setFailed('The poster wrote no summary comment: the log of the step gives the cause.');
+          }
+
+    # The status of the review on the head that the review step read: the
+    # one that it recorded when the post step posted the result or the cause,
+    # and a failure else. It runs after a cancellation too, so that a run that
+    # ended before its post step reports its failure.
+    - name: Record the status of the review
+      id: status
+      if: ${{ always() }}
+      shell: bash
+      env:
+        REVIEW_POSTED: ${{ steps.post.outcome }}
+      run: |
+        timeout --kill-after=1m 2m \
+          python3 "$GITHUB_ACTION_PATH/open_code_review.py" record-status --status "$RUNNER_TEMP/ocr-status.json"

@@ -18,7 +18,7 @@ import subprocess
 import threading
 from typing import Iterator
 
-from tools import footage, paths, pins, project, voice
+from tools import footage, hyperframes, paths, pins, project, voice
 from tools.timing import SegmentSlot
 from tools.voice_durations import read_voice_durations
 
@@ -59,6 +59,7 @@ class CompiledSegment:
             completed = subprocess.run(
                 ["node", str(script), str(self.chrome), f"{address}/{page.name}", self.id, argument],
                 cwd=paths.PROJECT_ROOT,
+                env=hyperframes.headless_environment(),
                 check=True,
                 capture_output=True,
                 text=True,

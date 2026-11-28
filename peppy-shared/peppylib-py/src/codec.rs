@@ -378,6 +378,22 @@ pub struct PyMessageCodec {
     inner: MessageCodec,
 }
 
+/// The message format that `value` holds. Its error names the path of the
+/// field it is about, from the root of the format, as the error of a
+/// document does.
+fn message_format_of(value: Value) -> PyResult<MessageFormat> {
+    serde_path_to_error::deserialize(value).map_err(|error| {
+        let path = error.path().to_string();
+        let reason = error.into_inner();
+        let message = if path.is_empty() || path == "." {
+            reason.to_string()
+        } else {
+            format!("{path}: {reason}")
+        };
+        PyValueError::new_err(format!("not a message format: {message}"))
+    })
+}
+
 #[pymethods]
 impl PyMessageCodec {
     /// Lays out `message_format`, a format as data (such as the one
@@ -387,8 +403,7 @@ impl PyMessageCodec {
     /// and `CodecError` for a format that does not lay out.
     #[new]
     fn new(py: Python<'_>, schema_name: &str, message_format: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let format: MessageFormat = serde_json::from_value(json_of(message_format)?)
-            .map_err(|error| PyValueError::new_err(format!("not a message format: {error}")))?;
+        let format = message_format_of(json_of(message_format)?)?;
         let inner = py
             .detach(|| MessageCodec::new(schema_name, &format))
             .map_err(codec_err)?;
