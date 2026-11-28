@@ -1621,8 +1621,10 @@ def vouched_summary(
     user with write access can edit the summary comment, so for a pull
     request that gets a status (gives_status), the App of the status must
     have set the status success on the head of the checkpoint too: a record
-    that such a user cannot set. A pull request into another branch gets no
-    status, and no ruleset reads its review: its checkpoint counts alone."""
+    that such a user cannot set. A read of the statuses that fails drops the
+    checkpoint too: the run then reviews in full. A pull request into another
+    branch gets no status, and no ruleset reads its review: its checkpoint
+    counts alone."""
     if summary is None or summary.checkpoint is None:
         return summary
     if not push:
@@ -1630,7 +1632,15 @@ def vouched_summary(
     if not gives_status(pull_request):
         return summary
     head = summary.checkpoint.head
-    status = app_status(api, pull_request.repository, head)
+    try:
+        status = app_status(api, pull_request.repository, head)
+    except ApiError as failure:
+        print(
+            f"The statuses of {head} could not be read ({failure}): the run "
+            "reviews in full.",
+            flush=True,
+        )
+        return replace(summary, checkpoint=None)
     if status is not None and status.state == StatusState.SUCCESS.value:
         return summary
     print(

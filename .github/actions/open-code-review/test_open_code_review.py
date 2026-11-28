@@ -1940,6 +1940,23 @@ class Statuses(unittest.TestCase):
                 )
                 self.assertEqual(api.calls, [])
 
+    def test_a_read_of_the_statuses_that_fails_drops_the_checkpoint(self):
+        """The read decides only whether Claude can skip the review: a 5xx, or
+        a head that GitHub no longer has, gives a review in full."""
+
+        class FailingApi(FakeApi):
+            def pages(self, path, query=None, key=None):
+                raise ApiError(f"GET {path}", 422, "No commit found for SHA")
+
+        summary = SummaryComment(True, Checkpoint(HEAD, "dev", "f1"))
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            vouched = open_code_review.vouched_summary(
+                FailingApi(), reviewed_pull_request().pull_request, summary, True
+            )
+        self.assertEqual(vouched, SummaryComment(True, None))
+        self.assertIn(f"The statuses of {HEAD} could not be read", output.getvalue())
+
     def test_an_event_that_is_not_a_push_keeps_no_checkpoint(self):
         """It asks for a review in full, so the run reads no status."""
         vouched, calls = self.vouched([app_status("success")], push=False)
