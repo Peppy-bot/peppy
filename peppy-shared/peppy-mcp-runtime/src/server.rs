@@ -16,6 +16,9 @@ use crate::representation::{
 };
 use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState, SnapshotView};
 use crate::tasks::{ActionContext, ActionExit, ActionSurface, TaskHandler};
+use axum::extract::{Request, State};
+use axum::http::request::Parts;
+use axum::routing::{MethodRouter, any_service};
 use peppy_mcp_catalog::{
     BundleIdentity, BundleServer, BundleSurface, ExposureBundle, GoalBound, ImageCodec,
     PictureEntry, ROBOT_ARGUMENT, ResourceEntry, ServiceOperation, TaskEntry, ToolEntry,
@@ -40,7 +43,7 @@ use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -626,6 +629,14 @@ impl ExposureServer {
     /// [`BundleIdentity::endpoint_path`].
     pub fn endpoint_path(&self) -> String {
         self.state.exposure.endpoint_path()
+    }
+
+    /// The route of this exposure in an [`ExposureSet`]: its Streamable
+    /// HTTP service, behind the layer that subscribes each request to the
+    /// events of the exposure when it arrives.
+    fn endpoint_route(self, shutdown: &CancellationToken) -> MethodRouter {
+        let events = self.state.events.clone();
+        with_events_since_arrival(any_service(self.http_service(shutdown)), events)
     }
 
     /// The Streamable HTTP service for this exposure. Sessions are per
@@ -1314,7 +1325,7 @@ impl ExposureSet {
         for server in self.servers {
             managers.push(server.state.manager.clone());
             let path = server.endpoint_path();
-            router = router.route_service(&path, server.http_service(&shutdown));
+            router = router.route(&path, server.endpoint_route(&shutdown));
         }
         let served = axum::serve(listener, router)
             .with_graceful_shutdown(shutdown.cancelled_owned())
@@ -1327,6 +1338,69 @@ impl ExposureSet {
         }
         served
     }
+}
+
+/// The receiver of the events of an exposure that its endpoint subscribed
+/// when a request arrived, for the `subscriptions/listen` that the request
+/// can carry.
+///
+/// rmcp sends the acknowledgment of a subscription before it calls
+/// [`ServerHandler::listen`], and the client takes the acknowledgment as
+/// the start of the subscription. A receiver that `listen` subscribed
+/// itself would not get the events published between the two. This
+/// receiver gets each event published after the request arrived, and none
+/// from before it.
+///
+/// The endpoint subscribes one receiver for each request, whatever its
+/// method: rmcp reads the body that names the method after the layer ran.
+/// The request drops its receiver when it ends. The extensions of a
+/// request hold only values that clone, so the receiver is shared behind a
+/// lock, and `listen` takes it once.
+#[derive(Debug, Clone)]
+struct EventsSinceArrival(Arc<Mutex<Option<broadcast::Receiver<CatalogEvent>>>>);
+
+impl EventsSinceArrival {
+    fn subscribe(events: &broadcast::Sender<CatalogEvent>) -> Self {
+        Self(Arc::new(Mutex::new(Some(events.subscribe()))))
+    }
+
+    /// Takes the receiver of the request that `context` serves: `None` for
+    /// a request that did not come through [`insert_events_since_arrival`].
+    fn take(context: &RequestContext<RoleServer>) -> Option<broadcast::Receiver<CatalogEvent>> {
+        context
+            .extensions
+            .get::<Parts>()?
+            .extensions
+            .get::<Self>()?
+            .0
+            .lock()
+            .expect("the receiver lock is never poisoned")
+            .take()
+    }
+}
+
+/// `route` behind the layer that subscribes each request to `events` when
+/// it arrives (see [`EventsSinceArrival`]).
+fn with_events_since_arrival(
+    route: MethodRouter,
+    events: broadcast::Sender<CatalogEvent>,
+) -> MethodRouter {
+    route.layer(axum::middleware::map_request_with_state(
+        events,
+        insert_events_since_arrival,
+    ))
+}
+
+/// Gives `request` the receiver of each event of `events` published from
+/// now on.
+async fn insert_events_since_arrival(
+    State(events): State<broadcast::Sender<CatalogEvent>>,
+    mut request: Request,
+) -> Request {
+    request
+        .extensions_mut()
+        .insert(EventsSinceArrival::subscribe(&events));
+    request
 }
 
 /// The whole task operation: the optional confirmation gate and the
@@ -1944,9 +2018,18 @@ impl ServerHandler for ExposureServer {
         Some(requested.supported_by(&self.capabilities()))
     }
 
+    /// Relays the events of the exposure to the subscription, from the
+    /// arrival of its request (see `EventsSinceArrival`). A request that
+    /// did not come through an [`ExposureSet`] has no receiver, and its
+    /// subscription ends with an internal error.
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
+        let Some(mut events) = EventsSinceArrival::take(context.request_context()) else {
+            return Err(McpError::internal_error(
+                "the request of this subscription carries no receiver of the events of the exposure",
+                None,
+            ));
+        };
         let sink = context.sink().clone();
-        let mut events = self.state.events.subscribe();
         loop {
             let received = tokio::select! {
                 () = context.cancelled() => return Ok(()),
@@ -2561,7 +2644,7 @@ mod tests {
     /// only when the test lets it go: each message is kept in the order
     /// the relay handed it over.
     struct HeldClient {
-        taken: Arc<std::sync::Mutex<Vec<String>>>,
+        taken: Arc<Mutex<Vec<String>>>,
         holds: Arc<tokio::sync::Notify>,
         release: Option<tokio::sync::oneshot::Receiver<()>>,
     }
@@ -2569,14 +2652,14 @@ mod tests {
     /// What the test keeps of a [`HeldClient`]: what it took, the signal
     /// that it holds the first message, and what lets it go.
     struct HeldClientHandle {
-        taken: Arc<std::sync::Mutex<Vec<String>>>,
+        taken: Arc<Mutex<Vec<String>>>,
         holds: Arc<tokio::sync::Notify>,
         release: tokio::sync::oneshot::Sender<()>,
     }
 
     impl HeldClient {
         fn new() -> (Self, HeldClientHandle) {
-            let taken = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let taken = Arc::new(Mutex::new(Vec::new()));
             let holds = Arc::new(tokio::sync::Notify::new());
             let (release, released) = tokio::sync::oneshot::channel();
             let client = Self {
@@ -3058,7 +3141,6 @@ mod tests {
     mod per_robot {
         use super::*;
         use peppy_mcp_catalog::{BundleContractPin, RobotContractPin};
-        use std::sync::Mutex;
 
         fn bundle() -> ExposureBundle {
             ExposureBundle::from_json_str(
@@ -3835,6 +3917,185 @@ mod tests {
             ExposureSet::new(Vec::new()).expect_err("nothing to serve"),
             BuildError::NoExposures
         );
+    }
+
+    /// The start of a subscription, served over loopback HTTP to the real
+    /// rmcp client. Each test builds the route of the endpoint itself, so it
+    /// can act on a request between its arrival and rmcp.
+    mod subscription_start {
+        use super::*;
+        use axum::middleware::map_request_with_state;
+        use rmcp::model::{ClientConfig, ServerNotification};
+        use rmcp::service::{RunningService, ServiceError, Subscription};
+        use rmcp::transport::StreamableHttpClientTransport;
+        use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+        use rmcp::{ClientLifecycleMode, ClientServiceExt, RoleClient};
+        use std::sync::atomic::AtomicBool;
+
+        /// Bounds the waits that the answers of the server drive; it fires
+        /// only when something is broken.
+        const GUARD: Duration = Duration::from_secs(30);
+
+        type Client = RunningService<RoleClient, ClientConfig>;
+
+        /// `route` served at the endpoint path of `server` on a loopback
+        /// listener, with a client connected to it.
+        struct Served {
+            client: Client,
+            shutdown: CancellationToken,
+            serving: tokio::task::JoinHandle<std::io::Result<()>>,
+        }
+
+        impl Served {
+            async fn start(
+                server: &ExposureServer,
+                route: MethodRouter,
+                shutdown: CancellationToken,
+            ) -> Self {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("a loopback port is free");
+                let address = listener.local_addr().expect("the listener has an address");
+                let path = server.endpoint_path();
+                let router = axum::Router::new().route(&path, route);
+                let serving = tokio::spawn(
+                    axum::serve(listener, router)
+                        .with_graceful_shutdown(shutdown.clone().cancelled_owned())
+                        .into_future(),
+                );
+                let transport = StreamableHttpClientTransport::from_config(
+                    StreamableHttpClientTransportConfig::with_uri(format!(
+                        "http://{address}{path}"
+                    )),
+                );
+                let client = ClientConfig::default()
+                    .serve_with_lifecycle(
+                        transport,
+                        ClientLifecycleMode::Discover {
+                            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                        },
+                    )
+                    .await
+                    .expect("the client negotiates 2026-07-28 over loopback");
+                Self {
+                    client,
+                    shutdown,
+                    serving,
+                }
+            }
+
+            /// Disconnects the client and settles the serve task, so that a
+            /// serve failure is a named failure of the test.
+            async fn stop(self) {
+                self.client.cancel().await.expect("the client disconnects");
+                self.shutdown.cancel();
+                tokio::time::timeout(GUARD, self.serving)
+                    .await
+                    .expect("the serve task ends once the token is cancelled")
+                    .expect("the serve task does not panic")
+                    .expect("the listener serves until the shutdown");
+            }
+        }
+
+        /// A subscription to the status resource alone.
+        async fn listen_to_status(client: &Client) -> Subscription {
+            client
+                .listen(
+                    SubscriptionFilter::builder()
+                        .resource_subscription(STATUS_URI)
+                        .build(),
+                )
+                .await
+                .expect("subscriptions/listen is acknowledged")
+        }
+
+        /// The server whose status a test publishes, and whether it
+        /// published.
+        #[derive(Clone)]
+        struct StatusPublisher {
+            server: ExposureServer,
+            published: Arc<AtomicBool>,
+        }
+
+        /// Publishes one status message while a `subscriptions/listen`
+        /// request passes: after the request arrived and before rmcp
+        /// acknowledges the subscription and calls `listen`.
+        async fn publish_status_on_listen(
+            State(publisher): State<StatusPublisher>,
+            request: Request,
+        ) -> Request {
+            let is_listen = request
+                .headers()
+                .get("mcp-method")
+                .is_some_and(|method| method == "subscriptions/listen");
+            if is_listen {
+                publish_status(&publisher.server, 42);
+                publisher.published.store(true, Ordering::SeqCst);
+            }
+            request
+        }
+
+        #[tokio::test]
+        async fn a_subscription_is_told_of_an_update_published_before_its_acknowledgment() {
+            let server = built_server();
+            let publisher = StatusPublisher {
+                server: server.clone(),
+                published: Arc::new(AtomicBool::new(false)),
+            };
+            let shutdown = CancellationToken::new();
+            let rmcp_with_publish = any_service(server.clone().http_service(&shutdown)).layer(
+                map_request_with_state(publisher.clone(), publish_status_on_listen),
+            );
+            let route = with_events_since_arrival(rmcp_with_publish, server.state.events.clone());
+            let served = Served::start(&server, route, shutdown).await;
+
+            let mut subscription = listen_to_status(&served.client).await;
+            assert!(
+                publisher.published.load(Ordering::SeqCst),
+                "the status was published during the request of the subscription"
+            );
+            let notification = tokio::time::timeout(GUARD, subscription.next())
+                .await
+                .expect("a notification arrives")
+                .expect("the subscription stream is healthy")
+                .expect("the stream did not end");
+            match notification {
+                ServerNotification::ResourceUpdatedNotification(updated) => {
+                    assert_eq!(updated.params.uri, STATUS_URI);
+                }
+                other => panic!("expected a resource-updated notification, got {other:?}"),
+            }
+
+            subscription
+                .cancel()
+                .await
+                .expect("the subscription cancels");
+            served.stop().await;
+        }
+
+        #[tokio::test]
+        async fn a_subscription_whose_request_has_no_receiver_ends_with_an_internal_error() {
+            let server = built_server();
+            let shutdown = CancellationToken::new();
+            let route = any_service(server.clone().http_service(&shutdown));
+            let served = Served::start(&server, route, shutdown).await;
+
+            let mut subscription = listen_to_status(&served.client).await;
+            let ended = tokio::time::timeout(GUARD, subscription.next())
+                .await
+                .expect("the subscription ends");
+            let Err(ServiceError::McpError(error)) = ended else {
+                panic!("expected a protocol error, got {ended:?}");
+            };
+            assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+            assert!(
+                error.message.contains("carries no receiver of the events"),
+                "unexpected message: {}",
+                error.message
+            );
+
+            served.stop().await;
+        }
     }
 
     #[test]
