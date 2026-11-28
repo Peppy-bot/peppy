@@ -3,14 +3,15 @@ description: >-
   Tells whether the event of the run starts an OpenCodeReview review: `true`
   when the author of the pull request, for an event of the pull request, or
   the author of the comment, for a comment, has write access to the
-  repository (open_code_review.py author). The workflow `OpenCodeReview` of
-  peppy and the one of platform run it in a first job on the smallest runner,
-  and their review job and its concurrency group take only an event for
-  which it gives `true`: a user with no write access cannot start a review, nor
-  cancel one. The association of the author that the event gives cannot tell
-  it, as GitHub gives a member whose membership of the organisation is private
-  as a `CONTRIBUTOR`. The token of the job reads the permission from the
-  metadata of the repository (`contents: read` gives it).
+  repository (open_code_review.py author). For each event of a pull request,
+  a push of another user or of a bot too, its author decides. The workflow
+  `OpenCodeReview` of peppy and the one of platform run it in a first job on
+  the smallest runner, and their review job and its concurrency group take
+  only an event for which it gives `true`. The association of the author that
+  the event gives cannot tell it: GitHub gives a member whose membership of
+  the organisation is private as a `CONTRIBUTOR` in an event. Each token of a
+  job can read the permission, which is part of the metadata of the
+  repository.
 
 outputs:
   review:

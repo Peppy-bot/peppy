@@ -164,8 +164,8 @@ runs:
     # The status of the review on the head that the review step read: the
     # one that it recorded when the post step posted the result or the cause,
     # and a failure else. It runs after a cancellation too, so that no head
-    # keeps the pending status of a run that ended. The next run of the
-    # concurrency group starts when this run ends, so its pending status
+    # keeps the pending status of a run that ended. The next review job of
+    # the concurrency group starts when this job ends, so its pending status
     # comes after this one.
     - name: Report the status of the review
       if: ${{ always() }}

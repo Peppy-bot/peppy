@@ -581,8 +581,8 @@ class Relay(unittest.TestCase):
                     )
 
     def test_an_open_code_review_run_whose_job_is_skipped_is_dropped(self):
-        # Each comment on a pull request starts a run, whose job its condition
-        # skips unless the comment asks for a review.
+        # Each comment on a pull request starts a run, whose jobs their
+        # conditions skip unless the comment asks for a review.
         for event in ("pull_request_target", "issue_comment"):
             with self.subTest(event=event):
                 self.assert_dropped(

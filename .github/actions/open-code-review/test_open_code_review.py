@@ -1709,7 +1709,12 @@ class FakeEnvironment:
     def __init__(self, root):
         self.event = root / "event.json"
         self.event.write_text(
-            json.dumps({"action": "synchronize", "pull_request": {"number": 42}})
+            json.dumps(
+                {
+                    "action": "synchronize",
+                    "pull_request": {"number": 42, "user": {"login": "alice"}},
+                }
+            )
         )
         self.values = {
             "GITHUB_REPOSITORY": "Peppy-bot/peppy",
@@ -2216,6 +2221,55 @@ class Authors(unittest.TestCase):
                     open_code_review.author_of(event_name, event)
 
 
+class AuthorPermissions(unittest.TestCase):
+    def read(self, outcomes):
+        """read_author_permission with a GitHub whose answers are `outcomes`:
+        an exception is raised, a text is the permission."""
+        calls = []
+        waits = []
+
+        class Api:
+            def request(self, method, path, query=None, body=None):
+                calls.append(path)
+                outcome = outcomes[len(calls) - 1]
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return {"permission": outcome}
+
+        try:
+            permission = open_code_review.read_author_permission(
+                Api(), PLATFORM, "alice", waits.append
+            )
+        except ApiError as error:
+            permission = error
+        return permission, len(calls), waits
+
+    def test_a_short_fault_of_github_is_read_again(self):
+        for fault in (
+            ApiError("GET", 502, "Bad Gateway"),
+            ApiError("GET", None, "reset"),
+        ):
+            with self.subTest(status=fault.status):
+                self.assertEqual(self.read([fault, "write"]), ("write", 2, [10]))
+
+    def test_the_attempts_end_after_their_number(self):
+        fault = ApiError("GET", 503, "Unavailable")
+        permission, calls, waits = self.read([fault, fault, fault, "write"])
+        self.assertIs(permission, fault)
+        self.assertEqual((calls, waits), (3, [10, 20]))
+
+    def test_a_refusal_of_github_fails_at_once(self):
+        refusal = ApiError("GET", 403, "Resource not accessible by integration")
+        permission, calls, waits = self.read([refusal, "write"])
+        self.assertIs(permission, refusal)
+        self.assertEqual((calls, waits), (1, []))
+
+    def test_an_unknown_user_has_no_permission_at_once(self):
+        self.assertEqual(
+            self.read([ApiError("GET", 404, "Not Found")]), ("none", 1, [])
+        )
+
+
 class AuthorCommand(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -2236,9 +2290,11 @@ class AuthorCommand(unittest.TestCase):
 
     def run_command(self, api):
         output = io.StringIO()
+        self.waits = []
         with (
             patch.dict(os.environ, self.environment, clear=True),
             patch.object(open_code_review, "GitHubApi", lambda token: api),
+            patch.object(open_code_review.time, "sleep", self.waits.append),
             patch("sys.stdout", output),
         ):
             code = open_code_review.author_command()
@@ -2284,6 +2340,7 @@ class AuthorCommand(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(self.output.read_text(), "")
         self.assertIn("::error::A call to GitHub failed: GET", output)
+        self.assertEqual(self.waits, [10, 20])
 
     def test_a_run_of_another_repository_gives_no_answer(self):
         self.environment["GITHUB_REPOSITORY"] = "someone/peppy"
@@ -2510,6 +2567,16 @@ class ActionContract(unittest.TestCase):
             + claude_review.GIT_TIMEOUT_SECONDS,
         )
 
+    def test_the_limit_of_the_author_step_holds_its_attempts(self):
+        """The waits between the calls fit in the `timeout` of the step."""
+        text = (ACTION.parent / "author" / "action.yml").read_text()
+        minutes = int(re.search(r"timeout --kill-after=1m (\d+)m", text)[1])
+        waits = sum(
+            open_code_review.PERMISSION_RETRY_SECONDS * attempt
+            for attempt in range(1, open_code_review.PERMISSION_ATTEMPTS)
+        )
+        self.assertGreater(minutes * 60, waits + 60)
+
     def test_the_author_action_runs_the_author_command_with_a_limit(self):
         text = (ACTION.parent / "author" / "action.yml").read_text()
         self.assertIn(
@@ -2611,7 +2678,8 @@ class WorkflowContract(unittest.TestCase):
         self.assertIn("github.event.comment.user.type != 'Bot'", condition)
         self.assertIn("    runs-on: ubuntu-slim\n", author)
         self.assertIn(
-            "        uses: $/.github/actions/open-code-review/author\n", author
+            "      - id: author\n        uses: $/.github/actions/open-code-review/author\n",
+            author,
         )
 
     def test_the_workflow_reads_no_association_of_the_author(self):

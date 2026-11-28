@@ -12,10 +12,11 @@ run-name: "OpenCodeReview of #${{ github.event.pull_request.number || github.eve
 # the status. The action serves platform too, from peppy `dev`.
 #
 # A review starts on each push of a pull request whose author has write access
-# to the repository, on a change of its base branch, and on a comment that
-# starts with `/open-code-review` from such a user. An edit of the title or of
-# the body starts no review. No bot starts a review. A user with write access
-# reviews a pull request of another author with the comment. Each run spends
+# to the repository (a push of another user or of a bot too), on a change of
+# its base branch, and on a comment that starts with `/open-code-review` from
+# such a user. An edit of the title or of the body starts no review, and nor
+# does a pull request or a comment of a bot. A user with write access reviews a
+# pull request of another author with the comment. Each run spends
 # the usage of the Claude login, which the Claude review of a set and the
 # release also use, so a push to a draft starts no run: the review starts when
 # the pull request is ready for review. A push whose head differs from the
@@ -39,8 +40,7 @@ permissions: {}
 jobs:
   # Whether the event starts a review. The condition takes the events of a
   # review with no runner; the action then reads the permission of the author
-  # (open-code-review/author), as the association that the event gives does
-  # not tell a member whose membership is private.
+  # (open-code-review/author/action.yml tells why).
   author:
     if: >-
       (
@@ -69,10 +69,12 @@ jobs:
   review:
     needs: author
     if: needs.author.outputs.review == 'true'
-    # One review at a time for each pull request: a new push or a new command
-    # cancels the review in progress, which reads a head that is no longer the
-    # head. The group repeats the condition of the job, so that an event that
-    # starts no review goes to a group of its own run and cancels nothing.
+    # One review at a time for each pull request: the review job that enters
+    # the group last cancels the one in progress, and a review reads the head
+    # as it is when it starts. The jobs enter the group as their first jobs
+    # end, which need not be the order of the events. The group repeats the
+    # condition of the job, so that an event that starts no review goes to a
+    # group of its own run and cancels nothing.
     concurrency:
       group: >-
         ${{
