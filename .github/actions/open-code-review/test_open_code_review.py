@@ -288,9 +288,10 @@ class FakeApi:
     pull request gives `comments`. `bodies` holds the body of each request
     that has one, by its path."""
 
-    def __init__(self, item=None, comments=()):
+    def __init__(self, item=None, comments=(), statuses=()):
         self.item = item
         self.comments = list(comments)
+        self.statuses = list(statuses)
         self.calls = []
         self.bodies = []
 
@@ -302,6 +303,8 @@ class FakeApi:
 
     def pages(self, path, query=None, key=None):
         self.calls.append(("GET", path))
+        if path.endswith("/statuses"):
+            return self.statuses
         return self.comments
 
 
@@ -1743,6 +1746,13 @@ def started_run(summary=None):
     )
 
 
+def app_status(
+    state, creator="peppy-open-code-review[bot]", context="open-code-review"
+):
+    """A commit status as GitHub lists it."""
+    return {"state": state, "context": context, "creator": {"login": creator}}
+
+
 def status_body(status):
     return {
         "state": status.state.value,
@@ -1871,6 +1881,64 @@ class Statuses(unittest.TestCase):
         self.assertEqual(
             api.calls, [("POST", f"/repos/Peppy-bot/platform/statuses/{HEAD}")]
         )
+
+    def vouched(self, statuses, base="dev", summary=None):
+        api = FakeApi(statuses=statuses)
+        summary = summary or SummaryComment(False, Checkpoint(HEAD, base, "f1"))
+        pull_request = reviewed_pull_request(base=base).pull_request
+        with patch("sys.stdout", io.StringIO()):
+            vouched = open_code_review.vouched_summary(api, pull_request, summary)
+        return vouched, api.calls
+
+    def test_a_checkpoint_counts_when_the_app_set_success_on_its_head(self):
+        summary = SummaryComment(True, Checkpoint(HEAD, "dev", "f1"))
+        vouched, calls = self.vouched([app_status("success")], summary=summary)
+        self.assertEqual(vouched, summary)
+        self.assertEqual(
+            calls, [("GET", f"/repos/Peppy-bot/peppy/commits/{HEAD}/statuses")]
+        )
+
+    def test_a_checkpoint_with_no_status_of_the_app_does_not_count(self):
+        """A user with write access can edit the summary comment, and set a
+        status of GitHub Actions or of a token of their own."""
+        for statuses in (
+            [],
+            [app_status("success", creator="github-actions[bot]")],
+            [app_status("success", creator="alice")],
+            [app_status("success", context="tests")],
+            [app_status("failure"), app_status("success")],
+        ):
+            with self.subTest(statuses=statuses):
+                vouched, _ = self.vouched(statuses)
+                # The run keeps the rest of the summary: where its cause goes.
+                self.assertEqual(vouched, SummaryComment(False, None))
+
+    def test_the_newest_status_of_the_app_decides(self):
+        vouched, _ = self.vouched(
+            [
+                app_status("success"),
+                app_status("failure", creator="github-actions[bot]"),
+                app_status("failure"),
+            ]
+        )
+        self.assertEqual(vouched.checkpoint, Checkpoint(HEAD, "dev", "f1"))
+
+    def test_a_pull_request_into_another_branch_reads_no_status(self):
+        """It gets no status, and no ruleset reads its review."""
+        vouched, calls = self.vouched([], base="feat/stack")
+        self.assertEqual(vouched.checkpoint, Checkpoint(HEAD, "feat/stack", "f1"))
+        self.assertEqual(calls, [])
+
+    def test_a_summary_with_no_checkpoint_reads_no_status(self):
+        for summary in (None, SummaryComment(True, None)):
+            with self.subTest(summary=summary):
+                api = FakeApi()
+                pull_request = reviewed_pull_request().pull_request
+                self.assertEqual(
+                    open_code_review.vouched_summary(api, pull_request, summary),
+                    summary,
+                )
+                self.assertEqual(api.calls, [])
 
     def test_the_page_of_the_run_comes_from_the_variables_of_github(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2067,6 +2135,7 @@ class Commands(unittest.TestCase):
         api = FakeApi(
             pull_request_item(number=42),
             [issue_comment(review_summary(checkpoint_marker(fingerprint=fingerprint)))],
+            [app_status("success")],
         )
         with patch.object(open_code_review, "GitHubApi", lambda token: api):
             run = open_code_review.start_run(values)
@@ -2075,6 +2144,7 @@ class Commands(unittest.TestCase):
             [
                 ("GET", "/repos/Peppy-bot/peppy/pulls/42"),
                 ("GET", "/repos/Peppy-bot/peppy/issues/42/comments"),
+                ("GET", f"/repos/Peppy-bot/peppy/commits/{HEAD}/statuses"),
             ],
         )
         self.assertTrue(run.push)
@@ -2738,7 +2808,7 @@ class WorkflowContract(unittest.TestCase):
     def test_no_token_of_a_job_sets_a_status(self):
         """A status of GitHub Actions is one that each workflow of the
         repository can set: the ruleset does not count it."""
-        self.assertNotIn("statuses:", WORKFLOW.read_text())
+        self.assertNotIn("statuses: write", WORKFLOW.read_text())
 
     def test_the_check_workflow_command_checks_the_file(self):
         with patch("sys.stdout", io.StringIO()):

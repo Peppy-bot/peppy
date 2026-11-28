@@ -96,6 +96,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      statuses: read
     outputs:
       status: ${{ steps.review.outputs.status }}
     steps:

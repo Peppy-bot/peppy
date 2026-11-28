@@ -18,9 +18,10 @@ description: >-
   edited for a change of the base branch) and on `issue_comment` (created),
   when its first job, which runs open-code-review/author, says that the
   author of the event has write access to the repository. It runs the action
-  in a job whose token has the permissions `contents: read` and
-  `pull-requests: write`, with the run name `OpenCodeReview of #<number>`
-  that the merge-set bot reads.
+  in a job whose token has the permissions `contents: read`,
+  `pull-requests: write` and `statuses: read` (a push keeps a review only
+  when the App of the status set success on its head), with the run name
+  `OpenCodeReview of #<number>` that the merge-set bot reads.
   open_code_review.py check-workflow checks such a workflow. The job checks
   out nothing: the action brings its script, the merge-set bot that the
   script imports and the installer of the Claude CLI, from the commit of
