@@ -47,6 +47,7 @@ runs:
       shell: bash
       env:
         REVIEW_TOKEN: ${{ steps.token.outputs.token }}
+        REVIEW_APP: ${{ steps.token.outputs.app-slug }}
         REVIEW_STATUS: ${{ inputs.status }}
       run: |
         timeout --kill-after=1m 2m \

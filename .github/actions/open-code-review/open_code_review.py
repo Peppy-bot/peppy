@@ -134,6 +134,7 @@ from claude_review import (
     without_mentions,
 )
 from merge_set import (
+    BOT_LOGIN_SUFFIX,
     PEPPY,
     PLATFORM,
     WRITE_PERMISSIONS,
@@ -141,10 +142,12 @@ from merge_set import (
     GitError,
     GitHubApi,
     GitMerges,
+    CommitStatus,
     MergeSetError,
     PullRequest,
     Repository,
     read_permission,
+    parse_statuses,
     repository_of_full_name,
     resolve,
 )
@@ -1431,13 +1434,14 @@ def failure_options(summary: SummaryComment | None) -> dict:
 
 
 # The context of the commit status of the review on the head that it read. The
-# App `peppy-open-code-review` sets it (its bot has STATUS_APP_LOGIN), and the
-# ruleset `OpenCodeReview` of platform requires the status from that App. The
+# App STATUS_APP sets it, as its bot user STATUS_APP_LOGIN, and the ruleset
+# `OpenCodeReview` of platform requires the status from that App. The
 # secrets of the environment
 # of the status job of the workflow (STATUS_ENVIRONMENT) are the client ID and
 # the private key of the App (STATUS_SECRETS).
 STATUS_CONTEXT = "open-code-review"
-STATUS_APP_LOGIN = "peppy-open-code-review[bot]"
+STATUS_APP = "peppy-open-code-review"
+STATUS_APP_LOGIN = f"{STATUS_APP}{BOT_LOGIN_SUFFIX}"
 STATUS_ENVIRONMENT = "open-code-review"
 STATUS_SECRETS = ("OPEN_CODE_REVIEW_CLIENT_ID", "OPEN_CODE_REVIEW_PRIVATE_KEY")
 
@@ -1587,37 +1591,52 @@ def gives_status(pull_request: PullRequest) -> bool:
     return pull_request.base_branch == pull_request.repository.integration_branch
 
 
-def app_status_state(api: GitHubApi, repository: Repository, head: str) -> str | None:
-    """The state of the newest status `open-code-review` that the App of the
-    status set on the head; None when it set none. A status of the same
-    context from another creator does not count: a user with write access can
-    set one."""
-    for item in api.pages(f"/repos/{repository.full_name}/commits/{head}/statuses"):
-        creator = (item.get("creator") or {}).get("login")
-        if item.get("context") == STATUS_CONTEXT and creator == STATUS_APP_LOGIN:
-            return item.get("state")
-    return None
+def app_status(
+    api: GitHubApi, repository: Repository, head: str
+) -> CommitStatus | None:
+    """The newest status `open-code-review` that the App of the status set on
+    the head; None when it set none. A status of the same context from
+    another creator does not count: a user with write access can set one."""
+    statuses = parse_statuses(
+        api.pages(f"/repos/{repository.full_name}/commits/{head}/statuses")
+    )
+    return next(
+        (
+            status
+            for status in statuses
+            if status.context == STATUS_CONTEXT and status.creator == STATUS_APP_LOGIN
+        ),
+        None,
+    )
 
 
 def vouched_summary(
-    api: GitHubApi, pull_request: PullRequest, summary: SummaryComment | None
+    api: GitHubApi,
+    pull_request: PullRequest,
+    summary: SummaryComment | None,
+    push: bool,
 ) -> SummaryComment | None:
     """The summary comment, with its checkpoint only when a push can keep the
-    review of the checkpoint. A user with write access can edit the summary
-    comment, so for a pull request that gets a status (gives_status), the App
-    of the status must have set the status success on the head of the
-    checkpoint too: a record that such a user cannot set. A pull request into
-    another branch gets no status, and no ruleset reads its review: its
-    checkpoint counts alone."""
-    if summary is None or summary.checkpoint is None or not gives_status(pull_request):
+    review of the checkpoint. Each other event asks for a review in full. A
+    user with write access can edit the summary comment, so for a pull
+    request that gets a status (gives_status), the App of the status must
+    have set the status success on the head of the checkpoint too: a record
+    that such a user cannot set. A pull request into another branch gets no
+    status, and no ruleset reads its review: its checkpoint counts alone."""
+    if summary is None or summary.checkpoint is None:
+        return summary
+    if not push:
+        return replace(summary, checkpoint=None)
+    if not gives_status(pull_request):
         return summary
     head = summary.checkpoint.head
-    state = app_status_state(api, pull_request.repository, head)
-    if state == StatusState.SUCCESS.value:
+    status = app_status(api, pull_request.repository, head)
+    if status is not None and status.state == StatusState.SUCCESS.value:
         return summary
     print(
         f"The checkpoint names {head}, which has no status success of "
-        f"{STATUS_APP_LOGIN} (it has {state or 'none'}): the run reviews in full.",
+        f"{STATUS_APP_LOGIN} (it has {'none' if status is None else status.state}): "
+        "the run reviews in full.",
         flush=True,
     )
     return replace(summary, checkpoint=None)
@@ -1730,9 +1749,10 @@ def review(
 # The commands --------------------------------------------------------------------
 
 
-# The variables of the review step and of the status step. GitHub sets the
-# others that the script reads: GITHUB_EVENT_NAME, GITHUB_EVENT_PATH,
-# GITHUB_REPOSITORY, GITHUB_SERVER_URL and GITHUB_RUN_ID.
+# The variables of the review step, of the step that records the status and of
+# the step that sets it. GitHub sets the others that the script reads:
+# GITHUB_EVENT_NAME, GITHUB_EVENT_PATH, GITHUB_REPOSITORY, GITHUB_SERVER_URL,
+# GITHUB_RUN_ID and GITHUB_OUTPUT.
 STEP_VARIABLES = (
     "REVIEW_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -1741,7 +1761,7 @@ STEP_VARIABLES = (
     "REVIEW_WORKSPACE",
 )
 RECORD_VARIABLES = ("REVIEW_POSTED",)
-STATUS_VARIABLES = ("REVIEW_TOKEN", "REVIEW_STATUS")
+STATUS_VARIABLES = ("REVIEW_TOKEN", "REVIEW_APP", "REVIEW_STATUS")
 SCRIPT = '"$GITHUB_ACTION_PATH/open_code_review.py"'
 # The commands of the steps of the actions. Each one follows the `timeout` of
 # its step on the line before.
@@ -1788,6 +1808,7 @@ STATUS_ACTION_LINES = (
     "repositories: ${{ github.event.repository.name }}",
     "permission-statuses: write",
     "REVIEW_TOKEN: ${{ steps.token.outputs.token }}",
+    "REVIEW_APP: ${{ steps.token.outputs.app-slug }}",
     "REVIEW_STATUS: ${{ inputs.status }}",
 )
 # The lines that each workflow that runs the action holds: the events of a
@@ -1849,7 +1870,7 @@ def start_run(environment: Mapping[str, str]) -> Run:
     return Run(
         environment,
         pull,
-        vouched_summary(api, pull.pull_request, summary),
+        vouched_summary(api, pull.pull_request, summary, event.push),
         event.push,
     )
 
@@ -1989,12 +2010,20 @@ def status_command() -> int:
     """Set the status that the review job gives (REVIEW_STATUS, in the form
     of the record) on its head, with the token of the App of the status
     (REVIEW_TOKEN). The status is data: it names its head, its state and its
-    description, and the step takes no other form."""
+    description, and the step takes no other form. The token must be one of
+    STATUS_APP (REVIEW_APP, the slug of its App): a push keeps a review only
+    for a head with a status of that App (vouched_summary)."""
     environment = os.environ
     required = claude_review.required
     try:
         repository = reviewed_repository(required(environment, "GITHUB_REPOSITORY"))
         reported = parse_status_record(required(environment, "REVIEW_STATUS"))
+        app = required(environment, "REVIEW_APP")
+        if app != STATUS_APP:
+            raise MergeSetError(
+                f"the token is one of the App `{app}`, not of `{STATUS_APP}`, whose "
+                "status the review reads"
+            )
         post_status(
             GitHubApi(required(environment, "REVIEW_TOKEN")),
             repository,

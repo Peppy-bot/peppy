@@ -1882,12 +1882,12 @@ class Statuses(unittest.TestCase):
             api.calls, [("POST", f"/repos/Peppy-bot/platform/statuses/{HEAD}")]
         )
 
-    def vouched(self, statuses, base="dev", summary=None):
+    def vouched(self, statuses, base="dev", summary=None, push=True):
         api = FakeApi(statuses=statuses)
         summary = summary or SummaryComment(False, Checkpoint(HEAD, base, "f1"))
         pull_request = reviewed_pull_request(base=base).pull_request
         with patch("sys.stdout", io.StringIO()):
-            vouched = open_code_review.vouched_summary(api, pull_request, summary)
+            vouched = open_code_review.vouched_summary(api, pull_request, summary, push)
         return vouched, api.calls
 
     def test_a_checkpoint_counts_when_the_app_set_success_on_its_head(self):
@@ -1935,10 +1935,21 @@ class Statuses(unittest.TestCase):
                 api = FakeApi()
                 pull_request = reviewed_pull_request().pull_request
                 self.assertEqual(
-                    open_code_review.vouched_summary(api, pull_request, summary),
+                    open_code_review.vouched_summary(api, pull_request, summary, True),
                     summary,
                 )
                 self.assertEqual(api.calls, [])
+
+    def test_an_event_that_is_not_a_push_keeps_no_checkpoint(self):
+        """It asks for a review in full, so the run reads no status."""
+        vouched, calls = self.vouched([app_status("success")], push=False)
+        self.assertEqual(vouched, SummaryComment(False, None))
+        self.assertEqual(calls, [])
+
+    def test_the_login_of_the_app_is_the_one_of_its_bot(self):
+        self.assertEqual(
+            open_code_review.STATUS_APP_LOGIN, "peppy-open-code-review[bot]"
+        )
 
     def test_the_page_of_the_run_comes_from_the_variables_of_github(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2466,6 +2477,7 @@ class StatusCommand(unittest.TestCase):
         self.environment = {
             **FakeEnvironment(Path(directory.name)).values,
             "REVIEW_TOKEN": "ghs_status_app",
+            "REVIEW_APP": "peppy-open-code-review",
         }
         self.give(open_code_review.REVIEWED_STATUS)
 
@@ -2537,6 +2549,17 @@ class StatusCommand(unittest.TestCase):
                 self.assertEqual(self.api.calls, [])
                 self.assertIn("::error::the status record", output)
 
+    def test_a_token_of_another_app_sets_nothing(self):
+        """No push would keep a review: the review reads the statuses of
+        peppy-open-code-review[bot] alone."""
+        self.environment["REVIEW_APP"] = "peppy-merge-set"
+        code, output = self.run_command()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.api.calls, [])
+        self.assertIn(
+            "the App `peppy-merge-set`, not of `peppy-open-code-review`", output
+        )
+
     def test_a_repository_that_runs_no_review_gets_no_status(self):
         self.environment["GITHUB_REPOSITORY"] = "Peppy-bot/nodes-hub"
         code, _ = self.run_command()
@@ -2544,7 +2567,7 @@ class StatusCommand(unittest.TestCase):
         self.assertEqual(self.api.calls, [])
 
     def test_the_step_names_each_variable_that_it_reads(self):
-        for name in ("REVIEW_TOKEN", "REVIEW_STATUS"):
+        for name in ("REVIEW_TOKEN", "REVIEW_APP", "REVIEW_STATUS"):
             with self.subTest(variable=name):
                 kept = self.environment.pop(name)
                 code, output = self.run_command()
