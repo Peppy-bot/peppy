@@ -59,6 +59,11 @@ each pull request that lacks an approval, whether the App bypasses every
 ruleset that requires one. When it does not, GitHub refuses the merge of the
 App, so that pull request blocks the set for every user, before the bot merges
 any pull request of it. A review that requests changes blocks every user.
+A required check that has not passed follows the same rule: when the App
+bypasses every ruleset that requires the check, the bot enforces the check
+itself, and such an admin merges the set without it. A check that a ruleset
+requires and the App does not bypass, such as the `test` of the CI, blocks
+every user.
 
 A hub run is out of date when a job of it ran with another commit of a branch
 of the set than the head of that branch, unless that head differs from the
@@ -139,9 +144,11 @@ set workflow of peppy (merge-set.yml) for the branch of the event. The start
 and the end of each CI run, a re-run included, are such events, so the
 dashboard follows the state of the CI. So is the end of each run of the PR
 title check (pr-title), so the dashboard follows that check when a title
-changes, and so are the reviews, so it follows the approvals. So is the end of
-each review run of peppy-superproject, so the dashboard follows a review that
-did not complete. When the event is a box that a user ticked, the relay also
+changes, and the end of each run of the OpenCodeReview review of peppy and of
+platform, so it follows the `open-code-review` status that the review sets.
+So are the reviews, so it follows the approvals. So is the end of each review
+run of peppy-superproject, so the dashboard follows a review that did not
+complete. When the event is a box that a user ticked, the relay also
 answers at once on that pull request, with a link to the run it started. The
 Merge set workflow runs `sync`, one run at a time for each set. `sync` holds
 no state of its own: it reads the whole set from GitHub on every run (the
@@ -553,7 +560,7 @@ def dashboard_edit_subject(payload: Mapping, bot_login: str) -> RelaySubject | N
 
 def workflow_run_subject(payload: Mapping) -> RelaySubject | None:
     """The start or the end of a CI run, the end of a run of the PR title
-    check, or the end of a review run."""
+    check or of the OpenCodeReview review, or the end of a review run."""
     workflow = payload["workflow"]["name"]
     if is_review_repository(payload["repository"]["full_name"]):
         if workflow != REVIEW_WORKFLOW_NAME:
@@ -563,6 +570,8 @@ def workflow_run_subject(payload: Mapping) -> RelaySubject | None:
         return ci_run_subject(payload)
     if workflow == TITLE_CHECK_WORKFLOW:
         return title_check_run_subject(payload)
+    if workflow == OPEN_CODE_REVIEW_WORKFLOW:
+        return open_code_review_run_subject(payload)
     return None
 
 
@@ -587,6 +596,26 @@ def title_check_run_subject(payload: Mapping) -> RelaySubject | None:
     if payload["action"] != "completed" or run["event"] != "pull_request_target":
         return None
     return subject_of_run(run)
+
+
+def open_code_review_run_subject(payload: Mapping) -> RelaySubject | None:
+    """The end of a run of the OpenCodeReview review: the pull request that
+    the name of the run gives, whose branch the relay reads, as for a comment.
+    The relay hands on the end alone: the sync that runs after it reads the
+    status that the review set. A run whose job its condition skips (each
+    comment on a pull request starts a run) changes nothing, so it starts no
+    sync, and nor does a run whose name has another form."""
+    run = payload["workflow_run"]
+    if (
+        payload["action"] != "completed"
+        or run["event"] not in OPEN_CODE_REVIEW_EVENTS
+        or run["conclusion"] == "skipped"
+    ):
+        return None
+    named = OPEN_CODE_REVIEW_RUN_NAME.fullmatch(run["display_title"])
+    if named is None:
+        return None
+    return RelaySubject(int(named["number"]), None, None)
 
 
 def is_review_repository(full_name: str) -> bool:
@@ -881,7 +910,8 @@ class BranchRules:
     """What the rulesets of an integration branch require of a pull request
     before it merges, the `merge-set` check aside."""
 
-    required_checks: tuple[RequiredCheck, ...]
+    # Each required check, with the ids of the rulesets that require it.
+    required_checks: Mapping[RequiredCheck, tuple[int, ...]]
     # Whether the pull request must be up to date with its base.
     strict: bool
     # The rulesets whose pull request rule requires an approval, by id.
@@ -900,7 +930,7 @@ def requires_approval(pull_request_rule: Mapping) -> bool:
 def parse_branch_rules(rules: Sequence[Mapping]) -> BranchRules:
     """The rules of a branch as `GET /repos/{repo}/rules/branches/{branch}`
     lists them, one entry per rule of each ruleset that applies."""
-    checks: list[RequiredCheck] = []
+    checks: dict[RequiredCheck, list[int]] = {}
     strict = False
     approval_rulesets: list[int] = []
     for rule in rules:
@@ -916,9 +946,16 @@ def parse_branch_rules(rules: Sequence[Mapping]) -> BranchRules:
         strict = strict or bool(parameters.get("strict_required_status_checks_policy"))
         for check in parameters["required_status_checks"]:
             required = RequiredCheck(check["context"], check.get("integration_id"))
-            if required.context != STATUS_CONTEXT and required not in checks:
-                checks.append(required)
-    return BranchRules(tuple(checks), strict, tuple(approval_rulesets))
+            if required.context == STATUS_CONTEXT:
+                continue
+            rulesets = checks.setdefault(required, [])
+            if rule["ruleset_id"] not in rulesets:
+                rulesets.append(rule["ruleset_id"])
+    return BranchRules(
+        {check: tuple(rulesets) for check, rulesets in checks.items()},
+        strict,
+        tuple(approval_rulesets),
+    )
 
 
 # The values of `current_user_can_bypass` that let the App merge a pull request
@@ -966,6 +1003,7 @@ class CommitStatus:
     state: str
     description: str
     target_url: str | None
+    # The login of the user or of the bot user of the App that created it.
     creator: str | None
 
 
@@ -1010,11 +1048,47 @@ def run_state(completed: bool, conclusion: str | None) -> CheckState:
     return CheckState.FAILED
 
 
+# The suffix of the login of the bot user of a GitHub App, after the slug of
+# the App. A login of a user holds no bracket.
+BOT_LOGIN_SUFFIX = "[bot]"
+
+
+def bot_app_slug(login: str) -> str | None:
+    """The slug of the App whose bot user has the login; None for the login
+    of a user."""
+    if not login.endswith(BOT_LOGIN_SUFFIX):
+        return None
+    return login.removesuffix(BOT_LOGIN_SUFFIX) or None
+
+
+def status_answers(
+    check: RequiredCheck, status: CommitStatus, creator_apps: Mapping[str, int]
+) -> bool:
+    """Whether a commit status answers a required check: it has the context of
+    the check, and, when the check names an App, the bot user of that App
+    created it. `creator_apps` gives the App of each bot creator, by login."""
+    if status.context != check.context:
+        return False
+    if check.integration_id is None:
+        return True
+    return (
+        status.creator is not None
+        and creator_apps.get(status.creator) == check.integration_id
+    )
+
+
 def required_check_state(
-    check: RequiredCheck, runs: Sequence[CheckRun], statuses: Sequence[CommitStatus]
+    check: RequiredCheck,
+    runs: Sequence[CheckRun],
+    statuses: Sequence[CommitStatus],
+    creator_apps: Mapping[str, int],
 ) -> CheckState:
     """The state of a required check on a commit: its newest check run, else
-    its newest commit status."""
+    its newest commit status, of the App that the check names. A user with
+    write access can create a status of any context, so a status of another
+    creator does not answer a check that names an App, as GitHub does not
+    count it for the ruleset either. `creator_apps` gives the App of each bot
+    creator of the statuses, by login (creator_apps_of)."""
     matching = [
         run
         for run in runs
@@ -1025,7 +1099,8 @@ def required_check_state(
         newest = max(matching, key=lambda run: run.id)
         return run_state(newest.completed, newest.conclusion)
     status = next(
-        (status for status in statuses if status.context == check.context), None
+        (status for status in statuses if status_answers(check, status, creator_apps)),
+        None,
     )
     if status is None:
         return CheckState.MISSING
@@ -1072,6 +1147,17 @@ CI_WORKFLOW = "Tests"
 # (.github/actions/pr-title), whose ends the relay hands on: a change of a
 # title can pass or fail that check.
 TITLE_CHECK_WORKFLOW = "pr-title"
+# The name of the workflow of the OpenCodeReview review of a pull request
+# (open-code-review.yml in peppy and in platform), whose ends the relay hands
+# on: the review sets the `open-code-review` status of the head that it read.
+# The review runs on `pull_request_target` and on `issue_comment`, and GitHub
+# lists no pull request for either, so its `run-name` names the pull request
+# (OPEN_CODE_REVIEW_RUN_NAME).
+OPEN_CODE_REVIEW_WORKFLOW = "OpenCodeReview"
+OPEN_CODE_REVIEW_EVENTS = frozenset({"pull_request_target", "issue_comment"})
+OPEN_CODE_REVIEW_RUN_NAME = re.compile(
+    rf"\A{re.escape(OPEN_CODE_REVIEW_WORKFLOW)} of #(?P<number>[1-9][0-9]*)\Z"
+)
 
 
 @dataclass(frozen=True)
@@ -1456,6 +1542,10 @@ class PullRequestReport:
     # not bypass, by name. GitHub refuses the merge of the App until the pull
     # request gets that approval, so no admin merges it without one.
     unbypassed_approval_rulesets: tuple[str, ...]
+    # The required checks that have not passed and that only rulesets the App
+    # bypasses require, so an admin of every repository of the set merges
+    # without them.
+    waivable_checks: tuple[RequiredCheck, ...]
 
 
 class BlockerKind(Enum):
@@ -1464,10 +1554,20 @@ class BlockerKind(Enum):
     # A missing approval that only rulesets the App bypasses require, so an
     # admin of every repository of the set merges without it.
     MISSING_APPROVAL = "missing approval"
+    # A required check that has not passed and that only rulesets the App
+    # bypasses require, so an admin of every repository of the set merges
+    # without it.
+    WAIVABLE_CHECK = "waivable check"
     # A hub job that ran with another commit of a branch of the set, or with a
     # branch that left the set, or whose set record expired: a re-run of its
     # run clears it.
     OUT_OF_DATE_CI = "out-of-date CI"
+
+
+# The blockers that an admin of every repository of the set merges without.
+ADMIN_WAIVED_KINDS = frozenset(
+    {BlockerKind.MISSING_APPROVAL, BlockerKind.WAIVABLE_CHECK}
+)
 
 
 @dataclass(frozen=True)
@@ -1478,7 +1578,7 @@ class Blocker:
 
     @property
     def waived_for_admins(self) -> bool:
-        return self.kind is BlockerKind.MISSING_APPROVAL
+        return self.kind in ADMIN_WAIVED_KINDS
 
     @property
     def out_of_date_ci(self) -> bool:
@@ -1585,7 +1685,12 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     for check, state in report.checks:
         if state is not CheckState.PASSED:
             block(
-                f"The required check `{check.context}` of {label} {CHECK_STATE_TEXTS[state]}."
+                f"The required check `{check.context}` of {label} {CHECK_STATE_TEXTS[state]}.",
+                (
+                    BlockerKind.WAIVABLE_CHECK
+                    if check in report.waivable_checks
+                    else BlockerKind.BLOCKING
+                ),
             )
     for stale in report.stale:
         block(stale_job_text(label, stale), BlockerKind.OUT_OF_DATE_CI)
@@ -1821,15 +1926,15 @@ def member_state(repository: Repository, blockers: Sequence[Blocker]) -> str:
         return "ready"
     hard = blockers_for(own, admin=True)
     if not hard:
-        return "not approved"
+        if all(blocker.kind is BlockerKind.MISSING_APPROVAL for blocker in own):
+            return "not approved"
+        return "ready for an admin"
     if all(blocker.out_of_date_ci for blocker in hard):
         return "CI out of date"
     return "blocked"
 
 
-ADMIN_WAIVER = (
-    "An admin of every repository of the set merges it without the approvals."
-)
+ADMIN_WAIVER = "An admin of every repository of the set merges it without them."
 # What makes the hub runs of a set current, as the dashboard and the reports
 # word it.
 CURRENT_HUB_RUNS = (
@@ -1838,6 +1943,40 @@ CURRENT_HUB_RUNS = (
     "alone, or, for a branch that merged, with a commit of its base that holds "
     "that head, and with no branch that is no longer in the set"
 )
+
+
+def sentence_start(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def waived_clause(waived: Sequence[Blocker]) -> str:
+    """What an admin of every repository of the set merges it without: the
+    approvals that are missing, the required checks that have not passed, or
+    both."""
+    kinds = {blocker.kind for blocker in waived}
+    parts = []
+    if BlockerKind.MISSING_APPROVAL in kinds:
+        parts.append("approvals are missing")
+    if BlockerKind.WAIVABLE_CHECK in kinds:
+        parts.append("required checks have not passed")
+    return " and ".join(parts)
+
+
+def admin_readiness(waived: Sequence[Blocker]) -> str:
+    """The first line of a dashboard whose blockers an admin of every
+    repository of the set waives, each of them: what the set meets, and what
+    it lacks."""
+    kinds = {blocker.kind for blocker in waived}
+    if BlockerKind.MISSING_APPROVAL not in kinds:
+        met = f"each pull request is approved and {CURRENT_HUB_RUNS}"
+    elif BlockerKind.WAIVABLE_CHECK not in kinds:
+        met = f"each required check passed and {CURRENT_HUB_RUNS}"
+    else:
+        met = CURRENT_HUB_RUNS
+    return (
+        f"**Ready to merge for an admin.** {sentence_start(met)}, but "
+        f"{waived_clause(waived)}. {ADMIN_WAIVER}"
+    )
 
 
 def readiness_lines(blockers: Sequence[Blocker]) -> list[str]:
@@ -1853,22 +1992,21 @@ def readiness_lines(blockers: Sequence[Blocker]) -> list[str]:
     hard = blockers_for(blockers, admin=True)
     if not hard:
         return [
-            (
-                "**Ready to merge for an admin.** Each required check passed and "
-                f"{CURRENT_HUB_RUNS}, but approvals are missing. {ADMIN_WAIVER}"
-            ),
+            admin_readiness(blockers),
             "",
             *(f"- {blocker.text}" for blocker in blockers),
         ]
-    unapproved = [blocker for blocker in blockers if blocker.waived_for_admins]
+    waived = [blocker for blocker in blockers if blocker.waived_for_admins]
     lines = [
         "**What blocks the merge**",
         "",
         *(f"- {blocker.text}" for blocker in hard),
     ]
-    if unapproved:
-        lines.extend(["", f"Approvals are missing too. {ADMIN_WAIVER}", ""])
-        lines.extend(f"- {blocker.text}" for blocker in unapproved)
+    if waived:
+        lines.extend(
+            ["", f"{sentence_start(waived_clause(waived))} too. {ADMIN_WAIVER}", ""]
+        )
+        lines.extend(f"- {blocker.text}" for blocker in waived)
     return lines
 
 
@@ -2877,23 +3015,67 @@ def merge_commit(
     return MergeCommit(method, None, f"{pull_request.title}\n\n{together}")
 
 
-def merged_line(merged: MergedPullRequest, unapproved: Sequence[PullRequest]) -> str:
+@dataclass(frozen=True)
+class AdminWaiver:
+    """What a merge of an admin of every repository of the set takes a pull
+    request in without: its approval, the required checks that have not
+    passed, or both."""
+
+    approval: bool
+    checks: tuple[RequiredCheck, ...]
+
+    @property
+    def waives_anything(self) -> bool:
+        return self.approval or bool(self.checks)
+
+
+NO_WAIVER = AdminWaiver(approval=False, checks=())
+
+
+def admin_waiver(report: PullRequestReport) -> AdminWaiver:
+    """What an admin merges the pull request of the report without. A merge
+    that goes on has no other blocker: the other blockers stop it first."""
+    return AdminWaiver(
+        approval=report.review is ReviewDecision.REVIEW_REQUIRED,
+        checks=report.waivable_checks,
+    )
+
+
+def waiver_text(waiver: AdminWaiver) -> str:
+    """The part of a merge report line that names what a pull request merged
+    without; empty when it merged with everything that its rules require."""
+    parts = []
+    if waiver.approval:
+        parts.append("an approval")
+    if waiver.checks:
+        noun = "check" if len(waiver.checks) == 1 else "checks"
+        names = ", ".join(f"`{check.context}`" for check in waiver.checks)
+        parts.append(f"the required {noun} {names}")
+    if not parts:
+        return ""
+    return f" without {' and '.join(parts)}"
+
+
+def merged_line(merged: MergedPullRequest, waiver: AdminWaiver) -> str:
     """The line of a merge report for a pull request that merged."""
-    line = f"- {merged.pull_request.label} merged as `{short(merged.commit)}`"
-    if merged.pull_request in unapproved:
-        return f"{line} without an approval."
-    return f"{line}."
+    return (
+        f"- {merged.pull_request.label} merged as `{short(merged.commit)}`"
+        f"{waiver_text(waiver)}."
+    )
 
 
 def render_merge_report(
     set_name: str,
     requesters: Sequence[str],
     outcome: MergeOutcome,
-    unapproved: Sequence[PullRequest],
+    waivers: Mapping[str, AdminWaiver],
 ) -> str:
-    """The report of a merge, on every pull request of the set. `unapproved`
-    are the pull requests an admin merged without an approval."""
-    merged_lines = [merged_line(merged, unapproved) for merged in outcome.merged]
+    """The report of a merge, on every pull request of the set. `waivers`
+    give, by label, what an admin merged each pull request without."""
+    merged_lines = [
+        merged_line(merged, waivers.get(merged.pull_request.label, NO_WAIVER))
+        for merged in outcome.merged
+    ]
     if outcome.failure is None:
         lines = [
             f"The set `{set_name}` merged, as {mention(requesters)} asked:",
@@ -3202,6 +3384,7 @@ class GitHubGateway:
         self.held_commits: dict[tuple[str, str, str], bool] = {}
         self.rules: dict[str, BranchRules] = {}
         self.bypasses: dict[tuple[str, int], RulesetBypass] = {}
+        self.app_ids: dict[str, int | None] = {}
         self.permissions: dict[tuple[str, str], str] = {}
         self.ci_workflows: dict[str, frozenset[int]] = {}
         self.developers: dict[str, bool] = {}
@@ -3284,6 +3467,22 @@ class GitHubGateway:
                 )
             )
         return self.bypasses[key]
+
+    def app_id(self, slug: str) -> int | None:
+        """The id of the GitHub App of a slug; None when GitHub has no App of
+        that slug."""
+        if slug not in self.app_ids:
+            try:
+                item = self.api.request(
+                    "GET", f"/apps/{urllib.parse.quote(slug, safe='')}"
+                )
+            except ApiError as error:
+                if error.status != 404:
+                    raise
+                self.app_ids[slug] = None
+            else:
+                self.app_ids[slug] = item["id"]
+        return self.app_ids[slug]
 
     def check_runs(self, repository: Repository, commit: str) -> list[CheckRun]:
         return parse_check_runs(
@@ -3819,14 +4018,16 @@ def read_report(
     statuses = gateway.statuses(repository, pull_request.head_commit)
     mergeable, _ = computed_merge_state(gateway, pull_request, {MERGE_STATE_UNKNOWN})
     review = gateway.review_decision(pull_request)
+    creator_apps = creator_apps_of(gateway, rules, statuses)
+    checks = tuple(
+        (check, required_check_state(check, runs, statuses, creator_apps))
+        for check in rules.required_checks
+    )
     return PullRequestReport(
         pull_request=pull_request,
         mergeable=mergeable,
         review=review,
-        checks=tuple(
-            (check, required_check_state(check, runs, statuses))
-            for check in rules.required_checks
-        ),
+        checks=checks,
         ci=gateway.ci_run(pull_request),
         behind=rules.strict and gateway.is_behind(pull_request),
         stale=(
@@ -3846,6 +4047,54 @@ def read_report(
             if review is ReviewDecision.REVIEW_REQUIRED
             else ()
         ),
+        waivable_checks=waivable_checks(gateway, repository, rules, checks),
+    )
+
+
+def creator_apps_of(
+    gateway: GitHubGateway, rules: BranchRules, statuses: Sequence[CommitStatus]
+) -> dict[str, int]:
+    """The App of each bot user that created a status of a required check that
+    names an App, by login. The bot asks GitHub only for these creators: the
+    status of any other creator answers no such check. A creator that is a
+    user, or whose App GitHub does not have, is not in it."""
+    contexts = {
+        check.context for check in rules.required_checks if check.integration_id
+    }
+    creators = {
+        status.creator
+        for status in statuses
+        if status.context in contexts and status.creator is not None
+    }
+    apps = {}
+    for creator in sorted(creators):
+        slug = bot_app_slug(creator)
+        app_id = None if slug is None else gateway.app_id(slug)
+        if app_id is not None:
+            apps[creator] = app_id
+    return apps
+
+
+def waivable_checks(
+    gateway: GitHubGateway,
+    repository: Repository,
+    rules: BranchRules,
+    checks: Sequence[tuple[RequiredCheck, CheckState]],
+) -> tuple[RequiredCheck, ...]:
+    """The required checks that have not passed and that only rulesets the App
+    bypasses require: GitHub merges the pull request of the App without them,
+    so the bot enforces them itself, and an admin of every repository of the
+    set merges without them. The bot asks for the bypass of a ruleset only for
+    a check that has not passed."""
+    return tuple(
+        check
+        for check, state in checks
+        if state is not CheckState.PASSED
+        and rules.required_checks[check]
+        and all(
+            gateway.ruleset_bypass(repository, ruleset_id).bypassed
+            for ruleset_id in rules.required_checks[check]
+        )
     )
 
 
@@ -3979,26 +4228,25 @@ def computed_merge_state(
     return mergeable, state
 
 
-def mergeable_states(unapproved: bool) -> frozenset[str]:
+def mergeable_states(waived: bool) -> frozenset[str]:
     """The merge states of a pull request the bot merges. GitHub reports a
-    pull request that lacks an approval as blocked, and the App, a bypass
-    actor of the rulesets that require one, merges it all the same."""
-    if unapproved:
+    pull request that lacks an approval, or a required check, as blocked, and
+    the App, a bypass actor of the rulesets that require them, merges it all
+    the same when an admin waives them (`waived`)."""
+    if waived:
         return MERGEABLE_STATES | {MERGE_STATE_BLOCKED}
     return MERGEABLE_STATES
 
 
 def final_merge_state(
-    gateway: GitHubGateway, pull_request: PullRequest, unapproved: bool
+    gateway: GitHubGateway, pull_request: PullRequest, waived: bool
 ) -> str:
     """The merge state of a pull request right after the bot set its gate
     green. GitHub can answer blocked from before the gate turned green, so the
-    bot asks again while it does, unless the pull request lacks an approval
-    and stays blocked for that alone."""
+    bot asks again while it does, unless an admin waives an approval or a
+    required check of the pull request (`waived`), which keeps it blocked."""
     waiting = (
-        {MERGE_STATE_UNKNOWN}
-        if unapproved
-        else {MERGE_STATE_UNKNOWN, MERGE_STATE_BLOCKED}
+        {MERGE_STATE_UNKNOWN} if waived else {MERGE_STATE_UNKNOWN, MERGE_STATE_BLOCKED}
     )
     return computed_merge_state(gateway, pull_request, waiting)[1]
 
@@ -4059,11 +4307,10 @@ def merge_the_set(
         )
         return
     pull_requests = [member.pull_request for member in state.members]
-    unapproved = [
-        pull_request
+    waivers = {
+        pull_request.label: admin_waiver(reports[pull_request.label])
         for pull_request in pull_requests
-        if reports[pull_request.label].review is ReviewDecision.REVIEW_REQUIRED
-    ]
+    }
     for pull_request in pull_requests:
         gateway.post_gate(
             pull_request, merging_gate(state.name, request.requester, run_url)
@@ -4071,14 +4318,17 @@ def merge_the_set(
     merge_states = [
         (
             pull_request,
-            final_merge_state(gateway, pull_request, pull_request in unapproved),
+            final_merge_state(
+                gateway, pull_request, waivers[pull_request.label].waives_anything
+            ),
         )
         for pull_request in pull_requests
     ]
     unmergeable = [
         (pull_request, merge_state)
         for pull_request, merge_state in merge_states
-        if merge_state not in mergeable_states(pull_request in unapproved)
+        if merge_state
+        not in mergeable_states(waivers[pull_request.label].waives_anything)
     ]
     if unmergeable:
         block_again(gateway, state.name, pull_requests, dashboards)
@@ -4089,7 +4339,7 @@ def merge_the_set(
         return
     outcome = merge_in_order(gateway, state.name, pull_requests)
     block_again(gateway, state.name, outcome.unmerged, dashboards)
-    report = render_merge_report(state.name, requesters, outcome, unapproved)
+    report = render_merge_report(state.name, requesters, outcome, waivers)
     # The merged pull requests of the set get the report too: a box ticked on
     # the dashboard of one of them asked for the merge.
     for pull_request in [*pull_requests, *state.merged_pull_requests()]:

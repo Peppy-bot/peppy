@@ -69,7 +69,22 @@ REVIEW_RUN_URL = "https://github.com/Peppy-bot/peppy-superproject/actions/runs/7
 TEST_CHECK = RequiredCheck("test", 15368)
 # The ruleset of the integration branches that requires an approval.
 APPROVAL_RULESET = 20864833
-RULES = BranchRules((TEST_CHECK,), strict=False, approval_rulesets=(APPROVAL_RULESET,))
+# The ruleset of the integration branches that requires the CI, which the App
+# does not bypass.
+CI_RULESET = 24119421
+RULES = BranchRules(
+    {TEST_CHECK: (CI_RULESET,)}, strict=False, approval_rulesets=(APPROVAL_RULESET,)
+)
+# A check that only a ruleset the App bypasses requires, as the OpenCodeReview
+# review of platform: an admin of every repository of the set merges without
+# it.
+OCR_CHECK = RequiredCheck("open-code-review", 15368)
+OCR_RULESET = 30120458
+OCR_RULES = BranchRules(
+    {TEST_CHECK: (CI_RULESET,), OCR_CHECK: (OCR_RULESET,)},
+    strict=False,
+    approval_rulesets=(APPROVAL_RULESET,),
+)
 
 
 # When each pull request opened, unless a test names another time.
@@ -190,6 +205,7 @@ def report(pr, **changes):
         "behind": False,
         "stale": (),
         "unbypassed_approval_rulesets": (),
+        "waivable_checks": (),
     }
     fields.update(changes)
     return merge_set.PullRequestReport(**fields)
@@ -554,6 +570,74 @@ class Relay(unittest.TestCase):
             "workflow_run", title_check_run_event("completed", event="pull_request")
         )
 
+    def test_the_end_of_an_open_code_review_run_names_its_pull_request(self):
+        for event in ("pull_request_target", "issue_comment"):
+            for conclusion in ("success", "failure", "cancelled"):
+                with self.subTest(event=event, conclusion=conclusion):
+                    self.assert_relayed(
+                        "workflow_run",
+                        open_code_review_run_event(event=event, conclusion=conclusion),
+                        merge_set.RelaySubject(7, None, None),
+                    )
+
+    def test_an_open_code_review_run_whose_job_is_skipped_is_dropped(self):
+        # Each comment on a pull request starts a run, whose job its condition
+        # skips unless the comment asks for a review.
+        for event in ("pull_request_target", "issue_comment"):
+            with self.subTest(event=event):
+                self.assert_dropped(
+                    "workflow_run",
+                    open_code_review_run_event(event=event, conclusion="skipped"),
+                )
+
+    def test_the_start_of_an_open_code_review_run_is_dropped(self):
+        for action in ("requested", "in_progress"):
+            with self.subTest(action=action):
+                self.assert_dropped(
+                    "workflow_run", open_code_review_run_event(action=action)
+                )
+
+    def test_an_open_code_review_run_on_another_event_is_dropped(self):
+        for event in ("pull_request", "workflow_dispatch", "push"):
+            with self.subTest(event=event):
+                self.assert_dropped(
+                    "workflow_run", open_code_review_run_event(event=event)
+                )
+
+    def test_an_open_code_review_run_of_another_name_is_dropped(self):
+        for title in (
+            "OpenCodeReview",
+            "OpenCodeReview of #",
+            "OpenCodeReview of #0",
+            "OpenCodeReview of #07",
+            "OpenCodeReview of #7 again",
+            "OpenCodeReview of #7\n",
+            "Run OpenCodeReview of #7",
+            "OpenCodeReview of #-7",
+        ):
+            with self.subTest(title=title):
+                self.assert_dropped(
+                    "workflow_run", open_code_review_run_event(title=title)
+                )
+
+    def test_the_relay_reads_the_branch_of_the_pull_request_of_a_review_run(self):
+        text, calls = self.relay(
+            "workflow_run", open_code_review_run_event(event="issue_comment")
+        )
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "nodes-hub:pull_requests=write",
+                    "GET",
+                    "/repos/Peppy-bot/nodes-hub/pulls/7",
+                    None,
+                ),
+                self.DISPATCH,
+            ],
+        )
+        self.assertIn(RELAY_RUN_URL, text)
+
     def test_a_ci_run_of_a_fork_names_no_pull_request(self):
         payload = ci_run_event("completed", head_repository="someone/nodes-hub")
         payload["workflow_run"]["pull_requests"] = []
@@ -853,6 +937,30 @@ def title_check_run_event(action, attempt=1, event="pull_request_target"):
     7."""
     return ci_run_event(
         action, attempt=attempt, workflow=merge_set.TITLE_CHECK_WORKFLOW, event=event
+    )
+
+
+def open_code_review_run_event(
+    action="completed",
+    event="pull_request_target",
+    conclusion="success",
+    title="OpenCodeReview of #7",
+):
+    """A `workflow_run` event of a run of the OpenCodeReview review of pull
+    request 7, on a push or on a comment. GitHub lists no pull request for
+    either, and the head branch of a run on a comment is the default branch."""
+    return webhook_event(
+        action=action,
+        workflow={"name": merge_set.OPEN_CODE_REVIEW_WORKFLOW},
+        workflow_run={
+            "event": event,
+            "run_attempt": 1,
+            "head_branch": "main" if event == "issue_comment" else SET_NAME,
+            "head_repository": {"full_name": "Peppy-bot/nodes-hub"},
+            "pull_requests": [],
+            "conclusion": None if action != "completed" else conclusion,
+            "display_title": title,
+        },
     )
 
 
@@ -1246,9 +1354,10 @@ class ChooseSet(unittest.TestCase):
 
 
 class Rules(unittest.TestCase):
-    def rule(self, *checks, strict=False):
+    def rule(self, *checks, strict=False, ruleset_id=CI_RULESET):
         return {
             "type": "required_status_checks",
+            "ruleset_id": ruleset_id,
             "parameters": {
                 "strict_required_status_checks_policy": strict,
                 "required_status_checks": [
@@ -1261,18 +1370,38 @@ class Rules(unittest.TestCase):
     def test_the_required_checks_of_every_ruleset_leave_out_the_gate(self):
         rules = merge_set.parse_branch_rules(
             [
-                {"type": "deletion"},
-                self.rule(("test", 15368), ("merge-set", 4242)),
-                self.rule(("test", 15368), ("check-index", None)),
+                {"type": "deletion", "ruleset_id": 1},
+                self.rule(("test", 15368), ("merge-set", 4242), ruleset_id=2),
+                self.rule(("test", 15368), ("check-index", None), ruleset_id=3),
             ]
         )
         self.assertEqual(
             rules,
             BranchRules(
-                (RequiredCheck("test", 15368), RequiredCheck("check-index", None)),
+                {
+                    RequiredCheck("test", 15368): (2, 3),
+                    RequiredCheck("check-index", None): (3,),
+                },
                 strict=False,
                 approval_rulesets=(),
             ),
+        )
+
+    def test_each_check_keeps_the_rulesets_that_require_it_once_in_order(self):
+        rules = merge_set.parse_branch_rules(
+            [
+                self.rule(("open-code-review", 15368), ruleset_id=9),
+                self.rule(("test", 15368), ruleset_id=7),
+                self.rule(("test", 15368), ("test", 15368), ruleset_id=8),
+                self.rule(("test", 15368), ruleset_id=7),
+            ]
+        )
+        self.assertEqual(
+            list(rules.required_checks.items()),
+            [
+                (RequiredCheck("open-code-review", 15368), (9,)),
+                (RequiredCheck("test", 15368), (7, 8)),
+            ],
         )
 
     def test_one_strict_ruleset_makes_the_branch_strict(self):
@@ -1323,11 +1452,11 @@ class RequiredChecks(unittest.TestCase):
     def test_the_newest_check_run_of_the_app_decides(self):
         runs = [self.run_of(1, conclusion="failure"), self.run_of(2)]
         self.assertIs(
-            merge_set.required_check_state(TEST_CHECK, runs, []), CheckState.PASSED
+            merge_set.required_check_state(TEST_CHECK, runs, [], {}), CheckState.PASSED
         )
         runs = [self.run_of(2, conclusion="failure"), self.run_of(1)]
         self.assertIs(
-            merge_set.required_check_state(TEST_CHECK, runs, []), CheckState.FAILED
+            merge_set.required_check_state(TEST_CHECK, runs, [], {}), CheckState.FAILED
         )
 
     def test_a_skipped_or_neutral_check_run_passes(self):
@@ -1335,20 +1464,20 @@ class RequiredChecks(unittest.TestCase):
             with self.subTest(conclusion=conclusion):
                 runs = [self.run_of(1, conclusion=conclusion)]
                 self.assertIs(
-                    merge_set.required_check_state(TEST_CHECK, runs, []),
+                    merge_set.required_check_state(TEST_CHECK, runs, [], {}),
                     CheckState.PASSED,
                 )
 
     def test_an_unfinished_check_run_is_running(self):
         runs = [self.run_of(1, status="in_progress", conclusion=None)]
         self.assertIs(
-            merge_set.required_check_state(TEST_CHECK, runs, []), CheckState.RUNNING
+            merge_set.required_check_state(TEST_CHECK, runs, [], {}), CheckState.RUNNING
         )
 
     def test_a_check_run_of_another_app_does_not_count(self):
         runs = [self.run_of(1, app_id=999)]
         self.assertIs(
-            merge_set.required_check_state(TEST_CHECK, runs, []), CheckState.MISSING
+            merge_set.required_check_state(TEST_CHECK, runs, [], {}), CheckState.MISSING
         )
 
     def test_a_commit_status_answers_a_check_no_check_run_reports(self):
@@ -1359,10 +1488,62 @@ class RequiredChecks(unittest.TestCase):
             ("error", CheckState.FAILED),
         ):
             with self.subTest(state=state):
-                statuses = [CommitStatus("legacy", state, "", None, "ci")]
+                statuses = [CommitStatus("legacy", state, "", None, "alice")]
                 self.assertIs(
-                    merge_set.required_check_state(check, [], statuses), expected
+                    merge_set.required_check_state(check, [], statuses, {}), expected
                 )
+
+    def test_a_check_that_names_an_app_counts_the_statuses_of_its_bot_alone(self):
+        apps = {"github-actions[bot]": 15368, "peppy-merge-set[bot]": 5103051}
+        for creator, expected in (
+            ("github-actions[bot]", CheckState.PASSED),
+            ("mallory", CheckState.MISSING),
+            ("peppy-merge-set[bot]", CheckState.MISSING),
+            # A bot whose App GitHub does not have.
+            ("gone[bot]", CheckState.MISSING),
+            (None, CheckState.MISSING),
+        ):
+            with self.subTest(creator=creator):
+                statuses = [
+                    CommitStatus("open-code-review", "success", "", None, creator)
+                ]
+                self.assertIs(
+                    merge_set.required_check_state(OCR_CHECK, [], statuses, apps),
+                    expected,
+                )
+
+    def test_the_newest_status_of_the_app_decides_over_a_newer_forged_one(self):
+        apps = {"github-actions[bot]": 15368}
+        statuses = [
+            CommitStatus("open-code-review", "success", "forged", None, "mallory"),
+            CommitStatus(
+                "open-code-review", "failure", "", None, "github-actions[bot]"
+            ),
+            CommitStatus(
+                "open-code-review", "success", "", None, "github-actions[bot]"
+            ),
+        ]
+        self.assertIs(
+            merge_set.required_check_state(OCR_CHECK, [], statuses, apps),
+            CheckState.FAILED,
+        )
+
+    def test_a_check_that_names_no_app_counts_the_status_of_any_creator(self):
+        check = RequiredCheck("legacy", None)
+        for creator in ("mallory", "github-actions[bot]", None):
+            with self.subTest(creator=creator):
+                statuses = [CommitStatus("legacy", "success", "", None, creator)]
+                self.assertIs(
+                    merge_set.required_check_state(check, [], statuses, {}),
+                    CheckState.PASSED,
+                )
+
+    def test_the_slug_of_an_app_is_read_from_the_login_of_its_bot(self):
+        self.assertEqual(
+            merge_set.bot_app_slug("github-actions[bot]"), "github-actions"
+        )
+        self.assertIsNone(merge_set.bot_app_slug("mallory"))
+        self.assertIsNone(merge_set.bot_app_slug("[bot]"))
 
     def test_the_gate_is_the_newest_merge_set_status_of_the_bot(self):
         statuses = [
@@ -1978,6 +2159,38 @@ class Blockers(unittest.TestCase):
         self.assertFalse(changes.waived_for_admins)
         self.assertEqual(merge_set.blockers_for([changes], admin=True), [changes])
 
+    def test_a_check_that_only_bypassed_rulesets_require_is_waived_for_an_admin(self):
+        for state in (CheckState.FAILED, CheckState.RUNNING, CheckState.MISSING):
+            with self.subTest(state=state):
+                waivable = report(
+                    pull_request(NODES_HUB),
+                    checks=((TEST_CHECK, CheckState.PASSED), (OCR_CHECK, state)),
+                    waivable_checks=(OCR_CHECK,),
+                )
+                (blocker,) = merge_set.set_blockers(
+                    self.two_member_state(), self.reports(waivable)
+                )
+                self.assertIs(blocker.kind, merge_set.BlockerKind.WAIVABLE_CHECK)
+                self.assertTrue(blocker.waived_for_admins)
+                self.assertEqual(merge_set.blockers_for([blocker], admin=True), [])
+                self.assertEqual(
+                    merge_set.blockers_for([blocker], admin=False), [blocker]
+                )
+
+    def test_a_check_that_the_app_does_not_bypass_blocks_an_admin(self):
+        failing = report(
+            pull_request(NODES_HUB),
+            checks=((TEST_CHECK, CheckState.FAILED), (OCR_CHECK, CheckState.FAILED)),
+            waivable_checks=(OCR_CHECK,),
+        )
+        test, ocr = merge_set.set_blockers(
+            self.two_member_state(), self.reports(failing)
+        )
+        self.assertEqual(test.text, "The required check `test` of nodes-hub#1 failed.")
+        self.assertFalse(test.waived_for_admins)
+        self.assertTrue(ocr.waived_for_admins)
+        self.assertEqual(merge_set.blockers_for([test, ocr], admin=True), [test])
+
     def test_an_approval_the_app_cannot_bypass_is_not_waived_for_an_admin(self):
         for rulesets, expected in (
             (("Protect main and dev",), "of the ruleset `Protect main and dev`."),
@@ -2243,6 +2456,90 @@ class Dashboards(unittest.TestCase):
         self.assertIn(f"| [passed]({run_url(PEPPY, 10)}) | ready |", body)
         self.assertNotIn("What blocks the merge", body)
 
+    def test_the_dashboard_of_a_set_that_lacks_approvals_alone_says_so(self):
+        peppy, nodes = pull_request(PEPPY, 512), pull_request(NODES_HUB, 88)
+        state = set_state(member(PEPPY, peppy), member(NODES_HUB, nodes))
+        body = merge_set.render_set_dashboard(
+            state,
+            reports_by_label(
+                report(peppy), report(nodes, review=ReviewDecision.REVIEW_REQUIRED)
+            ),
+            None,
+        )
+        self.assertIn(
+            "**Ready to merge for an admin.** Each required check passed and "
+            f"{merge_set.CURRENT_HUB_RUNS}, but approvals are missing. An admin of "
+            "every repository of the set merges it without them.",
+            body,
+        )
+
+    def waivable_platform_report(self, platform, **changes):
+        return report(
+            platform,
+            checks=((TEST_CHECK, CheckState.PASSED), (OCR_CHECK, CheckState.FAILED)),
+            waivable_checks=(OCR_CHECK,),
+            **changes,
+        )
+
+    def test_a_set_whose_waivable_checks_alone_have_not_passed_is_ready_for_an_admin(
+        self,
+    ):
+        peppy, platform = pull_request(PEPPY, 512), pull_request(PLATFORM, 52)
+        state = set_state(member(PEPPY, peppy), member(PLATFORM, platform))
+        body = merge_set.render_set_dashboard(
+            state,
+            reports_by_label(report(peppy), self.waivable_platform_report(platform)),
+            None,
+        )
+        self.assertIn(
+            "**Ready to merge for an admin.** Each pull request is approved and "
+            f"{merge_set.CURRENT_HUB_RUNS}, but required checks have not passed. "
+            f"{merge_set.ADMIN_WAIVER}\n\n"
+            "- The required check `open-code-review` of platform#52 failed.",
+            body,
+        )
+        self.assertIn("| ready for an admin |", body)
+        self.assertNotIn("What blocks the merge", body)
+
+    def test_a_set_that_lacks_approvals_and_waivable_checks_is_ready_for_an_admin(
+        self,
+    ):
+        nodes, platform = pull_request(NODES_HUB, 88), pull_request(PLATFORM, 52)
+        state = set_state(member(NODES_HUB, nodes), member(PLATFORM, platform))
+        body = merge_set.render_set_dashboard(
+            state,
+            reports_by_label(
+                report(nodes, review=ReviewDecision.REVIEW_REQUIRED),
+                self.waivable_platform_report(platform),
+            ),
+            None,
+        )
+        current = merge_set.CURRENT_HUB_RUNS
+        self.assertIn(
+            f"**Ready to merge for an admin.** {current[0].upper()}{current[1:]}, but "
+            "approvals are missing and required checks have not passed. "
+            f"{merge_set.ADMIN_WAIVER}",
+            body,
+        )
+        self.assertIn("| not approved |", body)
+        self.assertIn("| ready for an admin |", body)
+
+    def test_a_blocked_set_names_its_waivable_checks_apart(self):
+        peppy = pull_request(PEPPY, 512, draft=True)
+        platform = pull_request(PLATFORM, 52)
+        state = set_state(member(PEPPY, peppy), member(PLATFORM, platform))
+        body = merge_set.render_set_dashboard(
+            state,
+            reports_by_label(report(peppy), self.waivable_platform_report(platform)),
+            None,
+        )
+        self.assertIn(
+            "**What blocks the merge**\n\n- peppy#512 is a draft: mark it ready for "
+            f"review.\n\nRequired checks have not passed too. {merge_set.ADMIN_WAIVER}"
+            "\n\n- The required check `open-code-review` of platform#52 failed.",
+            body,
+        )
+
     def test_a_blocked_set_names_its_missing_approvals_apart(self):
         peppy = pull_request(PEPPY, 512, draft=True)
         nodes = pull_request(NODES_HUB, 88)
@@ -2282,6 +2579,37 @@ class Dashboards(unittest.TestCase):
                 "blocked",
             ),
             ({"mergeable": False}, "blocked"),
+            (
+                {
+                    "checks": (
+                        (TEST_CHECK, CheckState.PASSED),
+                        (OCR_CHECK, CheckState.FAILED),
+                    ),
+                    "waivable_checks": (OCR_CHECK,),
+                },
+                "ready for an admin",
+            ),
+            (
+                {
+                    "review": ReviewDecision.REVIEW_REQUIRED,
+                    "checks": (
+                        (TEST_CHECK, CheckState.PASSED),
+                        (OCR_CHECK, CheckState.MISSING),
+                    ),
+                    "waivable_checks": (OCR_CHECK,),
+                },
+                "ready for an admin",
+            ),
+            (
+                {
+                    "checks": (
+                        (TEST_CHECK, CheckState.FAILED),
+                        (OCR_CHECK, CheckState.FAILED),
+                    ),
+                    "waivable_checks": (OCR_CHECK,),
+                },
+                "blocked",
+            ),
         ]
         for changes, expected in cases:
             with self.subTest(changes=changes):
@@ -2428,6 +2756,37 @@ class MergeMessages(unittest.TestCase):
             ),
         )
 
+    def test_the_report_of_a_merge_names_what_an_admin_merged_without(self):
+        merged = [
+            pull_request(PEPPY, 512),
+            pull_request(NODES_HUB, 88),
+            pull_request(CONTRACTS_HUB, 9),
+            pull_request(PLATFORM, 52),
+        ]
+        second_check = RequiredCheck("lint", None)
+        waivers = {
+            "nodes-hub#88": merge_set.AdminWaiver(approval=True, checks=()),
+            "contracts-hub#9": merge_set.AdminWaiver(
+                approval=False, checks=(OCR_CHECK, second_check)
+            ),
+            "platform#52": merge_set.AdminWaiver(approval=True, checks=(OCR_CHECK,)),
+        }
+        outcome = merge_set.MergeOutcome(
+            merged=tuple(merge_set.MergedPullRequest(pr, "a" * 40) for pr in merged),
+            failure=None,
+            not_tried=(),
+        )
+        text = merge_set.render_merge_report(SET_NAME, ["alice"], outcome, waivers)
+        self.assertIn(
+            "- peppy#512 merged as `aaaaaaa`.\n"
+            "- nodes-hub#88 merged as `aaaaaaa` without an approval.\n"
+            "- contracts-hub#9 merged as `aaaaaaa` without the required checks "
+            "`open-code-review`, `lint`.\n"
+            "- platform#52 merged as `aaaaaaa` without an approval and the required "
+            "check `open-code-review`.\n",
+            text,
+        )
+
     def test_the_report_of_a_merge_that_stopped(self):
         peppy, nodes, contracts = (
             pull_request(PEPPY, 512),
@@ -2439,7 +2798,7 @@ class MergeMessages(unittest.TestCase):
             failure=merge_set.MergeFailure(nodes, "Base branch was modified."),
             not_tried=(contracts,),
         )
-        text = merge_set.render_merge_report(SET_NAME, ["alice"], outcome, [])
+        text = merge_set.render_merge_report(SET_NAME, ["alice"], outcome, {})
         self.assertIn("which @alice asked for, stopped", text)
         self.assertIn("- peppy#512 merged as `aaaaaaa`.", text)
         self.assertIn("- nodes-hub#88 did not merge: Base branch was modified.", text)
@@ -3331,7 +3690,14 @@ class FakeGitHub:
         self.pulls = {repository.name: [] for repository in merge_set.REPOSITORIES}
         self.rules = {repository.name: RULES for repository in merge_set.REPOSITORIES}
         # The rulesets the App does not bypass, by repository name and id.
-        self.unbypassed = set()
+        self.unbypassed = {
+            (repository.name, CI_RULESET) for repository in merge_set.REPOSITORIES
+        }
+        # The (repository name, ruleset id) of each bypass the bot asked for.
+        self.bypasses_asked = []
+        # The id of each GitHub App, by slug, and each slug the bot asked for.
+        self.apps = {"github-actions": 15368, "peppy-merge-set": 5103051}
+        self.apps_asked = []
         self.check_runs_of = {}
         # The CI run of each pull request, by label; None before it starts.
         self.ci_runs = {}
@@ -3495,10 +3861,15 @@ class FakeGitHub:
         return self.rules[repository.name]
 
     def ruleset_bypass(self, repository, ruleset_id):
+        self.bypasses_asked.append((repository.name, ruleset_id))
         return merge_set.RulesetBypass(
             f"Ruleset {ruleset_id}",
             (repository.name, ruleset_id) not in self.unbypassed,
         )
+
+    def app_id(self, slug):
+        self.apps_asked.append(slug)
+        return self.apps.get(slug)
 
     def check_runs(self, repository, sha):
         return self.check_runs_of.get((repository.name, sha), [])
@@ -4268,6 +4639,205 @@ class SyncLibsAndPlatform(unittest.TestCase):
                 ("platform#52", MergeMethod.SQUASH),
             ],
         )
+
+
+class WaivableChecks(unittest.TestCase):
+    """The required checks of a report that an admin waives: those that have
+    not passed and that only rulesets the App bypasses require."""
+
+    def setUp(self):
+        self.github = FakeGitHub(self)
+        self.platform = self.github.open_pull_request(PLATFORM, 52)
+        self.github.rules["platform"] = OCR_RULES
+        self.state = set_state(member(PLATFORM, self.platform))
+
+    def pass_ocr(self):
+        self.github.statuses_of[("platform", self.platform.head_commit)] = [
+            CommitStatus("open-code-review", "success", "", None, "github-actions[bot]")
+        ]
+
+    def read(self):
+        return merge_set.read_report(self.github, self.state, self.platform)
+
+    def test_a_check_that_only_a_bypassed_ruleset_requires_is_waivable(self):
+        report_of = self.read()
+        self.assertIn((OCR_CHECK, CheckState.MISSING), report_of.checks)
+        self.assertEqual(report_of.waivable_checks, (OCR_CHECK,))
+        self.assertEqual(self.github.bypasses_asked, [("platform", OCR_RULESET)])
+
+    def test_the_bypass_is_not_asked_for_a_check_that_passed(self):
+        self.pass_ocr()
+        report_of = self.read()
+        self.assertEqual(report_of.waivable_checks, ())
+        self.assertEqual(self.github.bypasses_asked, [])
+
+    def test_a_check_that_an_unbypassed_ruleset_also_requires_is_not_waivable(self):
+        self.github.rules["platform"] = replace(
+            OCR_RULES,
+            required_checks={
+                TEST_CHECK: (CI_RULESET,),
+                OCR_CHECK: (OCR_RULESET, CI_RULESET),
+            },
+        )
+        self.assertEqual(self.read().waivable_checks, ())
+
+    def test_a_failed_check_of_the_ci_is_not_waivable(self):
+        self.pass_ocr()
+        self.github.check_runs_of[("platform", self.platform.head_commit)] = [
+            CheckRun(2, "test", 15368, True, "failure")
+        ]
+        report_of = self.read()
+        self.assertIn((TEST_CHECK, CheckState.FAILED), report_of.checks)
+        self.assertEqual(report_of.waivable_checks, ())
+        self.assertEqual(self.github.bypasses_asked, [("platform", CI_RULESET)])
+
+    def test_only_the_bot_creators_of_a_check_that_names_an_app_are_looked_up(self):
+        self.github.statuses_of[("platform", self.platform.head_commit)] = [
+            CommitStatus("open-code-review", "success", "forged", None, "mallory"),
+            CommitStatus("lint", "success", "", None, "linter[bot]"),
+            CommitStatus(
+                "open-code-review", "pending", "", None, "github-actions[bot]"
+            ),
+            CommitStatus(
+                "open-code-review", "pending", "", None, "github-actions[bot]"
+            ),
+        ]
+        report_of = self.read()
+        self.assertIn((OCR_CHECK, CheckState.RUNNING), report_of.checks)
+        self.assertEqual(self.github.apps_asked, ["github-actions"])
+
+    def test_a_check_that_no_ruleset_names_is_not_waivable(self):
+        self.github.rules["platform"] = replace(
+            OCR_RULES, required_checks={TEST_CHECK: (CI_RULESET,), OCR_CHECK: ()}
+        )
+        self.assertEqual(self.read().waivable_checks, ())
+
+
+class SyncMergeWithAWaivableCheck(unittest.TestCase):
+    """A set of peppy and platform, whose `open-code-review` only a ruleset
+    that the App bypasses requires and has not reported on platform#52.
+    GitHub reports that pull request as blocked."""
+
+    def setUp(self):
+        self.github = FakeGitHub(self)
+        self.peppy = self.github.open_pull_request(PEPPY, 512)
+        self.platform = self.github.open_pull_request(PLATFORM, 52)
+        self.github.rules["platform"] = OCR_RULES
+        self.github.merge_states[self.platform.label] = [(True, "blocked")]
+        sync(self.github)
+
+    def tick_merge(self, login="alice"):
+        (comment,) = self.github.comments_on(self.platform)
+        self.github.tick(comment, Action.MERGE, login)
+        sync(self.github)
+
+    def test_the_dashboard_says_the_set_is_ready_for_an_admin(self):
+        body = self.github.dashboard_body(self.platform)
+        self.assertIn("**Ready to merge for an admin.**", body)
+        self.assertIn(
+            "- The required check `open-code-review` of platform#52 has not "
+            "reported yet.",
+            body,
+        )
+
+    def test_an_admin_merges_the_set_without_the_check(self):
+        self.github.make_admin("alice")
+        self.tick_merge()
+        self.assertEqual(
+            [label for label, _ in self.github.merged], ["peppy#512", "platform#52"]
+        )
+        # A pull request blocked for a waived check alone is not asked again.
+        self.assertEqual(self.github.sleeps, [])
+        (report_text,) = self.github.reports_on(self.peppy)
+        self.assertRegex(report_text, r"- peppy#512 merged as `[0-9a-f]{7}`\.\n")
+        self.assertRegex(
+            report_text,
+            r"- platform#52 merged as `[0-9a-f]{7}` without the required check "
+            r"`open-code-review`\.",
+        )
+
+    def test_an_admin_merges_a_pull_request_that_lacks_an_approval_and_the_check(
+        self,
+    ):
+        self.github.decisions[self.platform.label] = ReviewDecision.REVIEW_REQUIRED
+        self.github.make_admin("alice")
+        self.tick_merge()
+        self.assertEqual(
+            [label for label, _ in self.github.merged], ["peppy#512", "platform#52"]
+        )
+        (report_text,) = self.github.reports_on(self.peppy)
+        self.assertRegex(
+            report_text,
+            r"- platform#52 merged as `[0-9a-f]{7}` without an approval and the "
+            r"required check `open-code-review`\.",
+        )
+
+    def test_a_user_who_is_no_admin_does_not_merge_the_set(self):
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.platform)
+        self.assertIn(
+            "- The required check `open-code-review` of platform#52 has not "
+            "reported yet.",
+            refusal,
+        )
+        for pr in (self.peppy, self.platform):
+            self.assertEqual(self.github.gates(pr)[-1].state, "pending")
+
+    def post_ocr(self, creator):
+        self.github.statuses_of[("platform", self.platform.head_commit)] = [
+            CommitStatus("open-code-review", "success", "", None, creator)
+        ]
+        self.github.merge_states[self.platform.label] = [(True, "clean")]
+
+    def test_a_user_who_is_no_admin_does_not_merge_with_a_forged_status(self):
+        self.post_ocr("mallory")
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.platform)
+        self.assertIn(
+            "- The required check `open-code-review` of platform#52 has not "
+            "reported yet.",
+            refusal,
+        )
+
+    def test_a_user_who_is_no_admin_merges_once_the_app_reports_the_check(self):
+        self.post_ocr("github-actions[bot]")
+        self.tick_merge()
+        self.assertEqual(
+            [label for label, _ in self.github.merged], ["peppy#512", "platform#52"]
+        )
+
+    def test_an_admin_does_not_merge_when_an_unbypassed_ruleset_requires_the_check(
+        self,
+    ):
+        self.github.rules["platform"] = replace(
+            OCR_RULES,
+            required_checks={
+                TEST_CHECK: (CI_RULESET,),
+                OCR_CHECK: (OCR_RULESET, CI_RULESET),
+            },
+        )
+        self.github.make_admin("alice")
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.platform)
+        self.assertIn(
+            "- The required check `open-code-review` of platform#52 has not "
+            "reported yet.",
+            refusal,
+        )
+
+    def test_an_admin_does_not_merge_when_a_check_of_the_ci_failed(self):
+        self.github.check_runs_of[("platform", self.platform.head_commit)] = [
+            CheckRun(2, "test", 15368, True, "failure")
+        ]
+        self.github.make_admin("alice")
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.platform)
+        self.assertIn("The required check `test` of platform#52 failed.", refusal)
+        self.assertNotIn("open-code-review", refusal)
 
 
 class SyncMergedOnItsOwn(unittest.TestCase):
@@ -5799,6 +6369,24 @@ class Gateway(unittest.TestCase):
         api = FakeApi({("GET", path): ApiError(f"GET {path}", 502, "Bad Gateway")})
         with self.assertRaises(ApiError):
             gateway_of(api).permission(NODES_HUB, "alice")
+
+    def test_the_app_of_a_slug_is_read_once(self):
+        for answer, expected in (
+            ({"id": 15368, "slug": "github-actions"}, 15368),
+            (not_found("/apps/github-actions"), None),
+        ):
+            with self.subTest(answer=answer):
+                api = FakeApi({("GET", "/apps/github-actions"): answer})
+                gateway = gateway_of(api)
+                self.assertEqual(gateway.app_id("github-actions"), expected)
+                self.assertEqual(gateway.app_id("github-actions"), expected)
+                self.assertEqual(len(api.calls), 1)
+
+    def test_an_app_that_github_cannot_read_fails_the_sync(self):
+        failure = ApiError("GET /apps/github-actions", 502, "Bad Gateway")
+        gateway = gateway_of(FakeApi({("GET", "/apps/github-actions"): failure}))
+        with self.assertRaises(ApiError):
+            gateway.app_id("github-actions")
 
     def test_the_app_bypasses_a_ruleset_that_names_it_as_a_bypass_actor(self):
         path = f"/repos/Peppy-bot/nodes-hub/rulesets/{APPROVAL_RULESET}"
