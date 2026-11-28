@@ -5,7 +5,9 @@
 //! fed through the ingest directly, so this exercises the whole protocol
 //! surface without a messaging mesh. Freshness runs on a manual clock the
 //! test advances; every wait is on a response or a notification. Every walk
-//! runs against each endpoint of the two-exposure set.
+//! runs against each endpoint of the two-exposure set. A raw HTTP client
+//! reads the wire where the rmcp client cannot show it: the order of the
+//! messages of a call, and the close of a call.
 //!
 //! Protocol-shaped details (discovery, negotiation, method gating,
 //! notification scoping) are pinned separately in `conformance.rs`, and
@@ -15,8 +17,8 @@ mod support;
 
 use peppy_mcp_runtime::{ActionContext, ActionExit, CancelledGoal, ToolCall};
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ErrorCode,
-    ReadResourceRequestParams, ResourceContents, ServerNotification, SubscriptionFilter,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
+    ErrorCode, ReadResourceRequestParams, ResourceContents, ServerNotification, SubscriptionFilter,
     TaskStatus, object,
 };
 use serde_json::{Value, json};
@@ -25,7 +27,7 @@ use std::sync::atomic::Ordering;
 use support::{
     Client, FRAME_URI, GUARD, STATUS_URI, Streaming, assert_ended_cancelled, confirmation_accept,
     connect, connect_logging_progress, connect_named, connect_with_tasks, next_notification,
-    poll_task_until, protocol_error, sample_rgb8_frame, start_set, start_set_with,
+    poll_task_until, protocol_error, sample_rgb8_frame, sse_messages, start_set, start_set_with,
 };
 use tokio::sync::Notify;
 
@@ -608,8 +610,14 @@ async fn a_client_without_the_tasks_capability_runs_an_action_inside_the_call() 
     let set = start_set().await;
     for endpoint in &set.endpoints {
         // Completion walk: the call answers with the goal's structured
-        // result, and the feedback reported on the way arrived first as a
-        // progress notification under the call's own token.
+        // result, and the feedback reported on the way reaches the client
+        // as a progress notification. The client runs its handler for the
+        // notification on a task of its own, which can run after the call
+        // returned, so the test waits for the notification; the wait is
+        // bounded by GUARD and driven by the notification.
+        // `the_feedback_of_an_action_inside_the_call_comes_before_its_result`
+        // holds the order and the count of the messages of the call on the
+        // wire.
         let (client, mut progress) = connect_logging_progress(&endpoint.url).await;
         let result = client
             .call_tool(
@@ -620,20 +628,13 @@ async fn a_client_without_the_tasks_capability_runs_an_action_inside_the_call() 
             .expect("the action answers inside the call");
         assert_eq!(result.is_error, Some(false));
         assert_eq!(result.structured_content, Some(json!({ "frames": 120 })));
-        // The server sends the notification before the result, and the
-        // client hands it to its handler on a task of its own, which can
-        // run after the call returned.
         let notification = tokio::time::timeout(GUARD, progress.recv())
             .await
-            .expect("the feedback was relayed")
+            .expect("the feedback reaches the client")
             .expect("the client holds the sender");
         assert_eq!(notification.message.as_deref(), Some("replaying `demo`"));
         assert_eq!(notification.progress, 1.0);
         assert_eq!(notification.total, None);
-        assert!(
-            progress.try_recv().is_err(),
-            "one feedback message, one notification"
-        );
 
         // Refusals keep their shape on this surface: invalid goal fields are
         // a protocol error before anything runs.
@@ -650,6 +651,86 @@ async fn a_client_without_the_tasks_capability_runs_an_action_inside_the_call() 
         client.cancel().await.expect("client disconnects");
     }
     set.stop().await;
+}
+
+/// A progress notification refers to an operation that is still in
+/// progress, so the endpoint sends the feedback of a goal before the result
+/// that ends its call. The rmcp client cannot show that order, as it runs
+/// its handler for each notification on a task of its own. A raw client
+/// reads the SSE stream of the call, which keeps the order in which the
+/// endpoint sent the messages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_feedback_of_an_action_inside_the_call_comes_before_its_result() {
+    let set = start_set().await;
+    let http = reqwest::Client::new();
+    for endpoint in &set.endpoints {
+        let response = open_raw_replay_call(&http, &endpoint.url).await;
+        let stream = tokio::time::timeout(GUARD, response.text())
+            .await
+            .expect("the stream of the call ends after its result")
+            .expect("the stream is readable");
+        let messages = sse_messages(&stream);
+        let [feedback, answer] = messages.as_slice() else {
+            panic!("expected one feedback message, then the result, got {stream}");
+        };
+        assert_eq!(
+            feedback,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {
+                    "progressToken": RAW_PROGRESS_TOKEN,
+                    "progress": 1.0,
+                    "message": "replaying `demo`",
+                },
+            }),
+            "the feedback comes first, under the progress token of the call"
+        );
+        assert_eq!(answer["id"], 1, "the result answers the call: {answer}");
+        let result: CallToolResult = serde_json::from_value(answer["result"].clone())
+            .unwrap_or_else(|error| panic!("expected a tool result, got {answer}: {error}"));
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.structured_content, Some(json!({ "frames": 120 })));
+    }
+    set.stop().await;
+}
+
+/// The progress token of the call that [`open_raw_replay_call`] opens.
+const RAW_PROGRESS_TOKEN: &str = "call-1";
+
+/// Opens a raw `tools/call` of `recorder.replay_episode` for the episode
+/// `demo` at `url`, with the JSON-RPC id 1 and the progress token
+/// [`RAW_PROGRESS_TOKEN`], as a client named `raw` that does not declare
+/// the tasks extension. The test owns the response: the SSE stream that
+/// carries the messages of the call in the order the endpoint sent them.
+async fn open_raw_replay_call(http: &reqwest::Client, url: &str) -> reqwest::Response {
+    let response = http
+        .post(url)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "tools/call")
+        .header("mcp-name", "recorder.replay_episode")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "recorder.replay_episode",
+                "arguments": { "episode_name": "demo" },
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": { "name": "raw", "version": "0" },
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                    "progressToken": RAW_PROGRESS_TOKEN
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("the call opens");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    response
 }
 
 /// The goal behind `recorder.replay_episode` in the walks of a closed
@@ -736,33 +817,7 @@ async fn closing_the_call_cancels_the_goal_inside_it() {
         // the response closes the call. In Streamable HTTP that is how a
         // client cancels a call, and also what a client that goes away
         // does: the endpoint takes both as a cancel.
-        let response = http
-            .post(&endpoint.url)
-            .header("content-type", "application/json")
-            .header("accept", "application/json, text/event-stream")
-            .header("mcp-protocol-version", "2026-07-28")
-            .header("mcp-method", "tools/call")
-            .header("mcp-name", "recorder.replay_episode")
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "recorder.replay_episode",
-                    "arguments": { "episode_name": "demo" },
-                    "_meta": {
-                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                        "io.modelcontextprotocol/clientInfo": { "name": "raw", "version": "0" },
-                        "io.modelcontextprotocol/clientCapabilities": {},
-                        "progressToken": "call-1"
-                    }
-                }
-            }))
-            .send()
-            .await
-            .expect("the call opens");
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let mut response = response;
+        let mut response = open_raw_replay_call(&http, &endpoint.url).await;
         let first = tokio::time::timeout(GUARD, response.chunk())
             .await
             .expect("the first event arrives")
