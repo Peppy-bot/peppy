@@ -1,0 +1,102 @@
+name: OpenCodeReview
+# The merge-set bot reads the pull request of a run from its name.
+run-name: OpenCodeReview of #${{ github.event.pull_request.number || github.event.issue.number }}
+
+# A second review of each pull request of peppy, in the delegation mode of
+# OpenCodeReview (OCR, https://github.com/alibaba/open-code-review), next to
+# the Claude review of a set: the action open-code-review of peppy
+# (.github/actions/open-code-review) reviews the pull request, posts the
+# findings and sets the commit status `open-code-review` of the head. The run
+# never approves and never requests changes, and no ruleset of peppy requires
+# the status. The action serves platform too, from peppy `dev`.
+#
+# A run starts on each push of a pull request whose author is an owner, a
+# member or a collaborator of the repository, on a change of its base branch,
+# and on a comment that starts with `/open-code-review` from such a user. An
+# edit of the title or of the body starts no review. No bot starts a run. A member
+# reviews a pull request of another author with the comment. Each run spends
+# the usage of the Claude login, which the Claude review of a set and the
+# release also use, so a push to a draft starts no run: the review starts when
+# the pull request is ready for review. A push whose head differs from the
+# head of the last complete review by a clean merge of the base branch alone
+# keeps that review, and Claude does not run.
+#
+# Nothing of a pull request can change what the job runs. A
+# `pull_request_target` run takes this file and the action from the base
+# branch of the pull request, and a comment run from the default branch:
+# branches of the repository, which only a user with write access changes. OCR
+# comes from a pinned release. The job reads the pull request as data: it runs
+# none of its code.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  issue_comment:
+    types: [created]
+
+# One review at a time for each pull request: a new push or a new command
+# cancels the review in progress, which reads a head that is no longer the
+# head. GitHub evaluates the group before the condition of the job, so a
+# comment that starts no review goes to a group of its own run and cancels
+# nothing.
+concurrency:
+  group: >-
+    ${{
+      (
+        (
+          github.event_name == 'pull_request_target'
+          && (github.event.action != 'edited' || github.event.changes.base)
+          && !github.event.pull_request.draft
+          && github.event.pull_request.user.type != 'Bot'
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+        )
+        || (
+          github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && github.event.issue.state == 'open'
+          && github.event.comment.user.type != 'Bot'
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+          && startsWith(github.event.comment.body, '/open-code-review')
+        )
+      )
+      && format('open-code-review-{0}', github.event.pull_request.number || github.event.issue.number)
+      || format('open-code-review-noop-{0}', github.run_id)
+    }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  review:
+    # The same condition as the group above (test_open_code_review.py checks
+    # that the two agree).
+    if: >-
+      (
+        github.event_name == 'pull_request_target'
+        && (github.event.action != 'edited' || github.event.changes.base)
+        && !github.event.pull_request.draft
+        && github.event.pull_request.user.type != 'Bot'
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+      )
+      || (
+        github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && github.event.issue.state == 'open'
+        && github.event.comment.user.type != 'Bot'
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+        && startsWith(github.event.comment.body, '/open-code-review')
+      )
+    # A small RunsOn runner: Claude reads and the job builds nothing.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    # Above the sum of the time limits of the steps of the action: a step at
+    # its limit fails, and the post step then posts the cause. The job at its
+    # limit is cancelled, which skips the post step: the status step then
+    # reports a failure. (test_open_code_review.py checks the limits.)
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: $/.github/actions/open-code-review
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
