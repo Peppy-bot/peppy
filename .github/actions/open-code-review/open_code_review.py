@@ -5,8 +5,8 @@ The action open-code-review (action.yml in this directory) runs `review`, posts
 its result and runs `status`. The workflow `OpenCodeReview` of peppy
 (.github/workflows/open-code-review.yml) and the one of platform run the action
 on each push of a pull request of a member or a collaborator that is not a
-draft, and on a comment of a member or a collaborator that starts with
-`/open-code-review`. The review is the delegation mode of OpenCodeReview (OCR,
+draft and on a change of its base branch, and on a comment of a member or a
+collaborator that starts with `/open-code-review`. The review is the delegation mode of OpenCodeReview (OCR,
 https://github.com/alibaba/open-code-review):
 
 1. The OCR CLI selects the files of the pull request to review
@@ -27,12 +27,14 @@ provider with an API token, and the Claude login of a subscription is for
 Claude Code alone.
 
 The commit status `open-code-review` of a head tells whether the head has a
-review: pending while a run reviews it, success when the run posted a review
-that accounts for each file to review or when the head keeps an earlier
-review, and failure else. The ruleset `OpenCodeReview` of platform requires
-it on `main` (.github/rulesets/ of platform), so a pull request of platform
-merges only with a review, unless an admin bypasses the ruleset. No ruleset of
-peppy requires it.
+review. A run sets it only for a pull request into the integration branch of
+its repository (gives_status): pending while the run reviews the head;
+success when the run posted a review in which Claude reviewed a file at least
+and accounted for each file to review, with no changed file that OCR leaves
+out, or when the head keeps an earlier review; and failure else, for a run
+that is cancelled too. A ruleset can require the status from GitHub Actions.
+Each workflow of the repository that has `statuses: write` can set it, so the
+status stops a mistake, not a user with write access.
 
 Each run spends the usage of the Claude login, which the Claude review of a set
 and the release also use, so a push that brings nothing new to review starts
@@ -40,8 +42,8 @@ no Claude run. A review that posts each of its findings records its head in the
 checkpoint of the poster, a marker in the summary comment. A push whose head
 differs from that head by a clean merge of the base branch alone (the rule of
 merge_set for a commit that a hub run tested) keeps that review. A comment, and
-a pull request that opens, reopens or becomes ready for review, gets a review
-in full.
+a pull request that opens, reopens, becomes ready for review or gets another
+base branch, gets a review in full.
 
 Nothing of a pull request runs, and a pull request cannot change the rules,
 the skill, the prompt or the poster of its review:
@@ -1396,11 +1398,11 @@ STOPPED_STATUS = ReviewStatus(
     StatusState.FAILURE,
     "The review run stopped: the log of the run gives the cause.",
 )
-# The status of a run whose post step failed: the pull request has neither the
-# review nor its cause.
+# The status of a run whose post step did not post the result or the cause:
+# the step failed, or the run was cancelled before it.
 UNPOSTED_STATUS = ReviewStatus(
     StatusState.FAILURE,
-    "The review was not posted: the log of the run gives the cause.",
+    "The review was not posted, or its run was cancelled: the run gives the cause.",
 )
 
 
@@ -1412,17 +1414,47 @@ def kept_status(reviewed: str) -> ReviewStatus:
     )
 
 
-def answer_status(answer: ReviewAnswer) -> ReviewStatus:
-    """The status of a review that Claude answered. A review that does not
-    account for each file to review is not a review of the head, as its
-    checkpoint is not complete either."""
-    if not answer.unaccounted:
-        return REVIEWED_STATUS
+def omitted_status(omitted: Sequence[str]) -> ReviewStatus:
+    """A changed file that OCR leaves out is a change that no review reads,
+    and the `.gitignore` that makes OCR leave it out can be a change of the
+    pull request: the head has no review."""
     return ReviewStatus(
         StatusState.FAILURE,
-        f"The review does not account for {len(answer.unaccounted)} file(s): "
-        f"comment {COMMENT_COMMAND} for a new review.",
+        f"OCR leaves out {len(omitted)} changed file(s) that the .gitignore of "
+        "the head matches, so no review reads them.",
     )
+
+
+def nothing_to_review_status(omitted: Sequence[str]) -> ReviewStatus:
+    """The status of a pull request whose files OCR excludes or leaves out,
+    each of them."""
+    if omitted:
+        return omitted_status(omitted)
+    return REVIEWED_STATUS
+
+
+def answer_status(
+    answer: ReviewAnswer, paths: Sequence[str], omitted: Sequence[str]
+) -> ReviewStatus:
+    """The status of a review that Claude answered. A head has a review when
+    Claude reviewed one of its files at least, accounted for each file to
+    review (else the checkpoint is not complete either), and each changed
+    file was in the preview."""
+    if omitted:
+        return omitted_status(omitted)
+    if answer.unaccounted:
+        return ReviewStatus(
+            StatusState.FAILURE,
+            f"The review does not account for {len(answer.unaccounted)} file(s): "
+            f"comment {COMMENT_COMMAND} for a new review.",
+        )
+    if len(answer.skipped) == len(paths):
+        return ReviewStatus(
+            StatusState.FAILURE,
+            f"The review skipped each of the {len(paths)} file(s) to review: the "
+            "summary comment gives the reasons.",
+        )
+    return REVIEWED_STATUS
 
 
 @dataclass(frozen=True)
@@ -1469,6 +1501,15 @@ def reported_status(record: StatusRecord, post_outcome: str) -> ReviewStatus:
     if post_outcome != "success":
         return UNPOSTED_STATUS
     return record.status
+
+
+def gives_status(pull_request: PullRequest) -> bool:
+    """Whether the run sets the status of the head: only for a pull request
+    into the integration branch of its repository, which a ruleset can guard.
+    The status is one of the commit, and a review into another branch reads
+    another diff, so it would give the head of a pull request into the
+    integration branch the status of that other diff."""
+    return pull_request.base_branch == pull_request.repository.integration_branch
 
 
 def run_url(environment: Mapping[str, str]) -> str:
@@ -1553,7 +1594,7 @@ def review(
         return Outcome(
             nothing_to_review_result(preview, omitted, revisions.head),
             options,
-            REVIEWED_STATUS,
+            nothing_to_review_status(omitted),
         )
     paths = preview.paths
     groups = parse_rules(ocr(rule_arguments(revisions, paths)), paths)
@@ -1571,7 +1612,7 @@ def review(
     return Outcome(
         review_result(answer, paths, omitted, revisions.head),
         options,
-        answer_status(answer),
+        answer_status(answer, paths, omitted),
     )
 
 
@@ -1610,7 +1651,10 @@ ACTION_LINES = (
     "CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}",
     f"CLAUDE_CLI_VERSION: {claude_review.CLAUDE_CLI_VERSION}",
     "id: post",
+    "if: ${{ always() }}",
     "REVIEW_POSTED: ${{ steps.post.outcome }}",
+    "core: recordingCore,",
+    "if (!options.checkpointNoop && !outputs.summary_comment_url) {",
     f"const resultPath = `${{process.env.RUNNER_TEMP}}/{RESULT_FILE}`;",
     f"const stderrPath = `${{process.env.RUNNER_TEMP}}/{ERRORS_FILE}`;",
     f"const posterPath = `${{process.env.RUNNER_TEMP}}/{POSTER_FILE}`;",
@@ -1618,10 +1662,16 @@ ACTION_LINES = (
     "...options,",
 )
 # The lines that each workflow that runs the action holds: the events of a
-# review, the permissions of the token of the job (the status needs
-# `statuses: write`) and the Claude login. `check-workflow` checks them.
+# review (an edit of the pull request only when it changes the base branch),
+# the names of the workflow and of its runs, from which the merge-set bot
+# reads the pull request,
+# the permissions of the token of the job (the status needs `statuses: write`)
+# and the Claude login. `check-workflow` checks them.
 WORKFLOW_LINES = (
-    "types: [opened, synchronize, reopened, ready_for_review]",
+    "types: [opened, synchronize, reopened, ready_for_review, edited]",
+    "&& (github.event.action != 'edited' || github.event.changes.base)",
+    "name: OpenCodeReview",
+    "run-name: OpenCodeReview of #${{ github.event.pull_request.number || github.event.issue.number }}",
     f"&& startsWith(github.event.comment.body, '{COMMENT_COMMAND}')",
     "contents: read",
     "pull-requests: write",
@@ -1701,7 +1751,12 @@ def write_json(path: Path, document: object) -> None:
     write_text(path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
 
 
-def write_status(path: Path, run: Run, status: ReviewStatus) -> None:
+def write_status(path: Path, run: Run | None, status: ReviewStatus) -> None:
+    """Record the status for the status step. A run that did not read the
+    pull request, or that gives no status (gives_status), records nothing,
+    and the status step then reports nothing."""
+    if run is None or not gives_status(run.pull.pull_request):
+        return
     record = StatusRecord(run.pull.pull_request.head_commit, status)
     write_json(path, status_record_document(record))
 
@@ -1710,8 +1765,16 @@ def start_review(run: Run, status: Path) -> None:
     """Record STOPPED_STATUS, which the status step reports when the review
     step ends before it records the status of its outcome, and give the head
     the pending status."""
-    write_status(status, run, STOPPED_STATUS)
     pull_request = run.pull.pull_request
+    if not gives_status(pull_request):
+        print(
+            f"The pull request goes into `{pull_request.base_branch}`, not into "
+            f"`{pull_request.repository.integration_branch}`: the run sets no "
+            f"status `{STATUS_CONTEXT}`.",
+            flush=True,
+        )
+        return
+    write_status(status, run, STOPPED_STATUS)
     post_status(
         run.api,
         pull_request.repository,
@@ -1725,12 +1788,10 @@ def write_failure(
     errors: Path, poster: Path, status: Path, cause: str, run: Run | None
 ) -> None:
     """Write the cause and the options of the poster, and record
-    FAILED_STATUS when the run read the pull request: a run that did not read
-    it has no head to report."""
+    FAILED_STATUS (write_status)."""
     write_json(poster, failure_options(None if run is None else run.summary))
     write_text(errors, f"{cause}\n")
-    if run is not None:
-        write_status(status, run, FAILED_STATUS)
+    write_status(status, run, FAILED_STATUS)
 
 
 def review_command(result: Path, errors: Path, poster: Path, status: Path) -> int:
@@ -1765,11 +1826,12 @@ def review_command(result: Path, errors: Path, poster: Path, status: Path) -> in
 
 def status_command(status: Path) -> int:
     """Report the status that the review step recorded on its head. A run
-    that stopped before the review step read the pull request has no record,
-    and the status of the head stays as it is."""
+    with no record (it stopped before the review step read the pull request,
+    or it gives no status) reports nothing, and the status of the head stays
+    as it is."""
     if not status.exists():
         print(
-            "The review step recorded no head, so the run reports no status.",
+            "The review step recorded no status, so the run reports none.",
             flush=True,
         )
         return 0

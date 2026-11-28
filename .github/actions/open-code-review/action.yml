@@ -5,25 +5,30 @@ description: >-
   CLI selects the files and gives their rules, the Claude CLI reviews them by
   the skill `open-code-review-delegate` of OCR with the Claude login of the
   subscription, and the poster of the OCR GitHub Action posts the findings:
-  inline comments, and one summary comment that each run updates. The commit
-  status `open-code-review` of the head that the run read tells whether that
-  head has a review. The run never approves and never requests changes.
+  inline comments, and one summary comment that each run updates. For a pull
+  request into the integration branch of its repository, the commit status
+  `open-code-review` of the head that the run read tells whether that head
+  has a review. The run never approves and never requests changes.
   open_code_review.py gives the design.
 
-  The workflow `OpenCodeReview` of peppy and the one of platform run the
-  action on `pull_request_target` (opened, synchronize, reopened,
-  ready_for_review) and on `issue_comment` (created), in a job whose token has
-  the permissions `contents: read`, `pull-requests: write` and
-  `statuses: write`. The job checks out nothing: the action brings its
-  script, the merge-set bot that the script imports and the installer of the
-  Claude CLI, from the commit of peppy that the workflow names.
+  A workflow `OpenCodeReview` of peppy or of platform runs the action on
+  `pull_request_target` (opened, synchronize, reopened, ready_for_review, and
+  edited for a change of the base branch) and on `issue_comment` (created),
+  in a job whose token has the permissions `contents: read`,
+  `pull-requests: write` and `statuses: write`, with the run name
+  `OpenCodeReview of #<number>` that the merge-set bot reads.
+  open_code_review.py check-workflow checks such a workflow. The job checks
+  out nothing: the action brings its script, the merge-set bot that the
+  script imports and the installer of the Claude CLI, from the commit of
+  peppy that the workflow names.
 
   Each step that runs a command has a time limit, the `timeout` of its
   command, so that a step at its limit fails and the post step then posts the
   cause. A step of a composite action takes no `timeout-minutes`, so the
   checkout of OCR and the post step have no limit of their own: the job holds
   them, with a `timeout-minutes` above the sum of the limits of the steps
-  (test_open_code_review.py checks it for peppy).
+  (test_open_code_review.py checks it for peppy). The status step runs also
+  after a cancellation, of the run or of the job at its limit.
 
 inputs:
   claude-code-oauth-token:
@@ -102,7 +107,10 @@ runs:
     # (open_code_review.py gives them). Incremental: a comment that overlaps
     # an inline comment of an earlier run is not posted again. A run that
     # stopped before the review step wrote the options (a step that failed
-    # or reached its time limit) gets a cause in a new comment.
+    # or reached its time limit) gets a cause in a new comment. The poster
+    # ends with no error when it cannot write the summary comment, which
+    # holds the warnings and the findings that GitHub did not take inline:
+    # the step then fails, so that the status step reports no review.
     - name: Post the review
       id: post
       if: ${{ !cancelled() }}
@@ -127,10 +135,18 @@ runs:
               'The run stopped before the review completed: the log of the run gives the cause.\n'
             );
           }
+          const outputs = {};
+          const recordingCore = {
+            ...core,
+            setOutput: (name, value) => {
+              outputs[name] = value;
+              core.setOutput(name, value);
+            },
+          };
           await runPostReviewComments({
             github,
             context,
-            core,
+            core: recordingCore,
             fs,
             prNumber: Number(process.env.REVIEW_PULL_REQUEST),
             resultPath,
@@ -139,12 +155,18 @@ runs:
             appSlug: 'github-actions',
             ...options,
           });
+          if (!options.checkpointNoop && !outputs.summary_comment_url) {
+            core.setFailed('The poster wrote no summary comment: the log of the step gives the cause.');
+          }
 
     # The status of the review on the head that the review step read: the
     # one that it recorded when the post step posted the result or the cause,
-    # and a failure else.
+    # and a failure else. It runs after a cancellation too, so that no head
+    # keeps the pending status of a run that ended. The next run of the
+    # concurrency group starts when this run ends, so its pending status
+    # comes after this one.
     - name: Report the status of the review
-      if: ${{ !cancelled() }}
+      if: ${{ always() }}
       shell: bash
       env:
         REVIEW_TOKEN: ${{ github.token }}

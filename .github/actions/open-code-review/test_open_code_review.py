@@ -271,6 +271,7 @@ class Events(unittest.TestCase):
             ("pull_request_target", "opened"),
             ("pull_request_target", "reopened"),
             ("pull_request_target", "ready_for_review"),
+            ("pull_request_target", "edited"),
             ("issue_comment", "created"),
             ("issue_comment", "synchronize"),
         ):
@@ -1262,13 +1263,14 @@ class OcrCli(unittest.TestCase):
 
 
 class FakeOcr:
-    """The OCR CLI: the preview gives `reviewable` with the merge base of the
-    command, and the rules give one group for each file. `on_preview` runs
-    when the preview runs."""
+    """The OCR CLI: the preview gives `reviewable` and `excluded` with the
+    merge base of the command, and the rules give one group for each file.
+    `on_preview` runs when the preview runs."""
 
-    def __init__(self, reviewable, on_preview=None):
+    def __init__(self, reviewable, on_preview=None, excluded=()):
         self.reviewable = reviewable
         self.on_preview = on_preview
+        self.excluded = excluded
         self.calls = []
 
     def __call__(self, arguments):
@@ -1277,7 +1279,9 @@ class FakeOcr:
         if arguments[1] == "preview":
             if self.on_preview is not None:
                 self.on_preview(arguments)
-            return preview_text(self.reviewable, excluded=(), merge_base=merge_base)
+            return preview_text(
+                self.reviewable, excluded=self.excluded, merge_base=merge_base
+            )
         paths = arguments[arguments.index("--") + 1 :]
         return rules_text(
             [
@@ -1300,6 +1304,14 @@ class FakeClaude:
     def __call__(self, prompt, schema, activity, timeout):
         self.calls.append((prompt, schema, activity, timeout))
         return self.payload
+
+
+# The files of the pull request of GitRepository besides src/lib.rs, as OCR
+# excludes them, so that the preview lists each changed file.
+OTHER_CHANGES = tuple(
+    (path, "modified", "unsupported_ext")
+    for path in (".claude/settings.json", "AGENTS.md", "CLAUDE.md")
+)
 
 
 class WholeReview(unittest.TestCase):
@@ -1443,7 +1455,7 @@ class WholeReview(unittest.TestCase):
             repository=PLATFORM, head=self.repository.first, base="main"
         )
         claude = FakeClaude(answer(files=[file_state("src/lib.rs")]))
-        ocr = FakeOcr((("src/lib.rs", "modified"),))
+        ocr = FakeOcr((("src/lib.rs", "modified"),), excluded=OTHER_CHANGES)
         outcome = self.review(ocr, claude)
         base = self.layout.default_branch_of(PLATFORM)
         head = self.layout.head_of(PLATFORM)
@@ -1457,21 +1469,55 @@ class WholeReview(unittest.TestCase):
 
     def test_a_review_that_accounts_for_each_file_is_a_review_of_the_head(self):
         outcome = self.review(
-            FakeOcr((("src/lib.rs", "modified"),)),
+            FakeOcr((("src/lib.rs", "modified"),), excluded=OTHER_CHANGES),
             FakeClaude(answer(files=[file_state("src/lib.rs")])),
         )
         self.assertEqual(outcome.status, open_code_review.REVIEWED_STATUS)
 
     def test_a_review_that_leaves_a_file_unaccounted_fails_its_status(self):
         outcome = self.review(
-            FakeOcr((("src/lib.rs", "modified"),)), FakeClaude(answer(files=[]))
+            FakeOcr((("src/lib.rs", "modified"),), excluded=OTHER_CHANGES),
+            FakeClaude(answer(files=[])),
         )
-        self.assertEqual(outcome.status.state, StatusState.FAILURE)
+        self.assertEqual(
+            outcome.status.description,
+            "The review does not account for 1 file(s): comment /open-code-review "
+            "for a new review.",
+        )
         self.assertNotIn("terminal_state", outcome.result["manifest"])
 
-    def test_nothing_to_review_is_a_review_of_the_head(self):
-        outcome = self.review(FakeOcr(()), FakeClaude(answer()))
+    def test_a_review_that_skips_each_file_fails_its_status(self):
+        outcome = self.review(
+            FakeOcr((("src/lib.rs", "modified"),), excluded=OTHER_CHANGES),
+            FakeClaude(answer(files=[file_state("src/lib.rs", "skipped", "Big.")])),
+        )
+        self.assertEqual(
+            outcome.status.description,
+            "The review skipped each of the 1 file(s) to review: the summary "
+            "comment gives the reasons.",
+        )
+
+    def test_a_changed_file_that_ocr_leaves_out_fails_the_status(self):
+        outcome = self.review(
+            FakeOcr((("src/lib.rs", "modified"),)),
+            FakeClaude(answer(files=[file_state("src/lib.rs")])),
+        )
+        self.assertEqual(
+            outcome.status,
+            open_code_review.omitted_status(
+                (".claude/settings.json", "AGENTS.md", "CLAUDE.md")
+            ),
+        )
+
+    def test_files_that_ocr_excludes_each_are_a_review_of_the_head(self):
+        excluded = (("src/lib.rs", "modified", "unsupported_ext"), *OTHER_CHANGES)
+        outcome = self.review(FakeOcr((), excluded=excluded), FakeClaude(answer()))
         self.assertEqual(outcome.status, open_code_review.REVIEWED_STATUS)
+
+    def test_files_that_ocr_leaves_out_each_fail_the_status(self):
+        outcome = self.review(FakeOcr(()), FakeClaude(answer()))
+        self.assertEqual(outcome.status.state, StatusState.FAILURE)
+        self.assertIn("OCR leaves out 4 changed file(s)", outcome.status.description)
 
     def test_each_file_to_review_has_its_diff(self):
         self.review(
@@ -1708,12 +1754,37 @@ class Statuses(unittest.TestCase):
     def test_a_review_that_accounts_for_each_file_is_a_review_of_the_head(self):
         complete = ReviewAnswer((), (), (), (SkippedFile("a.rs", "Generated."),), ())
         self.assertEqual(
-            open_code_review.answer_status(complete), open_code_review.REVIEWED_STATUS
+            open_code_review.answer_status(complete, ("a.rs", "b.rs"), ()),
+            open_code_review.REVIEWED_STATUS,
+        )
+
+    def test_a_review_that_skips_each_file_fails(self):
+        skipped = (SkippedFile("a.rs", "Generated."), SkippedFile("b.rs", "Big."))
+        status = open_code_review.answer_status(
+            ReviewAnswer((), (), (), skipped, ()), ("a.rs", "b.rs"), ()
+        )
+        self.assertEqual(status.state, StatusState.FAILURE)
+
+    def test_a_changed_file_that_ocr_leaves_out_fails_a_complete_review(self):
+        status = open_code_review.answer_status(
+            ReviewAnswer((), (), (), (), ()), ("a.rs",), ("hidden.rs",)
+        )
+        self.assertEqual(
+            status.description,
+            "OCR leaves out 1 changed file(s) that the .gitignore of the head "
+            "matches, so no review reads them.",
+        )
+        self.assertEqual(
+            open_code_review.nothing_to_review_status(("hidden.rs",)), status
+        )
+        self.assertEqual(
+            open_code_review.nothing_to_review_status(()),
+            open_code_review.REVIEWED_STATUS,
         )
 
     def test_a_review_that_does_not_account_for_a_file_fails(self):
         status = open_code_review.answer_status(
-            ReviewAnswer((), (), (), (), ("a.rs", "b.rs"))
+            ReviewAnswer((), (), (), (), ("a.rs", "b.rs")), ("a.rs", "b.rs"), ()
         )
         self.assertEqual(status.state, StatusState.FAILURE)
         self.assertEqual(
@@ -1736,8 +1807,14 @@ class Statuses(unittest.TestCase):
             open_code_review.UNPOSTED_STATUS,
             open_code_review.kept_status(HEAD),
             open_code_review.answer_status(
-                ReviewAnswer((), (), (), (), ("a.rs",) * 10000)
+                ReviewAnswer((), (), (), (), ("a.rs",) * 10000), ("a.rs",) * 10000, ()
             ),
+            open_code_review.answer_status(
+                ReviewAnswer((), (), (), (SkippedFile("a.rs", "x"),) * 10000, ()),
+                ("a.rs",) * 10000,
+                (),
+            ),
+            open_code_review.omitted_status(("a.rs",) * 10000),
         )
         for status in statuses:
             with self.subTest(description=status.description):
@@ -1868,6 +1945,45 @@ class Commands(unittest.TestCase):
                     StatusRecord(HEAD, open_code_review.STOPPED_STATUS),
                 )
             ],
+        )
+
+    def test_a_pull_request_into_another_branch_gets_no_status(self):
+        def start_run(environment):
+            return open_code_review.Run(
+                environment,
+                self.api,
+                reviewed_pull_request(base="feat/stack"),
+                None,
+                False,
+                RUN_URL,
+            )
+
+        def fails(run):
+            raise ReviewFailure("The Claude login is at its usage limit.")
+
+        for review in (
+            lambda run: Outcome(None, {}, open_code_review.REVIEWED_STATUS),
+            fails,
+        ):
+            with self.subTest(review=review):
+                code, output = self.run_command(review, start_run)
+                self.assertEqual(self.api.bodies, [])
+                self.assertFalse(self.status.exists())
+                self.assertIn("into `feat/stack`, not into `dev`", output)
+        self.assertTrue(
+            open_code_review.gives_status(
+                reviewed_pull_request(base="dev").pull_request
+            )
+        )
+        self.assertTrue(
+            open_code_review.gives_status(
+                reviewed_pull_request(repository=PLATFORM, base="main").pull_request
+            )
+        )
+        self.assertFalse(
+            open_code_review.gives_status(
+                reviewed_pull_request(repository=PLATFORM, base="dev").pull_request
+            )
         )
 
     def test_a_head_that_keeps_its_review_writes_no_result(self):
@@ -2117,7 +2233,7 @@ class StatusCommand(unittest.TestCase):
         code, output = self.run_command()
         self.assertEqual(code, 0)
         self.assertEqual(self.api.calls, [])
-        self.assertIn("reports no status", output)
+        self.assertIn("recorded no status, so the run reports none", output)
 
     def test_a_status_that_github_refuses_fails_the_step(self):
         class RefusingApi(FakeApi):
@@ -2161,7 +2277,8 @@ def condition_of(text: str, start: str, end: str) -> str:
     return re.sub(r"\s+", " ", " ".join(lines[first + 1 : last])).strip()
 
 
-STEP_LIMIT = re.compile(r"^timeout --kill-after=1m (\d+)m \\$")
+KILL_AFTER_MINUTES = 1
+STEP_LIMIT = re.compile(rf"^timeout --kill-after={KILL_AFTER_MINUTES}m (\d+)m \\$")
 
 
 def step_limits(text: str) -> dict[str, int | None]:
@@ -2257,12 +2374,17 @@ class ActionContract(unittest.TestCase):
             + claude_review.GIT_TIMEOUT_SECONDS,
         )
 
-    def test_the_post_step_and_the_status_step_run_after_a_failure(self):
+    def test_the_post_step_runs_after_a_failure_and_the_status_step_always(self):
+        """A cancelled run must not leave the pending status of its start."""
         text = ACTION.read_text()
-        for name in ("Post the review", "Report the status of the review"):
+        conditions = {
+            "Post the review": "      if: ${{ !cancelled() }}\n",
+            "Report the status of the review": "      if: ${{ always() }}\n",
+        }
+        for name, condition in conditions.items():
             with self.subTest(step=name):
                 step = text.split(f"    - name: {name}\n", 1)[1].split("    - name:")[0]
-                self.assertIn("      if: ${{ !cancelled() }}\n", step)
+                self.assertIn(condition, step)
 
 
 class WorkflowContract(unittest.TestCase):
@@ -2273,6 +2395,17 @@ class WorkflowContract(unittest.TestCase):
 
     def test_the_workflow_gives_what_the_action_needs(self):
         self.assertEqual(self.problems(WORKFLOW.read_text()), [])
+
+    def test_a_workflow_that_reviews_no_change_of_the_base_is_reported(self):
+        text = WORKFLOW.read_text().replace(
+            ", ready_for_review, edited]", ", ready_for_review]"
+        )
+        self.assertEqual(
+            self.problems(text),
+            [
+                "the line `types: [opened, synchronize, reopened, ready_for_review, edited]`"
+            ],
+        )
 
     def test_a_workflow_with_no_status_permission_is_reported(self):
         text = WORKFLOW.read_text().replace("statuses: write", "statuses: read")
@@ -2296,9 +2429,11 @@ class WorkflowContract(unittest.TestCase):
         self.assertEqual(group, f"( {job} )")
         self.assertIn("github.event.pull_request.author_association", job)
         self.assertIn("github.event.comment.author_association", job)
-        # A push to a draft starts no review; a comment does.
+        # A push to a draft starts no review; a comment does. An edit starts
+        # one only when it changes the base branch.
         self.assertIn(
             "github.event_name == 'pull_request_target' "
+            "&& (github.event.action != 'edited' || github.event.changes.base) "
             "&& !github.event.pull_request.draft",
             job,
         )
@@ -2311,8 +2446,11 @@ class WorkflowContract(unittest.TestCase):
             for minutes in step_limits(ACTION.read_text()).values()
             if minutes is not None
         ]
+        # `timeout` kills a command that ignores its signal one minute after
+        # its limit.
+        worst = sum(limits) + KILL_AFTER_MINUTES * len(limits)
         self.assertGreater(
-            job_limit(WORKFLOW.read_text()), sum(limits) + UNLIMITED_STEPS_MINUTES
+            job_limit(WORKFLOW.read_text()), worst + UNLIMITED_STEPS_MINUTES
         )
 
 
