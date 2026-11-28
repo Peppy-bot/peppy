@@ -17,14 +17,14 @@ on:
 # race on the same branch. `cancel-in-progress` stays false on purpose: killing a
 # run mid-flight leaves a half-written comment and, worse, a half-pushed branch.
 #
-# Caveat: GitHub holds at most ONE pending run per group. With a run active and
-# one already pending, a third mention displaces the pending one rather than
-# lining up behind it. Actions has no `queue:` setting to change that, and a real
-# durable queue would need external machinery that a human-paced trigger does not
-# justify. If a mention is ever dropped this way, post it again.
+# `queue: max` lets up to 100 runs wait behind the active one, in order. Each
+# comment of the thread starts a run, which the job conditions skip when it has
+# no mention, so with one pending run at most (the default), a second mention or
+# any other comment would take the place of a mention that waits.
 concurrency:
   group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   # Gate. The action has its own built-in check, but it admits anyone with
