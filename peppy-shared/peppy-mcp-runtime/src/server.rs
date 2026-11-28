@@ -6,6 +6,7 @@
 use crate::call_record::{CallRecord, ClientIdentity, DroppedCall, Recording};
 use crate::clock::Clock;
 use crate::error::{BuildError, PublishError, ToolCallError};
+use crate::events::{CatalogEvent, CatalogEvents, EventStamp};
 use crate::failure::{CallFailure, FailureOutcome};
 use crate::fleet::{
     Fleet, FleetMember, FleetRuntime, FleetSource, MemberAddress, published_name, published_uri,
@@ -14,7 +15,7 @@ use crate::fleet::{
 use crate::representation::{
     DOCUMENT_MIME_TYPE, SnapshotContent, apply_response_policies, listed_mime_type,
 };
-use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState, SnapshotView};
+use crate::state::{ReadRefusal, ResourceIngest, ResourceState, SnapshotView};
 use crate::tasks::{ActionContext, ActionExit, ActionSurface, TaskHandler};
 use peppy_mcp_catalog::{
     BundleIdentity, BundleServer, BundleSurface, ExposureBundle, GoalBound, ImageCodec,
@@ -30,7 +31,7 @@ use rmcp::model::{
     ResourceContents, ServerCapabilities, ServerConfig, SubscriptionFilter, Tool, ToolAnnotations,
     UpdateTaskParams, object,
 };
-use rmcp::service::{RequestContext, SubscriptionContext, SubscriptionSendError};
+use rmcp::service::{RequestContext, SubscriptionContext, SubscriptionSendError, SubscriptionSink};
 use rmcp::task_manager::{TaskContext, TaskExit, TaskManager, TaskOptions};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -39,6 +40,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -168,7 +170,7 @@ struct ServerState {
     /// by design; every HTTP session shares this manager, which is what
     /// lets a reconnecting client keep polling an existing task id.
     manager: TaskManager,
-    events: broadcast::Sender<CatalogEvent>,
+    events: CatalogEvents,
     clock: Clock,
 }
 
@@ -438,7 +440,7 @@ impl ExposureServerBuilder {
             }
         };
 
-        let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+        let events = CatalogEvents::new(EVENT_CHANNEL_CAPACITY);
         Ok(ExposureServer {
             state: Arc::new(ServerState {
                 server: bundle.server,
@@ -628,13 +630,13 @@ impl ExposureServer {
         self.state.exposure.endpoint_path()
     }
 
-    /// The Streamable HTTP service for this exposure. Sessions are per
-    /// service, so each endpoint of a set has its own; `shutdown` ends the
-    /// streams it holds open.
-    fn http_service(
-        self,
-        shutdown: &CancellationToken,
-    ) -> StreamableHttpService<Self, LocalSessionManager> {
+    /// The Streamable HTTP service for this exposure, which stamps each
+    /// request with the position of the events of the exposure when the
+    /// request arrives (see [`stamp_arrival`]). Sessions are per service,
+    /// so each endpoint of a set has its own; `shutdown` ends the streams
+    /// it holds open.
+    fn http_service(self, shutdown: &CancellationToken) -> axum::routing::MethodRouter {
+        let events = self.state.events.clone();
         // No web page calls the endpoint: a request that carries an `Origin`
         // header (a browser sends one for a page of another site) is
         // refused, and a client that is not a browser sends none.
@@ -642,7 +644,12 @@ impl ExposureServer {
             .with_legacy_session_mode(false)
             .enforce_origin_validation()
             .with_cancellation_token(shutdown.child_token());
-        StreamableHttpService::new(move || Ok(self.clone()), Default::default(), config)
+        let service: StreamableHttpService<Self, LocalSessionManager> =
+            StreamableHttpService::new(move || Ok(self.clone()), Default::default(), config);
+        axum::routing::any_service(service).layer(axum::middleware::map_request_with_state(
+            events,
+            stamp_arrival,
+        ))
     }
 
     fn capabilities(&self) -> ServerCapabilities {
@@ -1314,7 +1321,7 @@ impl ExposureSet {
         for server in self.servers {
             managers.push(server.state.manager.clone());
             let path = server.endpoint_path();
-            router = router.route_service(&path, server.http_service(&shutdown));
+            router = router.route(&path, server.http_service(&shutdown));
         }
         let served = axum::serve(listener, router)
             .with_graceful_shutdown(shutdown.cancelled_owned())
@@ -1659,7 +1666,7 @@ fn oversize_result(size: u64, limit: u64) -> String {
 #[derive(Clone)]
 pub struct FleetHandle {
     fleet: Arc<FleetRuntime>,
-    events: broadcast::Sender<CatalogEvent>,
+    events: CatalogEvents,
     clock: Clock,
 }
 
@@ -1699,8 +1706,7 @@ impl FleetHandle {
 
     /// Tells listening clients the resource list changed.
     pub fn changed(&self) {
-        // Send fails only when nobody listens, which is fine.
-        let _ = self.events.send(CatalogEvent::ResourceListChanged);
+        self.events.announce(CatalogEvent::ResourceListChanged);
     }
 
     /// The members the surface cannot serve as the fleet stands now, each
@@ -1944,9 +1950,26 @@ impl ServerHandler for ExposureServer {
         Some(requested.supported_by(&self.capabilities()))
     }
 
+    /// Relays the events of the exposure to the client of the subscription.
+    /// rmcp acknowledges the subscription before it calls this, so the
+    /// events announced since the request arrived are relayed first: the
+    /// client is told of each event after the acknowledgment (see
+    /// [`crate::events`]).
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
+        let since = arrival_stamp(&context.request_context().extensions).ok_or_else(|| {
+            McpError::internal_error(
+                "the request of the subscription carries no event stamp: an exposure \
+                 serves its subscriptions through `ExposureSet::serve`",
+                None,
+            )
+        })?;
         let sink = context.sink().clone();
-        let mut events = self.state.events.subscribe();
+        let (mut events, missed) = self.state.events.listen_since(since);
+        for event in missed {
+            if relay_event(&sink, event).await.is_break() {
+                return Ok(());
+            }
+        }
         loop {
             let received = tokio::select! {
                 () = context.cancelled() => return Ok(()),
@@ -1959,20 +1982,50 @@ impl ServerHandler for ExposureServer {
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return Ok(()),
             };
-            let sent = match event {
-                CatalogEvent::ResourceUpdated { uri } => sink.notify_resource_updated(uri).await,
-                CatalogEvent::ResourceListChanged => sink.notify_resource_list_changed().await,
-            };
-            // Any other error means that the accepted filter of the
-            // subscription does not cover this notification; other listeners
-            // may still want it.
-            if let Err(
-                SubscriptionSendError::SubscriptionClosed | SubscriptionSendError::Service(_),
-            ) = sent
-            {
+            if relay_event(&sink, event).await.is_break() {
                 return Ok(());
             }
         }
+    }
+}
+
+/// Stamps `request` with the position of the events of the endpoint when
+/// it arrives. rmcp keeps the HTTP parts of the request, extensions
+/// included, in the context of its handler, so a subscription that the
+/// request starts reads the stamp there (see [`arrival_stamp`]).
+async fn stamp_arrival(
+    axum::extract::State(events): axum::extract::State<CatalogEvents>,
+    mut request: axum::extract::Request,
+) -> axum::extract::Request {
+    request.extensions_mut().insert(events.stamp());
+    request
+}
+
+/// The stamp that [`stamp_arrival`] put on a request, read from the
+/// extensions of the context of its handler; `None` for a request that did
+/// not come through the HTTP service of an endpoint.
+fn arrival_stamp(extensions: &rmcp::model::Extensions) -> Option<EventStamp> {
+    extensions
+        .get::<axum::http::request::Parts>()?
+        .extensions
+        .get::<EventStamp>()
+        .copied()
+}
+
+/// Relays `event` to the client of a subscription, and tells whether the
+/// subscription goes on: it ends once its client is gone.
+async fn relay_event(sink: &SubscriptionSink, event: CatalogEvent) -> ControlFlow<()> {
+    let sent = match event {
+        CatalogEvent::ResourceUpdated { uri } => sink.notify_resource_updated(uri).await,
+        CatalogEvent::ResourceListChanged => sink.notify_resource_list_changed().await,
+    };
+    // Any other error means that the accepted filter of the subscription
+    // does not cover this notification; other listeners may still want it.
+    match sent {
+        Err(SubscriptionSendError::SubscriptionClosed | SubscriptionSendError::Service(_)) => {
+            ControlFlow::Break(())
+        }
+        Ok(()) | Err(_) => ControlFlow::Continue(()),
     }
 }
 
@@ -1980,6 +2033,7 @@ impl ServerHandler for ExposureServer {
 mod tests {
     use super::*;
     use crate::clock::test_support::{MS, manual_clock};
+    use crate::events::test_support::listen_from_now;
     use crate::failure::ProviderFailure;
     use crate::failure::test_support::failure;
     use crate::tasks::CancelledGoal;
@@ -3051,6 +3105,41 @@ mod tests {
         assert_eq!(server.exposure().name, "camera_and_recording");
     }
 
+    /// The extensions of the context of a handler, as rmcp fills them for a
+    /// request whose HTTP extensions hold `stamp`.
+    fn handler_extensions(stamp: Option<EventStamp>) -> rmcp::model::Extensions {
+        let (mut parts, ()) = axum::http::Request::new(()).into_parts();
+        if let Some(stamp) = stamp {
+            parts.extensions.insert(stamp);
+        }
+        let mut extensions = rmcp::model::Extensions::new();
+        extensions.insert(parts);
+        extensions
+    }
+
+    #[test]
+    fn the_arrival_stamp_is_read_from_the_http_parts_of_the_request() {
+        let events = CatalogEvents::new(1);
+        events.announce(CatalogEvent::ResourceListChanged);
+        let stamp = events.stamp();
+
+        assert_eq!(arrival_stamp(&handler_extensions(Some(stamp))), Some(stamp));
+    }
+
+    #[test]
+    fn a_request_that_the_endpoint_did_not_stamp_has_no_arrival_stamp() {
+        assert_eq!(
+            arrival_stamp(&rmcp::model::Extensions::new()),
+            None,
+            "no HTTP parts"
+        );
+        assert_eq!(
+            arrival_stamp(&handler_extensions(None)),
+            None,
+            "HTTP parts without a stamp"
+        );
+    }
+
     /// The per-robot surface the fleet tests drive: a status target filled
     /// once per robot (a resource the listing reads a field of, and an
     /// identity tool it calls) and a camera target filled any number of
@@ -3529,7 +3618,7 @@ mod tests {
                 unknown.message
             );
 
-            let mut events = server.state.events.subscribe();
+            let mut events = listen_from_now(&server.state.events);
             let camera = member("camera", "alpha", "wrist_left");
             let attached = handle.attach(&camera);
             let (_, ingest) = &attached[0];
@@ -4508,7 +4597,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_read_answers_with_the_message_that_arrives_after_it() {
         let (server, nanos) = built_picture_server();
-        let mut events = server.state.events.subscribe();
+        let mut events = listen_from_now(&server.state.events);
         publish_status(&server, 87);
         assert_matches!(events.try_recv(), Ok(CatalogEvent::ResourceUpdated { .. }));
 

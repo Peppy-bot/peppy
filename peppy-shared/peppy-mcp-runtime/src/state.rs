@@ -1,6 +1,7 @@
 //! Per-resource runtime state: the update-rate gate, the snapshot store
-//! read by `resources/read`, the readers that wait for the next message,
-//! and the event channel behind subscription notifications.
+//! read by `resources/read`, and the readers that wait for the next
+//! message. A publish announces its event on the channel of
+//! [`crate::events`], which subscription notifications come from.
 //!
 //! A read answers with a message the endpoint receives after the read
 //! arrived: while a reader waits, the gate admits the next message
@@ -17,22 +18,14 @@
 
 use crate::clock::Clock;
 use crate::error::PublishError;
+use crate::events::{CatalogEvent, CatalogEvents};
 use crate::representation::{SnapshotContent, apply_content_policies};
 use peppy_mcp_catalog::ResourceEntry;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
-use tokio::sync::{Notify, broadcast};
-
-/// An event the subscription forwarder relays to listening clients: a
-/// resource took a new snapshot, or the resource list changed because a
-/// robot joined or left a per-robot surface.
-#[derive(Debug, Clone)]
-pub(crate) enum CatalogEvent {
-    ResourceUpdated { uri: String },
-    ResourceListChanged,
-}
+use tokio::sync::Notify;
 
 /// The latest policy-approved snapshot of one exposed topic.
 #[derive(Debug, Clone)]
@@ -256,7 +249,7 @@ enum Admission {
 #[derive(Debug, Clone)]
 pub struct ResourceIngest {
     pub(crate) state: Arc<ResourceState>,
-    pub(crate) events: broadcast::Sender<CatalogEvent>,
+    pub(crate) events: CatalogEvents,
     pub(crate) clock: Clock,
 }
 
@@ -292,8 +285,7 @@ impl ResourceIngest {
             taken_at_nanos: token.taken_at_nanos,
         });
         if token.for_readers.is_none() {
-            // Send fails only when nobody listens, which is fine.
-            let _ = self.events.send(CatalogEvent::ResourceUpdated {
+            self.events.announce(CatalogEvent::ResourceUpdated {
                 uri: self.state.entry.uri.clone(),
             });
         }
@@ -310,6 +302,7 @@ impl ResourceIngest {
 mod tests {
     use super::*;
     use crate::clock::test_support::{MS, manual_clock};
+    use crate::events::test_support::listen_from_now;
     use serde_json::json;
     use std::assert_matches;
     use std::sync::atomic::AtomicU64;
@@ -345,7 +338,7 @@ mod tests {
     /// An ingest of `entry` on a clock the test advances by hand.
     fn ingest_of(entry: ResourceEntry) -> (ResourceIngest, Arc<AtomicU64>) {
         let (clock, nanos) = manual_clock();
-        let (events, _) = broadcast::channel(16);
+        let events = CatalogEvents::new(16);
         let ingest = ResourceIngest {
             state: Arc::new(ResourceState::new(entry)),
             events,
@@ -457,7 +450,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_read_answers_with_the_first_message_after_it_whatever_the_interval() {
         let (ingest, nanos) = ingest_with_clock();
-        let mut events = ingest.events.subscribe();
+        let mut events = listen_from_now(&ingest.events);
         let token = ingest.admit().expect("gate open");
         ingest
             .publish(token, json!({ "battery": 1 }))
@@ -622,7 +615,7 @@ mod tests {
     #[test]
     fn each_publish_emits_a_resource_updated_event() {
         let (ingest, _) = ingest_with_clock();
-        let mut receiver = ingest.events.subscribe();
+        let mut receiver = listen_from_now(&ingest.events);
         let token = ingest.admit().expect("gate open");
         ingest
             .publish(token, json!({ "battery": 87 }))

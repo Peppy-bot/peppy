@@ -49,6 +49,7 @@
 mod call_record;
 pub mod clock;
 pub mod error;
+mod events;
 mod failure;
 pub mod fleet;
 pub mod representation;

@@ -377,3 +377,57 @@ async fn subscription_filters_narrow_to_capabilities_and_scope_notifications() {
     }
     set.stop().await;
 }
+
+/// A subscription is told of each update that comes after its request, and
+/// of none from before it. The endpoint acknowledges a subscription a
+/// moment before it starts to relay events, so it relays the updates since
+/// the request arrived first; an update from before the request is not one
+/// of them. Here the frame takes a snapshot before the request and the
+/// status takes one after the acknowledgment, so the first notification
+/// names the status.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subscription_is_told_of_no_update_from_before_its_request() {
+    let set = start_set().await;
+    for endpoint in &set.endpoints {
+        let frame_ingest = endpoint
+            .server
+            .ingest("front_camera.latest_frame")
+            .expect("resource exists");
+        let token = frame_ingest.admit().expect("gate open");
+        frame_ingest
+            .publish(token, sample_rgb8_frame())
+            .expect("frame publishes");
+
+        let client = connect(&endpoint.url).await;
+        let mut subscription = client
+            .listen(
+                SubscriptionFilter::builder()
+                    .resource_subscriptions([FRAME_URI, STATUS_URI])
+                    .build(),
+            )
+            .await
+            .expect("subscriptions/listen is accepted");
+
+        let status_ingest = endpoint
+            .server
+            .ingest("front_camera.status")
+            .expect("resource exists");
+        let token = status_ingest.admit().expect("gate open");
+        status_ingest
+            .publish(token, json!({ "battery": 42 }))
+            .expect("status publishes");
+
+        let notification = next_notification(&mut subscription).await;
+        match notification {
+            ServerNotification::ResourceUpdatedNotification(updated) => assert_eq!(
+                updated.params.uri, STATUS_URI,
+                "the snapshot of the frame came before the request of the subscription"
+            ),
+            other => panic!("expected a resource-updated notification, got {other:?}"),
+        }
+        subscription.cancel().await.expect("subscription cancels");
+
+        client.cancel().await.expect("client disconnects");
+    }
+    set.stop().await;
+}
