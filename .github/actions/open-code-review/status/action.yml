@@ -1,0 +1,54 @@
+name: OpenCodeReview status
+description: >-
+  Sets the commit status `open-code-review` that the review job of the
+  workflow `OpenCodeReview` gives (the output `status` of the action
+  open-code-review) on the head that it reviewed, with a token of the App
+  `peppy-open-code-review` (open_code_review.py status). A ruleset requires
+  the status from that App, and only this action sets one: the token of a job
+  sets a status of GitHub Actions, which the ruleset does not count.
+
+  The workflow `OpenCodeReview` of peppy and the one of platform run it in a
+  job of its own on the smallest runner, after the review job, in the
+  environment `open-code-review` of the repository, whose secrets are the
+  client ID and the private key of the App. Only the integration branch
+  reaches the environment, so a workflow of another branch cannot read the
+  key. The job runs no Claude run and no code of the pull request: the review
+  job, which runs Claude, never holds the key or a token of the App.
+
+inputs:
+  status:
+    description: >-
+      The output `status` of the review job: the head, the state and the
+      description, as JSON. The step reads it as data.
+    required: true
+  client-id:
+    description: The client ID of the App, the secret OPEN_CODE_REVIEW_CLIENT_ID.
+    required: true
+  private-key:
+    description: The private key of the App, the secret OPEN_CODE_REVIEW_PRIVATE_KEY.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # A token that sets the statuses of the repository of the run alone. It
+    # ends with the job.
+    - name: Make the status token
+      id: token
+      uses: actions/create-github-app-token@v3.3.0
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ github.repository_owner }}
+        repositories: ${{ github.event.repository.name }}
+        permission-statuses: write
+
+    - name: Set the status of the review
+      shell: bash
+      env:
+        REVIEW_TOKEN: ${{ steps.token.outputs.token }}
+        REVIEW_APP: ${{ steps.token.outputs.app-slug }}
+        REVIEW_STATUS: ${{ inputs.status }}
+      run: |
+        timeout --kill-after=1m 2m \
+          python3 "$GITHUB_ACTION_PATH/../open_code_review.py" status

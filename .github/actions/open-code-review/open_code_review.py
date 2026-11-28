@@ -2,7 +2,10 @@
 """The OpenCodeReview review of a pull request of peppy or of platform.
 
 The action open-code-review (action.yml in this directory) runs `review`, posts
-its result and runs `status`. The workflow `OpenCodeReview` of peppy
+its result and runs `record-status`, which gives the status of the review to
+the output of the action. The action open-code-review/status
+(status/action.yml) runs `status` in a job of its own, which sets that status
+on the head. The workflow `OpenCodeReview` of peppy
 (.github/workflows/open-code-review.yml) and the one of platform run it on each
 push of a pull request that is not a draft and on a change of its base branch,
 and on a comment that starts with `/open-code-review`, when the author of the
@@ -31,32 +34,46 @@ provider with an API token, and the Claude login of a subscription is for
 Claude Code alone.
 
 The commit status `open-code-review` of a head tells whether the head has a
-review. A run sets it only for a pull request into the integration branch of
-its repository (gives_status): pending while the run reviews the head;
-success when the run posted a review in which Claude reviewed a file at least
-and accounted for each file to review, with no changed file that OCR leaves
-out, or when the head keeps an earlier review; and failure else, for a run
-that is cancelled too. A ruleset can require the status from GitHub Actions.
-Each workflow of the repository that has `statuses: write` can set it, so the
-status stops a mistake, not a user with write access.
+review. A run sets it when its review ends, only for a pull request into the
+integration branch of its repository (gives_status): success when the run
+posted a review in which Claude reviewed a file at least and accounted for
+each file to review, with no changed file that OCR leaves out, or when the
+head keeps an earlier review; and failure else, for a run that is cancelled
+too. The status tells that a review ran and was posted, not what it found.
+
+The App `peppy-open-code-review` sets the status, and a ruleset can require it
+from that App. The key of the App is a secret of the environment
+`open-code-review` of the repository, which only the integration branch
+reaches. The status job of the workflow uses the environment: it runs the
+script of the action and no Claude run, and reads the status that the review
+job gives as data. A workflow of another branch cannot read the key, and the
+token of a job (GitHub Actions) sets a status that the ruleset does not count,
+so a user with write access cannot set the status that counts. The review
+job holds no token that sets a status.
 
 Each run spends the usage of the Claude login, which the Claude review of a set
 and the release also use, so a push that brings nothing new to review starts
 no Claude run. A review that posts each of its findings records its head in the
 checkpoint of the poster, a marker in the summary comment. A push whose head
 differs from that head by a clean merge of the base branch alone (the rule of
-merge_set for a commit that a hub run tested) keeps that review. A comment, and
+merge_set for a commit that a hub run tested) keeps that review. A user with
+write access can edit the summary comment, so for a pull request that gets a
+status, a push keeps the review only when the App of the status also set the
+status success on the head of the checkpoint (vouched_summary). A comment, and
 a pull request that opens, reopens, becomes ready for review or gets another
 base branch, gets a review in full.
 
 Nothing of a pull request runs, and a pull request cannot change the rules,
 the skill, the prompt or the poster of its review:
 
-- The workflow runs from the base branch of the pull request for a push, and
-  from the default branch for a comment: branches of the repository, which
-  only a user with write access changes. The workflow of peppy runs the action
-  at the commit of the workflow, and the one of platform at the commit of
-  peppy `dev` that its lockfile pins. This script, the skill and the poster
+- The workflow runs from the default branch of the repository, which only a
+  user with write access changes: GitHub takes the workflow of a
+  `pull_request_target` run from the default branch whatever the base branch
+  of the pull request, and the one of a comment too. GitHub also checks the
+  environment of the status job against the default branch, which is the
+  integration branch of peppy and of platform. The workflow of peppy runs the
+  action at the commit of the workflow, and the one of platform at the commit
+  of peppy `dev` that its lockfile pins. This script, the skill and the poster
   come from trusted sources: peppy at the commit of the action, and OCR at a
   pinned commit.
 - The OCR CLI runs in a checkout of the base branch, from which it reads the
@@ -117,6 +134,7 @@ from claude_review import (
     without_mentions,
 )
 from merge_set import (
+    BOT_LOGIN_SUFFIX,
     PEPPY,
     PLATFORM,
     WRITE_PERMISSIONS,
@@ -124,10 +142,12 @@ from merge_set import (
     GitError,
     GitHubApi,
     GitMerges,
+    CommitStatus,
     MergeSetError,
     PullRequest,
     Repository,
     read_permission,
+    parse_statuses,
     repository_of_full_name,
     resolve,
 )
@@ -1414,12 +1434,19 @@ def failure_options(summary: SummaryComment | None) -> dict:
 
 
 # The context of the commit status of the review on the head that it read. The
-# ruleset `OpenCodeReview` of platform requires it, from GitHub Actions.
+# App STATUS_APP sets it, as its bot user STATUS_APP_LOGIN, and the ruleset
+# `OpenCodeReview` of platform requires the status from that App. The
+# secrets of the environment
+# of the status job of the workflow (STATUS_ENVIRONMENT) are the client ID and
+# the private key of the App (STATUS_SECRETS).
 STATUS_CONTEXT = "open-code-review"
+STATUS_APP = "peppy-open-code-review"
+STATUS_APP_LOGIN = f"{STATUS_APP}{BOT_LOGIN_SUFFIX}"
+STATUS_ENVIRONMENT = "open-code-review"
+STATUS_SECRETS = ("OPEN_CODE_REVIEW_CLIENT_ID", "OPEN_CODE_REVIEW_PRIVATE_KEY")
 
 
 class StatusState(Enum):
-    PENDING = "pending"
     SUCCESS = "success"
     FAILURE = "failure"
 
@@ -1433,7 +1460,6 @@ class ReviewStatus:
     description: str
 
 
-RUNNING_STATUS = ReviewStatus(StatusState.PENDING, "The review of this head runs.")
 REVIEWED_STATUS = ReviewStatus(
     StatusState.SUCCESS, "The review of this head is posted."
 )
@@ -1509,8 +1535,10 @@ def answer_status(
 
 @dataclass(frozen=True)
 class StatusRecord:
-    """The status of the review on the head that the run read, which the
-    review step writes and the status step reports."""
+    """The status of the review on the head that the run read. The review
+    step writes it to a file, the step `record-status` gives the status that
+    the run reports to the output of the review job, and the status job sets
+    that one."""
 
     head: str
     status: ReviewStatus
@@ -1525,7 +1553,8 @@ def status_record_document(record: StatusRecord) -> dict:
 
 
 def parse_status_record(text: str) -> StatusRecord:
-    """The status record of the review step."""
+    """The status record of the review step, or the status that the review
+    job gives to the status job, in the same form."""
     try:
         document = json.loads(text)
         head = document["head"]
@@ -1560,6 +1589,67 @@ def gives_status(pull_request: PullRequest) -> bool:
     another diff, so it would give the head of a pull request into the
     integration branch the status of that other diff."""
     return pull_request.base_branch == pull_request.repository.integration_branch
+
+
+def app_status(
+    api: GitHubApi, repository: Repository, head: str
+) -> CommitStatus | None:
+    """The newest status `open-code-review` that the App of the status set on
+    the head; None when it set none. A status of the same context from
+    another creator does not count: a user with write access can set one."""
+    statuses = parse_statuses(
+        api.pages(f"/repos/{repository.full_name}/commits/{head}/statuses")
+    )
+    return next(
+        (
+            status
+            for status in statuses
+            if status.context == STATUS_CONTEXT and status.creator == STATUS_APP_LOGIN
+        ),
+        None,
+    )
+
+
+def vouched_summary(
+    api: GitHubApi,
+    pull_request: PullRequest,
+    summary: SummaryComment | None,
+    push: bool,
+) -> SummaryComment | None:
+    """The summary comment, with its checkpoint only when a push can keep the
+    review of the checkpoint. Each other event asks for a review in full. A
+    user with write access can edit the summary comment, so for a pull
+    request that gets a status (gives_status), the App of the status must
+    have set the status success on the head of the checkpoint too: a record
+    that such a user cannot set. A read of the statuses that fails drops the
+    checkpoint too: the run then reviews in full. A pull request into another
+    branch gets no status, and no ruleset reads its review: its checkpoint
+    counts alone."""
+    if summary is None or summary.checkpoint is None:
+        return summary
+    if not push:
+        return replace(summary, checkpoint=None)
+    if not gives_status(pull_request):
+        return summary
+    head = summary.checkpoint.head
+    try:
+        status = app_status(api, pull_request.repository, head)
+    except ApiError as failure:
+        print(
+            f"The statuses of {head} could not be read ({failure}): the run "
+            "reviews in full.",
+            flush=True,
+        )
+        return replace(summary, checkpoint=None)
+    if status is not None and status.state == StatusState.SUCCESS.value:
+        return summary
+    print(
+        f"The checkpoint names {head}, which has no status success of "
+        f"{STATUS_APP_LOGIN} (it has {'none' if status is None else status.state}): "
+        "the run reviews in full.",
+        flush=True,
+    )
+    return replace(summary, checkpoint=None)
 
 
 def run_url(environment: Mapping[str, str]) -> str:
@@ -1669,9 +1759,10 @@ def review(
 # The commands --------------------------------------------------------------------
 
 
-# The variables of the review step and of the status step. GitHub sets the
-# others that the script reads: GITHUB_EVENT_NAME, GITHUB_EVENT_PATH,
-# GITHUB_REPOSITORY, GITHUB_SERVER_URL and GITHUB_RUN_ID.
+# The variables of the review step, of the step that records the status and of
+# the step that sets it. GitHub sets the others that the script reads:
+# GITHUB_EVENT_NAME, GITHUB_EVENT_PATH, GITHUB_REPOSITORY, GITHUB_SERVER_URL,
+# GITHUB_RUN_ID and GITHUB_OUTPUT.
 STEP_VARIABLES = (
     "REVIEW_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -1679,16 +1770,18 @@ STEP_VARIABLES = (
     "REVIEW_SKILL",
     "REVIEW_WORKSPACE",
 )
-STATUS_VARIABLES = ("REVIEW_TOKEN", "REVIEW_POSTED")
+RECORD_VARIABLES = ("REVIEW_POSTED",)
+STATUS_VARIABLES = ("REVIEW_TOKEN", "REVIEW_APP", "REVIEW_STATUS")
 SCRIPT = '"$GITHUB_ACTION_PATH/open_code_review.py"'
-# The commands of the steps of the action. Each one follows the `timeout` of
+# The commands of the steps of the actions. Each one follows the `timeout` of
 # its step on the line before.
 REVIEW_COMMAND = (
     f"python3 {SCRIPT} review "
     f'--result "$RUNNER_TEMP/{RESULT_FILE}" --errors "$RUNNER_TEMP/{ERRORS_FILE}" '
     f'--poster "$RUNNER_TEMP/{POSTER_FILE}" --status "$RUNNER_TEMP/{STATUS_FILE}"'
 )
-STATUS_COMMAND = f'python3 {SCRIPT} status --status "$RUNNER_TEMP/{STATUS_FILE}"'
+RECORD_COMMAND = f'python3 {SCRIPT} record-status --status "$RUNNER_TEMP/{STATUS_FILE}"'
+STATUS_COMMAND = 'python3 "$GITHUB_ACTION_PATH/../open_code_review.py" status'
 # The lines that action.yml holds, so that its steps run the commands of this
 # script, give the variables that it reads, install the Claude CLI of the
 # Claude review of a set and read the files that it writes.
@@ -1696,13 +1789,15 @@ STATUS_COMMAND = f'python3 {SCRIPT} status --status "$RUNNER_TEMP/{STATUS_FILE}"
 # claude_review.workflow_problems.
 ACTION_LINES = (
     REVIEW_COMMAND,
-    STATUS_COMMAND,
+    RECORD_COMMAND,
     "REVIEW_TOKEN: ${{ github.token }}",
     "CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}",
     f"CLAUDE_CLI_VERSION: {claude_review.CLAUDE_CLI_VERSION}",
     "id: post",
+    "id: status",
     "if: ${{ always() }}",
     "REVIEW_POSTED: ${{ steps.post.outcome }}",
+    "value: ${{ steps.status.outputs.status }}",
     "core: recordingCore,",
     "if (!options.checkpointNoop && !outputs.summary_comment_url) {",
     f"const resultPath = `${{process.env.RUNNER_TEMP}}/{RESULT_FILE}`;",
@@ -1711,13 +1806,30 @@ ACTION_LINES = (
     "options = JSON.parse(fs.readFileSync(posterPath, 'utf8'));",
     "...options,",
 )
+# The lines that status/action.yml holds: a token of the App of the status that
+# sets statuses on the repository of the run alone, and the command that sets
+# the status of the review job with it.
+STATUS_ACTION_LINES = (
+    STATUS_COMMAND,
+    "id: token",
+    "client-id: ${{ inputs.client-id }}",
+    "private-key: ${{ inputs.private-key }}",
+    "owner: ${{ github.repository_owner }}",
+    "repositories: ${{ github.event.repository.name }}",
+    "permission-statuses: write",
+    "REVIEW_TOKEN: ${{ steps.token.outputs.token }}",
+    "REVIEW_APP: ${{ steps.token.outputs.app-slug }}",
+    "REVIEW_STATUS: ${{ inputs.status }}",
+)
 # The lines that each workflow that runs the action holds: the events of a
 # review (an edit of the pull request only when it changes the base branch),
-# the first job, which runs open-code-review/author, and the review job that
-# needs its answer, the names of the workflow and of its runs, from which the
-# merge-set bot reads the pull request,
-# the permissions of the token of the job (the status needs `statuses: write`)
-# and the Claude login. `check-workflow` checks them.
+# the first job, which runs open-code-review/author, the review job that
+# needs its answer, with the permissions of its token (it reads the statuses
+# of the App, vouched_summary) and the Claude login,
+# the status job that needs the status of the review job and sets it from the
+# environment of the App of the status, and the names of the workflow and of
+# its runs, from which the merge-set bot reads the pull request.
+# `check-workflow` checks them.
 WORKFLOW_LINES = (
     "types: [opened, synchronize, reopened, ready_for_review, edited]",
     "&& (github.event.action != 'edited' || github.event.changes.base)",
@@ -1731,39 +1843,45 @@ WORKFLOW_LINES = (
     "if: needs.author.outputs.review == 'true'",
     "contents: read",
     "pull-requests: write",
-    "statuses: write",
+    "statuses: read",
     "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    "status: ${{ steps.review.outputs.status }}",
+    "- id: review",
+    "needs: review",
+    "if: always() && needs.review.outputs.status != ''",
+    f"name: {STATUS_ENVIRONMENT}",
+    "deployment: false",
+    "status: ${{ needs.review.outputs.status }}",
+    f"client-id: ${{{{ secrets.{STATUS_SECRETS[0]} }}}}",
+    f"private-key: ${{{{ secrets.{STATUS_SECRETS[1]} }}}}",
 )
 
 
 @dataclass(frozen=True)
 class Run:
-    """What the review step reads before it reviews: its variables, the
-    GitHub client of its token, the pull request of its event, the newest
-    summary comment of the poster on it, whether the event is a push, and
-    the page of the run."""
+    """What the review step reads before it reviews: its variables, the pull
+    request of its event, the newest summary comment of the poster on it, with
+    its checkpoint when a push can keep that review (vouched_summary), and
+    whether the event is a push."""
 
     environment: Mapping[str, str]
-    api: GitHubApi
     pull: ReviewedPullRequest
     summary: SummaryComment | None
     push: bool
-    url: str
 
 
 def start_run(environment: Mapping[str, str]) -> Run:
     event = parse_review_event(environment)
-    url = run_url(environment)
     for name in STEP_VARIABLES:
         claude_review.required(environment, name)
     api = GitHubApi(environment["REVIEW_TOKEN"])
+    pull = fetch_pull_request(api, event.repository, event.number)
+    summary = read_summary(api, event.repository, event.number)
     return Run(
         environment,
-        api,
-        fetch_pull_request(api, event.repository, event.number),
-        read_summary(api, event.repository, event.number),
+        pull,
+        vouched_summary(api, pull.pull_request, summary, event.push),
         event.push,
-        url,
     )
 
 
@@ -1804,9 +1922,9 @@ def write_json(path: Path, document: object) -> None:
 
 
 def write_status(path: Path, run: Run | None, status: ReviewStatus) -> None:
-    """Record the status for the status step. A run that did not read the
-    pull request, or that gives no status (gives_status), records nothing,
-    and the status step then reports nothing."""
+    """Record the status for the step `record-status`. A run that did not
+    read the pull request, or that gives no status (gives_status), records
+    nothing, and the run then reports nothing."""
     if run is None or not gives_status(run.pull.pull_request):
         return
     record = StatusRecord(run.pull.pull_request.head_commit, status)
@@ -1814,9 +1932,8 @@ def write_status(path: Path, run: Run | None, status: ReviewStatus) -> None:
 
 
 def start_review(run: Run, status: Path) -> None:
-    """Record STOPPED_STATUS, which the status step reports when the review
-    step ends before it records the status of its outcome, and give the head
-    the pending status."""
+    """Record STOPPED_STATUS, which the run reports when the review step ends
+    before it records the status of its outcome (at its time limit)."""
     pull_request = run.pull.pull_request
     if not gives_status(pull_request):
         print(
@@ -1827,13 +1944,6 @@ def start_review(run: Run, status: Path) -> None:
         )
         return
     write_status(status, run, STOPPED_STATUS)
-    post_status(
-        run.api,
-        pull_request.repository,
-        pull_request.head_commit,
-        RUNNING_STATUS,
-        run.url,
-    )
 
 
 def write_failure(
@@ -1876,28 +1986,59 @@ def review_command(result: Path, errors: Path, poster: Path, status: Path) -> in
     return claude_review.error(cause)
 
 
-def status_command(status: Path) -> int:
-    """Report the status that the review step recorded on its head. A run
-    with no record (it stopped before the review step read the pull request,
-    or it gives no status) reports nothing, and the status of the head stays
-    as it is."""
+def record_status_command(status: Path) -> int:
+    """Give the status that the run reports on the head that the review step
+    recorded (reported_status) to the output `status` of the step, in the
+    form of the record. A run with no record (it stopped before the review
+    step read the pull request, or it gives no status) gives no output, and
+    the status job then does not run."""
     if not status.exists():
         print(
             "The review step recorded no status, so the run reports none.",
             flush=True,
         )
         return 0
+    try:
+        record = parse_status_record(status.read_text())
+        posted = claude_review.required(os.environ, "REVIEW_POSTED")
+    except MergeSetError as failure:
+        return claude_review.error(str(failure))
+    reported = StatusRecord(record.head, reported_status(record, posted))
+    resolve.append_to_runner_file(
+        "GITHUB_OUTPUT",
+        f"status={json.dumps(status_record_document(reported))}\n",
+    )
+    print(
+        f"The run reports the status {reported.status.state.value} on "
+        f"{reported.head}: {reported.status.description}",
+        flush=True,
+    )
+    return 0
+
+
+def status_command() -> int:
+    """Set the status that the review job gives (REVIEW_STATUS, in the form
+    of the record) on its head, with the token of the App of the status
+    (REVIEW_TOKEN). The status is data: it names its head, its state and its
+    description, and the step takes no other form. The token must be one of
+    STATUS_APP (REVIEW_APP, the slug of its App): a push keeps a review only
+    for a head with a status of that App (vouched_summary)."""
     environment = os.environ
     required = claude_review.required
     try:
         repository = reviewed_repository(required(environment, "GITHUB_REPOSITORY"))
-        record = parse_status_record(status.read_text())
-        reported = reported_status(record, required(environment, "REVIEW_POSTED"))
+        reported = parse_status_record(required(environment, "REVIEW_STATUS"))
+        app = required(environment, "REVIEW_APP")
+        if app != STATUS_APP:
+            raise MergeSetError(
+                f"the token is one of the App `{app}`, not of `{STATUS_APP}`, whose "
+                "status the review reads"
+            )
         post_status(
             GitHubApi(required(environment, "REVIEW_TOKEN")),
             repository,
-            record.head,
-            reported,
+            reported.head,
+            reported.status,
             run_url(environment),
         )
     except ApiError as failure:
@@ -1905,8 +2046,8 @@ def status_command(status: Path) -> int:
     except MergeSetError as failure:
         return claude_review.error(str(failure))
     print(
-        f"The status `{STATUS_CONTEXT}` of {record.head} is "
-        f"{reported.state.value}: {reported.description}",
+        f"The status `{STATUS_CONTEXT}` of {reported.head} is "
+        f"{reported.status.state.value}: {reported.status.description}",
         flush=True,
     )
     return 0
@@ -2006,15 +2147,19 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         required=True,
         help="The file that gets the status of the review on its head.",
     )
-    status_parser = commands.add_parser(
-        "status",
-        help="Report the status that the review step recorded on its head.",
+    record_parser = commands.add_parser(
+        "record-status",
+        help="Give the status that the run reports to the output `status` of the step.",
     )
-    status_parser.add_argument(
+    record_parser.add_argument(
         "--status",
         type=Path,
         required=True,
         help="The file in which the review step recorded the status.",
+    )
+    commands.add_parser(
+        "status",
+        help="Set the status that the review job gives on its head.",
     )
     commands.add_parser(
         "author",
@@ -2036,8 +2181,10 @@ def main(argv: Sequence[str]) -> int:
             return review_command(
                 arguments.result, arguments.errors, arguments.poster, arguments.status
             )
+        case "record-status":
+            return record_status_command(arguments.status)
         case "status":
-            return status_command(arguments.status)
+            return status_command()
         case "author":
             return author_command()
         case "check-workflow":
