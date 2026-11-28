@@ -66,11 +66,14 @@ base branch, gets a review in full.
 Nothing of a pull request runs, and a pull request cannot change the rules,
 the skill, the prompt or the poster of its review:
 
-- The workflow runs from the base branch of the pull request for a push, and
-  from the default branch for a comment: branches of the repository, which
-  only a user with write access changes. The workflow of peppy runs the action
-  at the commit of the workflow, and the one of platform at the commit of
-  peppy `dev` that its lockfile pins. This script, the skill and the poster
+- The workflow runs from the default branch of the repository, which only a
+  user with write access changes: GitHub takes the workflow of a
+  `pull_request_target` run from the default branch whatever the base branch
+  of the pull request, and the one of a comment too. GitHub also checks the
+  environment of the status job against the default branch, which is the
+  integration branch of peppy and of platform. The workflow of peppy runs the
+  action at the commit of the workflow, and the one of platform at the commit
+  of peppy `dev` that its lockfile pins. This script, the skill and the poster
   come from trusted sources: peppy at the commit of the action, and OCR at a
   pinned commit.
 - The OCR CLI runs in a checkout of the base branch, from which it reads the

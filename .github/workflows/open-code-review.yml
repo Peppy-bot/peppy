@@ -24,14 +24,15 @@ run-name: "OpenCodeReview of #${{ github.event.pull_request.number || github.eve
 # head of the last complete review by a clean merge of the base branch alone
 # keeps that review, and Claude does not run.
 #
-# Nothing of a pull request can change what the job runs. A
-# `pull_request_target` run takes this file and the action from the base
-# branch of the pull request, and a comment run from the default branch:
-# branches of the repository, which only a user with write access changes. OCR
-# comes from a pinned release. The job reads the pull request as data: it runs
+# Nothing of a pull request can change what the jobs run. A
+# `pull_request_target` run and a comment run take this file and the actions
+# from `dev`, the default branch, whatever the base branch of the pull
+# request: a branch that only a user with write access changes. OCR comes from
+# a pinned release. The review job reads the pull request as data: it runs
 # none of its code. The key of the App of the status is a secret of the
-# environment `open-code-review`, which only `dev` reaches, and only the
-# status job, which runs no Claude run, uses it.
+# environment `open-code-review`, which only `dev` reaches (GitHub checks
+# these runs against the default branch), and only the status job, which runs
+# no Claude run, uses it.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, edited]
