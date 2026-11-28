@@ -2,13 +2,12 @@ name: OpenCodeReview
 
 # A second review of each pull request of peppy, in the delegation mode of
 # OpenCodeReview (OCR, https://github.com/alibaba/open-code-review), next to
-# the Claude review of a set. The OCR CLI selects the files to review and
-# gives the rules of each, the Claude CLI reviews them by the skill
-# `open-code-review-delegate` of OCR with the Claude login of the
-# subscription, and the poster of the OCR GitHub Action posts the findings:
-# inline comments, and one summary comment that each run updates. The run
-# never approves and never requests changes, and no ruleset requires its
-# check. .github/open-code-review/open_code_review.py gives the design.
+# the Claude review of a set: the action open-code-review of peppy
+# (.github/actions/open-code-review) reviews the pull request, posts the
+# findings and sets the commit status `open-code-review` of the head. The run
+# never approves and never requests changes, and no ruleset of peppy requires
+# the status. The workflow of platform runs the same action from peppy `dev`,
+# and the ruleset of platform requires the status.
 #
 # A run starts on each push of a pull request whose author is an owner, a
 # member or a collaborator of the repository, and on a comment that starts
@@ -21,7 +20,7 @@ name: OpenCodeReview
 # keeps that review, and Claude does not run.
 #
 # Nothing of a pull request can change what the job runs. A
-# `pull_request_target` run takes this file and the reviewer from the base
+# `pull_request_target` run takes this file and the action from the base
 # branch of the pull request, and a comment run from the default branch:
 # branches of the repository, which only a user with write access changes. OCR
 # comes from a pinned release. The job reads the pull request as data: it runs
@@ -84,130 +83,16 @@ jobs:
       )
     # A small RunsOn runner: Claude reads and the job builds nothing.
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
-    # Each step has a time limit, and the job outlasts their sum: a step at
+    # Above the sum of the time limits of the steps of the action: a step at
     # its limit fails, and the post step then posts the cause. The job at its
-    # limit is cancelled, which skips the post step.
+    # limit is cancelled, which skips the post step and the status.
     # (test_open_code_review.py checks the limits.)
     timeout-minutes: 120
     permissions:
       contents: read
       pull-requests: write
-    env:
-      # The release of OCR whose CLI, skill and poster the job runs: the
-      # commit of its tag, and the sha256 of its CLI for linux/amd64, as the
-      # sha256sum.txt of the release gives it. Change the three together.
-      OCR_VERSION: 1.14.3
-      OCR_COMMIT: f6379f71edba1e59dbc056e8f455df1f84396498
-      OCR_SHA256: 17ee32cdf0af6c006a199d758defb6c2abe05ec5b4d164df3a703c0208d5155e
-      # The version of the Claude CLI is pinned, as the model and the effort
-      # are, so that a new release does not change the reviewer: the
-      # CLAUDE_CLI_VERSION of claude_review.py, which the tests check here and
-      # in the workflow of the Claude review of a set.
-      CLAUDE_CLI_VERSION: 2.1.327
-
+      statuses: write
     steps:
-      # The reviewer, its imports and the installer, at the commit of this
-      # workflow: the tip of the base branch of the pull request for a push,
-      # and of the default branch for a comment.
-      - name: Check out the reviewer of peppy
-        timeout-minutes: 5
-        uses: actions/checkout@v7.0.1
+      - uses: $/.github/actions/open-code-review
         with:
-          sparse-checkout: |
-            /.github/open-code-review/
-            /.github/merge-set/
-            /.github/actions/hub-ci-peppy/
-            /scripts/run_installer.sh
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      # The skill that Claude follows and the poster of the OCR GitHub Action.
-      - name: Check out the skill and the poster of OCR
-        timeout-minutes: 5
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: alibaba/open-code-review
-          ref: ${{ env.OCR_COMMIT }}
-          path: open-code-review
-          sparse-checkout: |
-            /skills/open-code-review-delegate/SKILL.md
-            /scripts/github-actions/post-review-comments.js
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      # The curl options are those of every download of a release
-      # (scripts/functions/download.py).
-      - name: Install the OCR CLI
-        timeout-minutes: 5
-        run: |
-          dir="$RUNNER_TEMP/ocr"
-          mkdir -p "$dir"
-          curl --fail --silent --show-error --location \
-            --retry 10 --retry-max-time 180 --retry-connrefused \
-            --output "$dir/ocr" \
-            "https://github.com/alibaba/open-code-review/releases/download/v${OCR_VERSION}/opencodereview-linux-amd64"
-          echo "${OCR_SHA256}  $dir/ocr" | sha256sum -c -
-          chmod +x "$dir/ocr"
-
-      - name: Install the Claude CLI
-        timeout-minutes: 10
-        run: |
-          ./scripts/run_installer.sh https://claude.ai/install.sh "$CLAUDE_CLI_VERSION"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      # Every value reaches the script through the environment rather than a
-      # `${{ }}` expansion in its source, so it is data the script parses. The
-      # limit holds the Claude run, the two OCR commands and the git commands.
-      - name: Review the pull request
-        id: review
-        timeout-minutes: 80
-        env:
-          REVIEW_TOKEN: ${{ github.token }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          REVIEW_OCR: ${{ runner.temp }}/ocr/ocr
-          REVIEW_SKILL: ${{ github.workspace }}/open-code-review/skills/open-code-review-delegate/SKILL.md
-          REVIEW_WORKSPACE: ${{ runner.temp }}/open-code-review
-        run: python3 .github/open-code-review/open_code_review.py review --result "$RUNNER_TEMP/ocr-result.json" --errors "$RUNNER_TEMP/ocr-errors.log" --poster "$RUNNER_TEMP/ocr-poster.json"
-
-      # The poster posts the result, or the cause of a review that did not
-      # complete, with the options that the review step chose
-      # (open_code_review.py gives them). Incremental: a comment that overlaps
-      # an inline comment of an earlier run is not posted again. A run that
-      # stopped before the review step wrote the options (a step that failed
-      # or reached its time limit) gets a cause in a new comment.
-      - name: Post the review
-        if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        uses: actions/github-script@v9.0.0
-        env:
-          REVIEW_PULL_REQUEST: ${{ github.event.pull_request.number || github.event.issue.number }}
-        with:
-          script: |
-            const fs = require('fs');
-            const { runPostReviewComments } = require(
-              `${process.env.GITHUB_WORKSPACE}/open-code-review/scripts/github-actions/post-review-comments.js`
-            );
-            const resultPath = `${process.env.RUNNER_TEMP}/ocr-result.json`;
-            const stderrPath = `${process.env.RUNNER_TEMP}/ocr-errors.log`;
-            const posterPath = `${process.env.RUNNER_TEMP}/ocr-poster.json`;
-            let options = { stickySummary: false };
-            if (fs.existsSync(posterPath)) {
-              options = JSON.parse(fs.readFileSync(posterPath, 'utf8'));
-            } else {
-              fs.writeFileSync(
-                stderrPath,
-                'The run stopped before the review completed: the log of the run gives the cause.\n'
-              );
-            }
-            await runPostReviewComments({
-              github,
-              context,
-              core,
-              fs,
-              prNumber: Number(process.env.REVIEW_PULL_REQUEST),
-              resultPath,
-              stderrPath,
-              incremental: true,
-              appSlug: 'github-actions',
-              ...options,
-            });
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

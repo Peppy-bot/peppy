@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""The OpenCodeReview review of a pull request of peppy.
+"""The OpenCodeReview review of a pull request of peppy or of platform.
 
-The workflow `OpenCodeReview` (.github/workflows/open-code-review.yml) runs
-`review` on each push of a pull request of a member or a collaborator that is
-not a draft, and on a comment of a member or a collaborator that starts with
+The action open-code-review (action.yml in this directory) runs `review`, posts
+its result and runs `status`. The workflow `OpenCodeReview` of peppy
+(.github/workflows/open-code-review.yml) and the one of platform run the action
+on each push of a pull request of a member or a collaborator that is not a
+draft, and on a comment of a member or a collaborator that starts with
 `/open-code-review`. The review is the delegation mode of OpenCodeReview (OCR,
 https://github.com/alibaba/open-code-review):
 
@@ -12,7 +14,8 @@ https://github.com/alibaba/open-code-review):
    (`ocr delegate rule`).
 2. The Claude CLI reviews these files by the skill `open-code-review-delegate`
    of OCR, with the model and the effort of the Claude review of a set
-   (../merge-set/claude_review.py) and the Claude login of the subscription.
+   (.github/merge-set/claude_review.py) and the Claude login of the
+   subscription.
 3. The script writes the findings in the JSON form of `ocr review --format
    json`, and the poster of the OCR GitHub Action posts them on the pull
    request: inline comments, and one summary comment that each run updates.
@@ -22,6 +25,14 @@ https://github.com/alibaba/open-code-review):
 OCR runs no model of its own: its native mode sends its prompts to a model
 provider with an API token, and the Claude login of a subscription is for
 Claude Code alone.
+
+The commit status `open-code-review` of a head tells whether the head has a
+review: pending while a run reviews it, success when the run posted a review
+that accounts for each file to review or when the head keeps an earlier
+review, and failure else. The ruleset `OpenCodeReview` of platform requires
+it on `main` (.github/rulesets/ of platform), so a pull request of platform
+merges only with a review, unless an admin bypasses the ruleset. No ruleset of
+peppy requires it.
 
 Each run spends the usage of the Claude login, which the Claude review of a set
 and the release also use, so a push that brings nothing new to review starts
@@ -37,9 +48,11 @@ the skill, the prompt or the poster of its review:
 
 - The workflow runs from the base branch of the pull request for a push, and
   from the default branch for a comment: branches of the repository, which
-  only a user with write access changes. This script, the skill and the poster
-  come from trusted checkouts: peppy at the commit of the workflow, and OCR at
-  a pinned commit.
+  only a user with write access changes. The workflow of peppy runs the action
+  at the commit of the workflow, and the one of platform at the commit of
+  peppy `dev` that its lockfile pins. This script, the skill and the poster
+  come from trusted sources: peppy at the commit of the action, and OCR at a
+  pinned commit.
 - The OCR CLI runs in a checkout of the base branch, from which it reads the
   rules of the project (`.opencodereview/rule.json`). Its environment holds no
   token, and the objects it reads are already local.
@@ -82,8 +95,9 @@ from enum import Enum
 from pathlib import Path
 
 # The Claude review of a set holds the run of the Claude CLI, the checkouts,
-# the GitHub client and the commands that this review uses too.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "merge-set"))
+# the GitHub client and the commands that this review uses too. The action
+# runs from the whole repository at its commit, so .github/merge-set is there.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "merge-set"))
 import claude_review
 import merge_set
 from claude_review import (
@@ -97,15 +111,20 @@ from claude_review import (
 )
 from merge_set import (
     PEPPY,
+    PLATFORM,
     ApiError,
     GitError,
     GitHubApi,
     GitMerges,
     MergeSetError,
     PullRequest,
+    Repository,
+    repository_of_full_name,
 )
 
-# The skill of OCR that the review follows; the workflow checks it out at the
+# The repositories whose workflow `OpenCodeReview` runs the action.
+REVIEWED_REPOSITORIES = (PEPPY, PLATFORM)
+# The skill of OCR that the review follows; the action checks it out at the
 # commit of the OCR release that it pins.
 OCR_SKILL = "open-code-review-delegate"
 # The version of the JSON that `ocr delegate` prints, which this script reads.
@@ -114,10 +133,12 @@ OCR_TIMEOUT_SECONDS = 10 * 60
 # The command that starts a review in a comment on a pull request.
 COMMENT_COMMAND = "/open-code-review"
 # The files of the review step, which the post step reads: the result, the
-# cause of a review that does not complete, and the options of the poster.
+# cause of a review that does not complete, and the options of the poster; and
+# the status of the review, which the status step reads.
 RESULT_FILE = "ocr-result.json"
 ERRORS_FILE = "ocr-errors.log"
 POSTER_FILE = "ocr-poster.json"
+STATUS_FILE = "ocr-status.json"
 # The cause that the pull request gets for an error that is not a failure of
 # the review: the log of the run gives the error.
 STOPPED_CAUSE = "The review run stopped on an error: the log of the run gives it."
@@ -175,12 +196,23 @@ class ReviewedPullRequest:
     body: str
 
 
-def fetch_pull_request(api: GitHubApi, number: int) -> ReviewedPullRequest:
+def reviewed_repository(full_name: str) -> Repository:
+    """The repository of the run, one of REVIEWED_REPOSITORIES."""
+    repository = repository_of_full_name(full_name)
+    if repository not in REVIEWED_REPOSITORIES:
+        names = " and ".join(item.full_name for item in REVIEWED_REPOSITORIES)
+        raise MergeSetError(f"this script reviews pull requests of {names} alone")
+    return repository
+
+
+def fetch_pull_request(
+    api: GitHubApi, repository: Repository, number: int
+) -> ReviewedPullRequest:
     """The pull request as it is now, also for a comment, whose event does not
     give its head."""
-    item = api.request("GET", f"/repos/{PEPPY.full_name}/pulls/{number}")
+    item = api.request("GET", f"/repos/{repository.full_name}/pulls/{number}")
     return ReviewedPullRequest(
-        merge_set.parse_pull_request(PEPPY, item), item.get("body") or ""
+        merge_set.parse_pull_request(repository, item), item.get("body") or ""
     )
 
 
@@ -291,9 +323,11 @@ def newest_summary(comments: Sequence[Mapping], number: int) -> SummaryComment |
     return None
 
 
-def read_summary(api: GitHubApi, number: int) -> SummaryComment | None:
+def read_summary(
+    api: GitHubApi, repository: Repository, number: int
+) -> SummaryComment | None:
     return newest_summary(
-        api.pages(f"/repos/{PEPPY.full_name}/issues/{number}/comments"), number
+        api.pages(f"/repos/{repository.full_name}/issues/{number}/comments"), number
     )
 
 
@@ -351,7 +385,11 @@ def fetch_revisions(
 
 
 def differs_by_base_merge(
-    workspace: Workspace, merges: GitMerges, revisions: Revisions, reviewed: str
+    workspace: Workspace,
+    merges: GitMerges,
+    repository: Repository,
+    revisions: Revisions,
+    reviewed: str,
 ) -> bool:
     """Whether the head differs from the reviewed head by a clean merge of the
     base branch alone: git merges the reviewed head and the newest commit of
@@ -359,13 +397,17 @@ def differs_by_base_merge(
     no conflict, into the tree of the head. A merge that git cannot check
     counts as no clean merge, and the head gets a review."""
     found = workspace.git(
-        PEPPY, "merge-base", revisions.merge_base, reviewed, check=False
+        repository, "merge-base", revisions.merge_base, reviewed, check=False
     )
     if found.returncode != 0:
         return False
     try:
         return merges.is_clean_merge(
-            PEPPY, found.stdout.strip(), reviewed, revisions.merge_base, revisions.head
+            repository,
+            found.stdout.strip(),
+            reviewed,
+            revisions.merge_base,
+            revisions.head,
         )
     except GitError as error:
         print(
@@ -376,17 +418,21 @@ def differs_by_base_merge(
         return False
 
 
-def prepare(workspace: Workspace, revisions: Revisions) -> tuple[ChangedFile, ...]:
+def prepare(
+    workspace: Workspace, repository: Repository, revisions: Revisions
+) -> tuple[ChangedFile, ...]:
     """Check out the tip of the base branch and the head, and list the
     changed files. The workspace fetches no file before git needs it, so a
     diff of the two sides fetches the files that the OCR CLI reads: it then
     reads local objects alone."""
     layout = workspace.layout
-    workspace.check_out(PEPPY, revisions.base, layout.default_branch_of(PEPPY))
-    workspace.check_out(PEPPY, revisions.head, layout.head_of(PEPPY))
-    workspace.diff(PEPPY, revisions.merge_base, revisions.head)
+    workspace.check_out(
+        repository, revisions.base, layout.default_branch_of(repository)
+    )
+    workspace.check_out(repository, revisions.head, layout.head_of(repository))
+    workspace.diff(repository, revisions.merge_base, revisions.head)
     names = workspace.git(
-        PEPPY,
+        repository,
         "diff",
         "--name-status",
         "-z",
@@ -406,6 +452,7 @@ def diff_path(layout: Layout, index: int) -> Path:
 
 def write_diffs(
     workspace: Workspace,
+    repository: Repository,
     revisions: Revisions,
     paths: Sequence[str],
     changed: Sequence[ChangedFile],
@@ -417,7 +464,7 @@ def write_diffs(
     for index, path in enumerate(paths):
         pathspec = [old_paths[path], path] if path in old_paths else [path]
         diff_path(workspace.layout, index).write_text(
-            workspace.diff(PEPPY, revisions.merge_base, revisions.head, pathspec)
+            workspace.diff(repository, revisions.merge_base, revisions.head, pathspec)
         )
 
 
@@ -432,12 +479,14 @@ def git_lines(data: bytes) -> list[str]:
     return lines
 
 
-def head_lines(layout: Layout) -> Callable[[str], list[str] | None]:
+def head_lines(
+    layout: Layout, repository: Repository
+) -> Callable[[str], list[str] | None]:
     """The lines of a file at the head; None when the head has no such
     file."""
 
     def read(path: str) -> list[str] | None:
-        file = layout.head_of(PEPPY) / path
+        file = layout.head_of(repository) / path
         if not file.is_file():
             return None
         return git_lines(file.read_bytes())
@@ -1068,6 +1117,7 @@ def review_prompt(
     skill: str,
 ) -> str:
     pull_request = pull.pull_request
+    repository = pull_request.repository
     data = json.dumps(
         {"title": pull_request.title, "body": pull.body},
         indent=2,
@@ -1075,15 +1125,15 @@ def review_prompt(
     )
     return REVIEW_PROMPT.format(
         number=pull_request.number,
-        repository=PEPPY.full_name,
+        repository=repository.full_name,
         skill_name=OCR_SKILL,
         skill=skill,
         merge_base=revisions.merge_base,
         head=revisions.head,
         base=revisions.base,
         base_branch=pull_request.base_branch,
-        head_checkout=layout.head_of(PEPPY),
-        base_checkout=layout.default_branch_of(PEPPY),
+        head_checkout=layout.head_of(repository),
+        base_checkout=layout.default_branch_of(repository),
         preview=preview_document(preview, layout),
         rules=rules_text(groups),
         data=data,
@@ -1281,7 +1331,9 @@ def nothing_to_review_result(
 # runPostReviewComments, for each outcome of the review step.
 
 
-def recorded_review_options(fingerprint: str, base_branch: str, merge_base: str) -> dict:
+def recorded_review_options(
+    fingerprint: str, base_branch: str, merge_base: str
+) -> dict:
     """A result replaces the summary comment, and the poster records its head
     in a checkpoint when the review is complete and each finding is posted."""
     return {
@@ -1306,6 +1358,148 @@ def failure_options(summary: SummaryComment | None) -> dict:
     return {"stickySummary": summary is not None and summary.holds_error}
 
 
+# The commit status ---------------------------------------------------------------
+
+
+# The context of the commit status of the review on the head that it read. The
+# ruleset `OpenCodeReview` of platform requires it, from GitHub Actions.
+STATUS_CONTEXT = "open-code-review"
+
+
+class StatusState(Enum):
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILURE = "failure"
+
+
+@dataclass(frozen=True)
+class ReviewStatus:
+    """A commit status of the review. GitHub takes a description of 140
+    characters at most."""
+
+    state: StatusState
+    description: str
+
+
+RUNNING_STATUS = ReviewStatus(StatusState.PENDING, "The review of this head runs.")
+REVIEWED_STATUS = ReviewStatus(
+    StatusState.SUCCESS, "The review of this head is posted."
+)
+# The status of a review that did not complete, whose cause the poster posts.
+FAILED_STATUS = ReviewStatus(
+    StatusState.FAILURE,
+    "The review did not complete: the comment of the review gives the cause.",
+)
+# The status that the review step records first, which stays when the step
+# stops before it records the status of its outcome (at its time limit).
+STOPPED_STATUS = ReviewStatus(
+    StatusState.FAILURE,
+    "The review run stopped: the log of the run gives the cause.",
+)
+# The status of a run whose post step failed: the pull request has neither the
+# review nor its cause.
+UNPOSTED_STATUS = ReviewStatus(
+    StatusState.FAILURE,
+    "The review was not posted: the log of the run gives the cause.",
+)
+
+
+def kept_status(reviewed: str) -> ReviewStatus:
+    return ReviewStatus(
+        StatusState.SUCCESS,
+        f"This head keeps the review of {reviewed[:7]}, from which a merge of "
+        "the base branch alone separates it.",
+    )
+
+
+def answer_status(answer: ReviewAnswer) -> ReviewStatus:
+    """The status of a review that Claude answered. A review that does not
+    account for each file to review is not a review of the head, as its
+    checkpoint is not complete either."""
+    if not answer.unaccounted:
+        return REVIEWED_STATUS
+    return ReviewStatus(
+        StatusState.FAILURE,
+        f"The review does not account for {len(answer.unaccounted)} file(s): "
+        f"comment {COMMENT_COMMAND} for a new review.",
+    )
+
+
+@dataclass(frozen=True)
+class StatusRecord:
+    """The status of the review on the head that the run read, which the
+    review step writes and the status step reports."""
+
+    head: str
+    status: ReviewStatus
+
+
+def status_record_document(record: StatusRecord) -> dict:
+    return {
+        "head": record.head,
+        "state": record.status.state.value,
+        "description": record.status.description,
+    }
+
+
+def parse_status_record(text: str) -> StatusRecord:
+    """The status record of the review step."""
+    try:
+        document = json.loads(text)
+        head = document["head"]
+        state = StatusState(document["state"])
+        description = document["description"]
+    except (ValueError, TypeError, KeyError) as error:
+        raise MergeSetError(
+            "the status record of the review step has no form"
+        ) from error
+    if (
+        not isinstance(head, str)
+        or not COMMIT.fullmatch(head)
+        or not isinstance(description, str)
+        or not description
+    ):
+        raise MergeSetError("the status record of the review step has no form")
+    return StatusRecord(head, ReviewStatus(state, description))
+
+
+def reported_status(record: StatusRecord, post_outcome: str) -> ReviewStatus:
+    """The status that the run reports: the one of its record when the post
+    step posted the result or the cause, else UNPOSTED_STATUS."""
+    if post_outcome != "success":
+        return UNPOSTED_STATUS
+    return record.status
+
+
+def run_url(environment: Mapping[str, str]) -> str:
+    """The page of the run, the target of each status that it reports."""
+    required = claude_review.required
+    return (
+        f"{required(environment, 'GITHUB_SERVER_URL')}/"
+        f"{required(environment, 'GITHUB_REPOSITORY')}/actions/runs/"
+        f"{required(environment, 'GITHUB_RUN_ID')}"
+    )
+
+
+def post_status(
+    api: GitHubApi,
+    repository: Repository,
+    head: str,
+    status: ReviewStatus,
+    target_url: str,
+) -> None:
+    api.request(
+        "POST",
+        f"/repos/{repository.full_name}/statuses/{head}",
+        body={
+            "state": status.state.value,
+            "context": STATUS_CONTEXT,
+            "description": status.description,
+            "target_url": target_url,
+        },
+    )
+
+
 # The review ----------------------------------------------------------------------
 
 
@@ -1314,11 +1508,12 @@ ClaudeRunner = claude_review.ClaudeRunner
 
 @dataclass(frozen=True)
 class Outcome:
-    """The result to post and the options of the poster; no result when the
-    head keeps the review of the checkpoint."""
+    """The result to post, the options of the poster and the status of the
+    head; no result when the head keeps the review of the checkpoint."""
 
     result: dict | None
     poster_options: dict
+    status: ReviewStatus
 
 
 def review(
@@ -1334,11 +1529,12 @@ def review(
     from the head of the kept checkpoint by a clean merge of the base branch
     alone keeps its review: Claude does not run."""
     pull_request = pull.pull_request
+    repository = pull_request.repository
     revisions, reviewed = fetch_revisions(
         workspace, pull_request, None if kept is None else kept.head
     )
     if reviewed is not None and differs_by_base_merge(
-        workspace, merges, revisions, reviewed
+        workspace, merges, repository, revisions, reviewed
     ):
         print(
             f"The head {revisions.head} differs from the reviewed head {reviewed} "
@@ -1346,20 +1542,22 @@ def review(
             "that review.",
             flush=True,
         )
-        return Outcome(None, KEPT_REVIEW_OPTIONS)
+        return Outcome(None, KEPT_REVIEW_OPTIONS, kept_status(reviewed))
     options = recorded_review_options(
         reviewer_fingerprint(skill), pull_request.base_branch, revisions.merge_base
     )
-    changed = prepare(workspace, revisions)
+    changed = prepare(workspace, repository, revisions)
     preview = parse_preview(ocr(preview_arguments(revisions)), revisions)
     omitted = omitted_paths(preview, changed)
     if not preview.files:
         return Outcome(
-            nothing_to_review_result(preview, omitted, revisions.head), options
+            nothing_to_review_result(preview, omitted, revisions.head),
+            options,
+            REVIEWED_STATUS,
         )
     paths = preview.paths
     groups = parse_rules(ocr(rule_arguments(revisions, paths)), paths)
-    write_diffs(workspace, revisions, paths, changed)
+    write_diffs(workspace, repository, revisions, paths, changed)
     layout = workspace.layout
     payload = claude(
         review_prompt(pull, revisions, preview, groups, layout, skill),
@@ -1368,16 +1566,21 @@ def review(
         claude_review.REVIEW_TIMEOUT_SECONDS,
     )
     answer = with_checked_suggestions(
-        parse_answer(payload, preview), head_lines(layout)
+        parse_answer(payload, preview), head_lines(layout, repository)
     )
-    return Outcome(review_result(answer, paths, omitted, revisions.head), options)
+    return Outcome(
+        review_result(answer, paths, omitted, revisions.head),
+        options,
+        answer_status(answer),
+    )
 
 
 # The commands --------------------------------------------------------------------
 
 
-# The variables of the review step. GitHub sets the others that the script
-# reads: GITHUB_EVENT_NAME, GITHUB_EVENT_PATH and GITHUB_REPOSITORY.
+# The variables of the review step and of the status step. GitHub sets the
+# others that the script reads: GITHUB_EVENT_NAME, GITHUB_EVENT_PATH,
+# GITHUB_REPOSITORY, GITHUB_SERVER_URL and GITHUB_RUN_ID.
 STEP_VARIABLES = (
     "REVIEW_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -1385,51 +1588,67 @@ STEP_VARIABLES = (
     "REVIEW_SKILL",
     "REVIEW_WORKSPACE",
 )
+STATUS_VARIABLES = ("REVIEW_TOKEN", "REVIEW_POSTED")
+SCRIPT = '"$GITHUB_ACTION_PATH/open_code_review.py"'
+# The commands of the steps of the action. Each one follows the `timeout` of
+# its step on the line before.
 REVIEW_COMMAND = (
-    "python3 .github/open-code-review/open_code_review.py review "
+    f"python3 {SCRIPT} review "
     f'--result "$RUNNER_TEMP/{RESULT_FILE}" --errors "$RUNNER_TEMP/{ERRORS_FILE}" '
-    f'--poster "$RUNNER_TEMP/{POSTER_FILE}"'
+    f'--poster "$RUNNER_TEMP/{POSTER_FILE}" --status "$RUNNER_TEMP/{STATUS_FILE}"'
 )
-# The lines that the workflow holds, so that its steps check out the
-# directories that this script imports from, give the variables that it reads,
-# install the Claude CLI of the Claude review of a set and read the files that
-# it writes. test_open_code_review.py checks the workflow against them with
+STATUS_COMMAND = f'python3 {SCRIPT} status --status "$RUNNER_TEMP/{STATUS_FILE}"'
+# The lines that action.yml holds, so that its steps run the commands of this
+# script, give the variables that it reads, install the Claude CLI of the
+# Claude review of a set and read the files that it writes.
+# test_open_code_review.py checks the action against them with
 # claude_review.workflow_problems.
-WORKFLOW_LINES = (
-    "/.github/open-code-review/",
-    "/.github/merge-set/",
-    "/.github/actions/hub-ci-peppy/",
-    f"run: {REVIEW_COMMAND}",
+ACTION_LINES = (
+    REVIEW_COMMAND,
+    STATUS_COMMAND,
     "REVIEW_TOKEN: ${{ github.token }}",
-    "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    "CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}",
     f"CLAUDE_CLI_VERSION: {claude_review.CLAUDE_CLI_VERSION}",
-    "types: [opened, synchronize, reopened, ready_for_review]",
+    "id: post",
+    "REVIEW_POSTED: ${{ steps.post.outcome }}",
     f"const resultPath = `${{process.env.RUNNER_TEMP}}/{RESULT_FILE}`;",
     f"const stderrPath = `${{process.env.RUNNER_TEMP}}/{ERRORS_FILE}`;",
     f"const posterPath = `${{process.env.RUNNER_TEMP}}/{POSTER_FILE}`;",
     "options = JSON.parse(fs.readFileSync(posterPath, 'utf8'));",
     "...options,",
+)
+# The lines that each workflow that runs the action holds: the events of a
+# review, the permissions of the token of the job (the status needs
+# `statuses: write`) and the Claude login. `check-workflow` checks them.
+WORKFLOW_LINES = (
+    "types: [opened, synchronize, reopened, ready_for_review]",
     f"&& startsWith(github.event.comment.body, '{COMMENT_COMMAND}')",
+    "contents: read",
+    "pull-requests: write",
+    "statuses: write",
+    "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
 )
 
 
 @dataclass(frozen=True)
 class Run:
-    """What the review step reads before it reviews: its variables, the pull
-    request of its event, the newest summary comment of the poster on it, and
-    whether the event is a push."""
+    """What the review step reads before it reviews: its variables, the
+    GitHub client of its token, the pull request of its event, the newest
+    summary comment of the poster on it, whether the event is a push, and
+    the page of the run."""
 
     environment: Mapping[str, str]
+    api: GitHubApi
     pull: ReviewedPullRequest
     summary: SummaryComment | None
     push: bool
+    url: str
 
 
 def start_run(environment: Mapping[str, str]) -> Run:
     required = claude_review.required
-    repository = required(environment, "GITHUB_REPOSITORY")
-    if repository != PEPPY.full_name:
-        raise MergeSetError(f"this script reviews pull requests of {PEPPY.full_name}")
+    repository = reviewed_repository(required(environment, "GITHUB_REPOSITORY"))
+    url = run_url(environment)
     event_name = required(environment, "GITHUB_EVENT_NAME")
     event = json.loads(Path(required(environment, "GITHUB_EVENT_PATH")).read_text())
     number = pull_request_number(event_name, event)
@@ -1438,9 +1657,11 @@ def start_run(environment: Mapping[str, str]) -> Run:
     api = GitHubApi(environment["REVIEW_TOKEN"])
     return Run(
         environment,
-        fetch_pull_request(api, number),
-        read_summary(api, number),
+        api,
+        fetch_pull_request(api, repository, number),
+        read_summary(api, repository, number),
         is_push(event_name, event),
+        url,
     )
 
 
@@ -1452,11 +1673,15 @@ def run_review(run: Run) -> Outcome:
     root = Path(environment["REVIEW_WORKSPACE"])
     workspace = Workspace(root, token)
     layout = workspace.layout
+    repository = run.pull.pull_request.repository
     return review(
         run.pull,
         workspace,
         run_ocr(
-            executable, layout.default_branch_of(PEPPY), root / "ocr-home", environment
+            executable,
+            layout.default_branch_of(repository),
+            root / "ocr-home",
+            environment,
         ),
         claude_review.run_claude(environment, layout),
         skill,
@@ -1476,19 +1701,47 @@ def write_json(path: Path, document: object) -> None:
     write_text(path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
 
 
-def write_failure(errors: Path, poster: Path, cause: str, run: Run | None) -> None:
+def write_status(path: Path, run: Run, status: ReviewStatus) -> None:
+    record = StatusRecord(run.pull.pull_request.head_commit, status)
+    write_json(path, status_record_document(record))
+
+
+def start_review(run: Run, status: Path) -> None:
+    """Record STOPPED_STATUS, which the status step reports when the review
+    step ends before it records the status of its outcome, and give the head
+    the pending status."""
+    write_status(status, run, STOPPED_STATUS)
+    pull_request = run.pull.pull_request
+    post_status(
+        run.api,
+        pull_request.repository,
+        pull_request.head_commit,
+        RUNNING_STATUS,
+        run.url,
+    )
+
+
+def write_failure(
+    errors: Path, poster: Path, status: Path, cause: str, run: Run | None
+) -> None:
+    """Write the cause and the options of the poster, and record
+    FAILED_STATUS when the run read the pull request: a run that did not read
+    it has no head to report."""
     write_json(poster, failure_options(None if run is None else run.summary))
     write_text(errors, f"{cause}\n")
+    if run is not None:
+        write_status(status, run, FAILED_STATUS)
 
 
-def review_command(result: Path, errors: Path, poster: Path) -> int:
-    """Run the review and write the options of the poster and the result. A
-    head that keeps an earlier review gets no result; a review that does not
-    complete writes its cause to `errors`, which the poster posts on the pull
-    request, and no result."""
+def review_command(result: Path, errors: Path, poster: Path, status: Path) -> int:
+    """Run the review and write the options of the poster, the result and the
+    status record. A head that keeps an earlier review gets no result; a
+    review that does not complete writes its cause to `errors`, which the
+    poster posts on the pull request, and no result."""
     run = None
     try:
         run = start_run(os.environ)
+        start_review(run, status)
         outcome = run_review(run)
     except ApiError as failure:
         cause = f"A call to GitHub failed: {failure}"
@@ -1498,20 +1751,57 @@ def review_command(result: Path, errors: Path, poster: Path) -> int:
         # Each other error: the log gets it with its traceback, and the pull
         # request gets a cause that names no content.
         traceback.print_exc()
-        write_failure(errors, poster, STOPPED_CAUSE, run)
+        write_failure(errors, poster, status, STOPPED_CAUSE, run)
         return claude_review.error(str(failure) or type(failure).__name__)
     else:
         write_json(poster, outcome.poster_options)
         if outcome.result is not None:
             write_json(result, outcome.result)
+        write_status(status, run, outcome.status)
         return 0
-    write_failure(errors, poster, cause, run)
+    write_failure(errors, poster, status, cause, run)
     return claude_review.error(cause)
+
+
+def status_command(status: Path) -> int:
+    """Report the status that the review step recorded on its head. A run
+    that stopped before the review step read the pull request has no record,
+    and the status of the head stays as it is."""
+    if not status.exists():
+        print(
+            "The review step recorded no head, so the run reports no status.",
+            flush=True,
+        )
+        return 0
+    environment = os.environ
+    required = claude_review.required
+    try:
+        repository = reviewed_repository(required(environment, "GITHUB_REPOSITORY"))
+        record = parse_status_record(status.read_text())
+        reported = reported_status(record, required(environment, "REVIEW_POSTED"))
+        post_status(
+            GitHubApi(required(environment, "REVIEW_TOKEN")),
+            repository,
+            record.head,
+            reported,
+            run_url(environment),
+        )
+    except ApiError as failure:
+        return claude_review.error(f"A call to GitHub failed: {failure}")
+    except MergeSetError as failure:
+        return claude_review.error(str(failure))
+    print(
+        f"The status `{STATUS_CONTEXT}` of {record.head} is "
+        f"{reported.state.value}: {reported.description}",
+        flush=True,
+    )
+    return 0
 
 
 def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="The OpenCodeReview review of a pull request of peppy."
+        description="The OpenCodeReview review of a pull request of peppy or "
+        "of platform."
     )
     commands = parser.add_subparsers(
         dest="command", metavar="subcommand", required=True
@@ -1537,9 +1827,25 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         required=True,
         help="The file that gets the options of the poster, as JSON.",
     )
+    review_parser.add_argument(
+        "--status",
+        type=Path,
+        required=True,
+        help="The file that gets the status of the review on its head.",
+    )
+    status_parser = commands.add_parser(
+        "status",
+        help="Report the status that the review step recorded on its head.",
+    )
+    status_parser.add_argument(
+        "--status",
+        type=Path,
+        required=True,
+        help="The file in which the review step recorded the status.",
+    )
     check = commands.add_parser(
         "check-workflow",
-        help="Check that the workflow gives the variables that this script reads.",
+        help="Check that a workflow that runs the action gives what it needs.",
     )
     check.add_argument("workflow", type=Path)
     return parser.parse_args(argv)
@@ -1549,11 +1855,13 @@ def main(argv: Sequence[str]) -> int:
     arguments = parse_arguments(argv)
     match arguments.command:
         case "review":
-            return review_command(arguments.result, arguments.errors, arguments.poster)
-        case "check-workflow":
-            return claude_review.check_workflow(
-                arguments.workflow, WORKFLOW_LINES, STEP_VARIABLES
+            return review_command(
+                arguments.result, arguments.errors, arguments.poster, arguments.status
             )
+        case "status":
+            return status_command(arguments.status)
+        case "check-workflow":
+            return claude_review.check_workflow(arguments.workflow, WORKFLOW_LINES, ())
 
 
 if __name__ == "__main__":
