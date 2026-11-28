@@ -6,19 +6,21 @@ description: >-
   the skill `open-code-review-delegate` of OCR with the Claude login of the
   subscription, and the poster of the OCR GitHub Action posts the findings:
   inline comments, and one summary comment that each run updates. For a pull
-  request into the integration branch of its repository, the commit status
-  `open-code-review` of the head that the run read tells whether that head
-  has a review. The run never approves and never requests changes.
-  open_code_review.py gives the design.
+  request into the integration branch of its repository, the output `status`
+  gives the commit status `open-code-review` of the head that the run read,
+  which tells whether that head has a review: the action
+  open-code-review/status sets it in a job of its own, with the token of the
+  App of the status, which this job never holds. The run never approves and
+  never requests changes. open_code_review.py gives the design.
 
   A workflow `OpenCodeReview` of peppy or of platform runs the action on
   `pull_request_target` (opened, synchronize, reopened, ready_for_review, and
   edited for a change of the base branch) and on `issue_comment` (created),
   when its first job, which runs open-code-review/author, says that the
   author of the event has write access to the repository. It runs the action
-  in a job whose token has the permissions `contents: read`,
-  `pull-requests: write` and `statuses: write`, with the run name
-  `OpenCodeReview of #<number>` that the merge-set bot reads.
+  in a job whose token has the permissions `contents: read` and
+  `pull-requests: write`, with the run name `OpenCodeReview of #<number>`
+  that the merge-set bot reads.
   open_code_review.py check-workflow checks such a workflow. The job checks
   out nothing: the action brings its script, the merge-set bot that the
   script imports and the installer of the Claude CLI, from the commit of
@@ -29,8 +31,9 @@ description: >-
   cause. A step of a composite action takes no `timeout-minutes`, so the
   checkout of OCR and the post step have no limit of their own: the job holds
   them, with a `timeout-minutes` above the sum of the limits of the steps
-  (test_open_code_review.py checks it for peppy). The status step runs also
-  after a cancellation, of the run or of the job at its limit.
+  (test_open_code_review.py checks it for peppy). The step that records the
+  status runs also after a cancellation, of the run or of the job at its
+  limit.
 
 inputs:
   claude-code-oauth-token:
@@ -38,6 +41,16 @@ inputs:
       The Claude login of the subscription, the secret CLAUDE_CODE_OAUTH_TOKEN
       of the repository. Only the environment of the Claude CLI gets it.
     required: true
+
+outputs:
+  status:
+    description: >-
+      The status that the run reports on the head that it read, as JSON
+      (`head`, `state`, `description`), for the action
+      open-code-review/status; empty when the run gives no status: the pull
+      request goes into another branch, or the run stopped before it read the
+      pull request.
+    value: ${{ steps.status.outputs.status }}
 
 runs:
   using: composite
@@ -112,7 +125,7 @@ runs:
     # or reached its time limit) gets a cause in a new comment. The poster
     # ends with no error when it cannot write the summary comment, which
     # holds the warnings and the findings that GitHub did not take inline:
-    # the step then fails, so that the status step reports no review.
+    # the step then fails, so that the run reports no review.
     - name: Post the review
       id: post
       if: ${{ !cancelled() }}
@@ -163,16 +176,14 @@ runs:
 
     # The status of the review on the head that the review step read: the
     # one that it recorded when the post step posted the result or the cause,
-    # and a failure else. It runs after a cancellation too, so that no head
-    # keeps the pending status of a run that ended. The next review job of
-    # the concurrency group starts when this job ends, so its pending status
-    # comes after this one.
-    - name: Report the status of the review
+    # and a failure else. It runs after a cancellation too, so that a run that
+    # ended before its post step reports its failure.
+    - name: Record the status of the review
+      id: status
       if: ${{ always() }}
       shell: bash
       env:
-        REVIEW_TOKEN: ${{ github.token }}
         REVIEW_POSTED: ${{ steps.post.outcome }}
       run: |
         timeout --kill-after=1m 2m \
-          python3 "$GITHUB_ACTION_PATH/open_code_review.py" status --status "$RUNNER_TEMP/ocr-status.json"
+          python3 "$GITHUB_ACTION_PATH/open_code_review.py" record-status --status "$RUNNER_TEMP/ocr-status.json"

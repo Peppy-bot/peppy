@@ -51,7 +51,9 @@ from merge_set import PEPPY, PLATFORM, ApiError, GitMerges, MergeSetError
 from test_claude_review import SET_NAME, GitRepository
 
 ACTION = Path(__file__).resolve().parent / "action.yml"
-WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "open-code-review.yml"
+STATUS_ACTION = Path(__file__).resolve().parent / "status" / "action.yml"
+WORKFLOWS = Path(__file__).resolve().parents[2] / "workflows"
+WORKFLOW = WORKFLOWS / "open-code-review.yml"
 MERGE_BASE = "a" * 40
 HEAD = "b" * 40
 BASE = "c" * 40
@@ -1733,16 +1735,11 @@ class FakeEnvironment:
 RUN_URL = "https://github.com/Peppy-bot/peppy/actions/runs/7"
 
 
-def started_run(summary=None, api=None):
+def started_run(summary=None):
     """start_run, which reads a pull request with `summary` as its newest
-    summary comment and gives `api` as the GitHub client of the run."""
+    summary comment."""
     return lambda environment: open_code_review.Run(
-        environment,
-        api or FakeApi(),
-        reviewed_pull_request(),
-        summary,
-        True,
-        RUN_URL,
+        environment, reviewed_pull_request(), summary, True
     )
 
 
@@ -1805,7 +1802,6 @@ class Statuses(unittest.TestCase):
 
     def test_each_description_fits_in_a_status(self):
         statuses = (
-            open_code_review.RUNNING_STATUS,
             open_code_review.REVIEWED_STATUS,
             open_code_review.FAILED_STATUS,
             open_code_review.STOPPED_STATUS,
@@ -1861,14 +1857,14 @@ class Statuses(unittest.TestCase):
     def test_the_status_goes_on_the_head_with_the_page_of_the_run(self):
         api = FakeApi()
         open_code_review.post_status(
-            api, PLATFORM, HEAD, open_code_review.RUNNING_STATUS, RUN_URL
+            api, PLATFORM, HEAD, open_code_review.REVIEWED_STATUS, RUN_URL
         )
         self.assertEqual(
             api.bodies,
             [
                 (
                     f"/repos/Peppy-bot/platform/statuses/{HEAD}",
-                    status_body(open_code_review.RUNNING_STATUS),
+                    status_body(open_code_review.REVIEWED_STATUS),
                 )
             ],
         )
@@ -1891,14 +1887,11 @@ class Commands(unittest.TestCase):
         self.errors = self.root / "out" / "ocr-errors.log"
         self.poster = self.root / "out" / "ocr-poster.json"
         self.status = self.root / "out" / "ocr-status.json"
-        self.api = FakeApi()
 
     def run_command(self, run_review, start_run=None):
         output = io.StringIO()
         with (
-            patch.object(
-                open_code_review, "start_run", start_run or started_run(api=self.api)
-            ),
+            patch.object(open_code_review, "start_run", start_run or started_run()),
             patch.object(open_code_review, "run_review", run_review),
             patch("sys.stdout", output),
             patch("sys.stderr", io.StringIO()),
@@ -1927,40 +1920,22 @@ class Commands(unittest.TestCase):
         )
         self.assertFalse(self.errors.exists())
 
-    def test_the_head_is_pending_while_the_review_runs(self):
+    def test_the_review_step_records_a_stop_before_it_reviews(self):
         seen = []
 
         def review(run):
-            seen.append((list(self.api.bodies), self.recorded_status()))
+            seen.append(self.recorded_status())
             return Outcome(None, {}, open_code_review.REVIEWED_STATUS)
 
         self.run_command(review)
-        self.assertEqual(
-            seen,
-            [
-                (
-                    [
-                        (
-                            f"/repos/Peppy-bot/peppy/statuses/{HEAD}",
-                            status_body(open_code_review.RUNNING_STATUS),
-                        )
-                    ],
-                    # A review step that ends here, at its time limit, leaves
-                    # this record for the status step.
-                    StatusRecord(HEAD, open_code_review.STOPPED_STATUS),
-                )
-            ],
-        )
+        # A review step that ends here, at its time limit, leaves this record
+        # for the step that records the status of the run.
+        self.assertEqual(seen, [StatusRecord(HEAD, open_code_review.STOPPED_STATUS)])
 
     def test_a_pull_request_into_another_branch_gets_no_status(self):
         def start_run(environment):
             return open_code_review.Run(
-                environment,
-                self.api,
-                reviewed_pull_request(base="feat/stack"),
-                None,
-                False,
-                RUN_URL,
+                environment, reviewed_pull_request(base="feat/stack"), None, False
             )
 
         def fails(run):
@@ -1972,7 +1947,6 @@ class Commands(unittest.TestCase):
         ):
             with self.subTest(review=review):
                 code, output = self.run_command(review, start_run)
-                self.assertEqual(self.api.bodies, [])
                 self.assertFalse(self.status.exists())
                 self.assertIn("into `feat/stack`, not into `dev`", output)
         self.assertTrue(
@@ -2040,20 +2014,6 @@ class Commands(unittest.TestCase):
         self.assertEqual(self.poster_options(), {"stickySummary": False})
         self.assertFalse(self.status.exists())
 
-    def test_a_pending_status_that_github_refuses_fails_the_review(self):
-        class RefusingApi(FakeApi):
-            def request(self, method, path, query=None, body=None):
-                raise ApiError(f"{method} {path}", 403, "Resource not accessible")
-
-        code, _ = self.run_command(
-            lambda run: self.fail("the review ran"), started_run(api=RefusingApi())
-        )
-        self.assertEqual(code, 1)
-        self.assertIn("HTTP 403", self.errors.read_text())
-        self.assertEqual(
-            self.recorded_status(), StatusRecord(HEAD, open_code_review.FAILED_STATUS)
-        )
-
     def test_each_other_error_writes_a_cause_with_no_detail(self):
         errors = (
             MergeSetError("REVIEW_OCR is not set"),
@@ -2088,17 +2048,17 @@ class Commands(unittest.TestCase):
             open_code_review.start_run(environment)
 
     def test_each_variable_of_the_step_is_required(self):
-        names = (
-            *open_code_review.STEP_VARIABLES,
-            "GITHUB_SERVER_URL",
-            "GITHUB_RUN_ID",
-        )
-        for name in names:
+        api = FakeApi(pull_request_item(number=42))
+        for name in open_code_review.STEP_VARIABLES:
             with self.subTest(name=name):
                 environment = FakeEnvironment(self.root).values
                 del environment[name]
-                with self.assertRaisesRegex(MergeSetError, f"{name} is not set"):
+                with (
+                    patch.object(open_code_review, "GitHubApi", lambda token: api),
+                    self.assertRaisesRegex(MergeSetError, f"{name} is not set"),
+                ):
                     open_code_review.start_run(environment)
+        self.assertEqual(api.calls, [])
 
     def test_the_run_reviews_the_pull_request_of_its_event(self):
         values = FakeEnvironment(self.root).values
@@ -2118,8 +2078,6 @@ class Commands(unittest.TestCase):
             ],
         )
         self.assertTrue(run.push)
-        self.assertIs(run.api, api)
-        self.assertEqual(run.url, RUN_URL)
         calls = []
 
         def review(pull, workspace, ocr, claude, skill, kept, merges):
@@ -2158,9 +2116,6 @@ class Commands(unittest.TestCase):
             ],
         )
         self.assertIs(run.pull.pull_request.repository, PLATFORM)
-        self.assertEqual(
-            run.url, "https://github.com/Peppy-bot/platform/actions/runs/7"
-        )
         (self.root / "SKILL.md").write_text("The skill.\n")
         checkouts = []
 
@@ -2351,15 +2306,16 @@ class AuthorCommand(unittest.TestCase):
         self.assertIn("Peppy-bot/peppy and Peppy-bot/platform alone", output)
 
 
-class StatusCommand(unittest.TestCase):
+class RecordStatusCommand(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.status = self.root / "ocr-status.json"
-        self.api = FakeApi()
+        self.output = self.root / "output"
+        self.output.touch()
         self.environment = {
-            **FakeEnvironment(self.root).values,
+            "GITHUB_OUTPUT": str(self.output),
             "REVIEW_POSTED": "success",
         }
 
@@ -2367,10 +2323,9 @@ class StatusCommand(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.dict(os.environ, self.environment, clear=True),
-            patch.object(open_code_review, "GitHubApi", lambda token: self.api),
             patch("sys.stdout", output),
         ):
-            code = open_code_review.status_command(self.status)
+            code = open_code_review.record_status_command(self.status)
         return code, output.getvalue()
 
     def record(self, status, head=HEAD):
@@ -2380,60 +2335,152 @@ class StatusCommand(unittest.TestCase):
             )
         )
 
-    def test_the_status_of_the_record_goes_on_its_head(self):
+    def given_status(self):
+        """The status that the output of the step gives the status job."""
+        lines = self.output.read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        name, value = lines[0].split("=", 1)
+        self.assertEqual(name, "status")
+        return open_code_review.parse_status_record(value)
+
+    def test_the_status_of_the_record_goes_to_the_output_of_the_step(self):
         self.record(open_code_review.REVIEWED_STATUS)
         code, output = self.run_command()
         self.assertEqual(code, 0)
         self.assertEqual(
-            self.api.bodies,
-            [
-                (
-                    f"/repos/Peppy-bot/peppy/statuses/{HEAD}",
-                    status_body(open_code_review.REVIEWED_STATUS),
-                )
-            ],
+            self.given_status(), StatusRecord(HEAD, open_code_review.REVIEWED_STATUS)
         )
-        self.assertIn(f"The status `open-code-review` of {HEAD} is success", output)
+        self.assertIn(f"reports the status success on {HEAD}", output)
 
     def test_a_post_step_that_failed_fails_the_status(self):
         self.record(open_code_review.REVIEWED_STATUS)
         self.environment["REVIEW_POSTED"] = "failure"
         self.run_command()
         self.assertEqual(
+            self.given_status(), StatusRecord(HEAD, open_code_review.UNPOSTED_STATUS)
+        )
+
+    def test_a_run_with_no_record_gives_no_status(self):
+        code, output = self.run_command()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.output.read_text(), "")
+        self.assertIn("recorded no status, so the run reports none", output)
+
+    def test_a_record_of_another_form_fails_the_step(self):
+        self.status.write_text("{}")
+        code, output = self.run_command()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.output.read_text(), "")
+        self.assertIn("::error::the status record", output)
+
+    def test_the_step_names_the_post_step(self):
+        del self.environment["REVIEW_POSTED"]
+        self.record(open_code_review.REVIEWED_STATUS)
+        code, output = self.run_command()
+        self.assertEqual(code, 1)
+        self.assertIn("REVIEW_POSTED is not set", output)
+
+    def test_a_description_with_a_line_break_stays_one_output_line(self):
+        """GITHUB_OUTPUT reads one line for each output: JSON escapes the
+        line breaks."""
+        self.record(open_code_review.ReviewStatus(StatusState.FAILURE, "a\nstatus=b"))
+        self.run_command()
+        self.assertEqual(self.given_status().status.description, "a\nstatus=b")
+
+
+class StatusCommand(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.api = FakeApi()
+        self.environment = {
+            **FakeEnvironment(Path(directory.name)).values,
+            "REVIEW_TOKEN": "ghs_status_app",
+        }
+        self.give(open_code_review.REVIEWED_STATUS)
+
+    def give(self, status, head=HEAD):
+        self.environment["REVIEW_STATUS"] = json.dumps(
+            open_code_review.status_record_document(StatusRecord(head, status))
+        )
+
+    def run_command(self):
+        output = io.StringIO()
+        self.tokens = []
+
+        def client(token):
+            self.tokens.append(token)
+            return self.api
+
+        with (
+            patch.dict(os.environ, self.environment, clear=True),
+            patch.object(open_code_review, "GitHubApi", client),
+            patch("sys.stdout", output),
+        ):
+            code = open_code_review.status_command()
+        return code, output.getvalue()
+
+    def test_the_status_of_the_review_job_goes_on_its_head(self):
+        head = "0123456789" * 4
+        self.give(open_code_review.REVIEWED_STATUS, head)
+        code, output = self.run_command()
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            self.api.bodies,
+            [
+                (
+                    f"/repos/Peppy-bot/peppy/statuses/{head}",
+                    status_body(open_code_review.REVIEWED_STATUS),
+                )
+            ],
+        )
+        self.assertEqual(self.tokens, ["ghs_status_app"])
+        self.assertIn(f"The status `open-code-review` of {head} is success", output)
+
+    def test_a_failure_goes_on_its_head_too(self):
+        self.give(open_code_review.UNPOSTED_STATUS)
+        self.run_command()
+        self.assertEqual(
             [body for _, body in self.api.bodies],
             [status_body(open_code_review.UNPOSTED_STATUS)],
         )
-
-    def test_a_run_with_no_record_reports_nothing(self):
-        code, output = self.run_command()
-        self.assertEqual(code, 0)
-        self.assertEqual(self.api.calls, [])
-        self.assertIn("recorded no status, so the run reports none", output)
 
     def test_a_status_that_github_refuses_fails_the_step(self):
         class RefusingApi(FakeApi):
             def request(self, method, path, query=None, body=None):
                 raise ApiError(f"{method} {path}", 422, "Validation Failed")
 
-        self.record(open_code_review.REVIEWED_STATUS)
         self.api = RefusingApi()
         code, output = self.run_command()
         self.assertEqual(code, 1)
         self.assertIn("::error::A call to GitHub failed: POST", output)
 
-    def test_a_record_of_another_form_fails_the_step(self):
-        self.status.write_text("{}")
-        code, output = self.run_command()
+    def test_a_status_of_another_form_sets_nothing(self):
+        for text in (
+            "{}",
+            json.dumps({"head": "main", "state": "success", "description": "x"}),
+        ):
+            with self.subTest(text=text):
+                self.environment["REVIEW_STATUS"] = text
+                code, output = self.run_command()
+                self.assertEqual(code, 1)
+                self.assertEqual(self.api.calls, [])
+                self.assertIn("::error::the status record", output)
+
+    def test_a_repository_that_runs_no_review_gets_no_status(self):
+        self.environment["GITHUB_REPOSITORY"] = "Peppy-bot/nodes-hub"
+        code, _ = self.run_command()
         self.assertEqual(code, 1)
         self.assertEqual(self.api.calls, [])
-        self.assertIn("::error::the status record", output)
 
-    def test_the_status_step_names_the_post_step(self):
-        del self.environment["REVIEW_POSTED"]
-        self.record(open_code_review.REVIEWED_STATUS)
-        code, output = self.run_command()
-        self.assertEqual(code, 1)
-        self.assertIn("REVIEW_POSTED is not set", output)
+    def test_the_step_names_each_variable_that_it_reads(self):
+        for name in ("REVIEW_TOKEN", "REVIEW_STATUS"):
+            with self.subTest(variable=name):
+                kept = self.environment.pop(name)
+                code, output = self.run_command()
+                self.environment[name] = kept
+                self.assertEqual(code, 1)
+                self.assertIn(f"{name} is not set", output)
 
 
 def condition_of(text: str, start: str, end: str) -> str:
@@ -2488,19 +2535,31 @@ def job_text(text: str, job: str) -> str:
     return found[1]
 
 
-def job_limit(text: str) -> int:
-    """The `timeout-minutes` of the review job of the workflow."""
-    found = re.findall(r"(?m)^    timeout-minutes: (\d+)$", job_text(text, "review"))
+def job_limit(text: str, job: str = "review") -> int:
+    """The `timeout-minutes` of a job of the workflow."""
+    found = re.findall(r"(?m)^    timeout-minutes: (\d+)$", job_text(text, job))
     if len(found) != 1:
-        raise AssertionError("the review job has not one limit")
+        raise AssertionError(f"the job `{job}` has not one limit")
     return int(found[0])
 
 
-# The steps of the action that run another action: a step of a composite
+def worst_minutes(limits: dict[str, int | None]) -> int:
+    """The time that the steps with a limit take at most: `timeout` kills a
+    command that ignores its signal one minute after its limit."""
+    bounded = [minutes for minutes in limits.values() if minutes is not None]
+    return sum(bounded) + KILL_AFTER_MINUTES * len(bounded)
+
+
+# The steps of the actions that run another action: a step of a composite
 # action takes no `timeout-minutes`, so the job holds them. The checkout reads
-# two files, and the post step the comments of the pull request.
+# two files, the post step the comments of the pull request, and the token
+# step makes one call.
 UNLIMITED_STEPS = {"Check out the skill and the poster of OCR", "Post the review"}
 UNLIMITED_STEPS_MINUTES = 15
+UNLIMITED_STATUS_STEPS = {"Make the status token"}
+UNLIMITED_STATUS_STEPS_MINUTES = 1
+# An ubuntu-slim job stops after 15 minutes.
+SLIM_RUNNER_MINUTES = 15
 
 
 class ActionContract(unittest.TestCase):
@@ -2508,7 +2567,7 @@ class ActionContract(unittest.TestCase):
         return claude_review.workflow_problems(
             text,
             open_code_review.ACTION_LINES,
-            (*open_code_review.STEP_VARIABLES, *open_code_review.STATUS_VARIABLES),
+            (*open_code_review.STEP_VARIABLES, *open_code_review.RECORD_VARIABLES),
         )
 
     def test_the_action_gives_what_the_script_reads(self):
@@ -2521,7 +2580,7 @@ class ActionContract(unittest.TestCase):
         )
 
     def test_a_command_in_a_comment_is_reported(self):
-        line = open_code_review.STATUS_COMMAND
+        line = open_code_review.RECORD_COMMAND
         text = ACTION.read_text().replace(line, f"# {line}")
         self.assertEqual(self.problems(text), [f"the line `{line}`"])
 
@@ -2543,7 +2602,7 @@ class ActionContract(unittest.TestCase):
 
     def test_each_command_of_the_action_has_a_time_limit(self):
         """A step at its limit fails, and the post step then posts the cause
-        and the status step reports it."""
+        and the run reports it."""
         steps = step_limits(ACTION.read_text())
         self.assertEqual(
             set(steps),
@@ -2552,7 +2611,7 @@ class ActionContract(unittest.TestCase):
                 "Install the OCR CLI",
                 "Install the Claude CLI",
                 "Review the pull request",
-                "Report the status of the review",
+                "Record the status of the review",
             },
         )
         for name, minutes in steps.items():
@@ -2588,16 +2647,63 @@ class ActionContract(unittest.TestCase):
         self.assertIn("        REVIEW_TOKEN: ${{ github.token }}\n", text)
 
     def test_the_post_step_runs_after_a_failure_and_the_status_step_always(self):
-        """A cancelled run must not leave the pending status of its start."""
+        """A run that is cancelled reports its failure."""
         text = ACTION.read_text()
         conditions = {
             "Post the review": "      if: ${{ !cancelled() }}\n",
-            "Report the status of the review": "      if: ${{ always() }}\n",
+            "Record the status of the review": "      if: ${{ always() }}\n",
         }
         for name, condition in conditions.items():
             with self.subTest(step=name):
                 step = text.split(f"    - name: {name}\n", 1)[1].split("    - name:")[0]
                 self.assertIn(condition, step)
+
+    def test_no_step_of_the_review_job_holds_a_token_that_sets_a_status(self):
+        """The App of the status has its own job: the review job runs Claude."""
+        text = ACTION.read_text()
+        self.assertNotIn("create-github-app-token", text)
+        self.assertNotIn("private-key", text)
+
+
+class StatusActionContract(unittest.TestCase):
+    def problems(self, text):
+        return claude_review.workflow_problems(
+            text,
+            open_code_review.STATUS_ACTION_LINES,
+            open_code_review.STATUS_VARIABLES,
+        )
+
+    def test_the_status_action_gives_what_the_script_reads(self):
+        self.assertEqual(self.problems(STATUS_ACTION.read_text()), [])
+
+    def test_a_token_that_sets_more_than_statuses_is_reported(self):
+        text = STATUS_ACTION.read_text().replace(
+            "        permission-statuses: write\n", ""
+        )
+        self.assertEqual(self.problems(text), ["the line `permission-statuses: write`"])
+
+    def test_a_token_of_each_repository_of_the_installation_is_reported(self):
+        text = STATUS_ACTION.read_text().replace(
+            "        repositories: ${{ github.event.repository.name }}\n", ""
+        )
+        self.assertEqual(
+            self.problems(text),
+            ["the line `repositories: ${{ github.event.repository.name }}`"],
+        )
+
+    def test_the_token_of_the_app_goes_to_the_status_step_alone(self):
+        text = STATUS_ACTION.read_text()
+        self.assertEqual(text.count("steps.token.outputs.token"), 1)
+        self.assertNotIn("github.token", text)
+
+    def test_the_status_step_has_a_time_limit(self):
+        steps = step_limits(STATUS_ACTION.read_text())
+        self.assertEqual(
+            set(steps), {*UNLIMITED_STATUS_STEPS, "Set the status of the review"}
+        )
+        for name, minutes in steps.items():
+            with self.subTest(step=name):
+                self.assertEqual(minutes is None, name in UNLIMITED_STATUS_STEPS)
 
 
 class WorkflowContract(unittest.TestCase):
@@ -2620,9 +2726,19 @@ class WorkflowContract(unittest.TestCase):
             ],
         )
 
-    def test_a_workflow_with_no_status_permission_is_reported(self):
-        text = WORKFLOW.read_text().replace("statuses: write", "statuses: read")
-        self.assertEqual(self.problems(text), ["the line `statuses: write`"])
+    def test_a_workflow_whose_status_job_creates_a_deployment_is_reported(self):
+        text = WORKFLOW.read_text().replace("deployment: false", "deployment: true")
+        self.assertEqual(self.problems(text), ["the line `deployment: false`"])
+
+    def test_a_workflow_with_no_key_of_the_app_of_the_status_is_reported(self):
+        line = "private-key: ${{ secrets.OPEN_CODE_REVIEW_PRIVATE_KEY }}"
+        text = WORKFLOW.read_text().replace(line, "private-key: ${{ secrets.KEY }}")
+        self.assertEqual(self.problems(text), [f"the line `{line}`"])
+
+    def test_no_token_of_a_job_sets_a_status(self):
+        """A status of GitHub Actions is one that each workflow of the
+        repository can set: the ruleset does not count it."""
+        self.assertNotIn("statuses:", WORKFLOW.read_text())
 
     def test_the_check_workflow_command_checks_the_file(self):
         with patch("sys.stdout", io.StringIO()):
@@ -2650,10 +2766,13 @@ class WorkflowContract(unittest.TestCase):
             "OpenCodeReview of #${{ x }}",
         )
 
-    def test_the_workflow_runs_the_action_at_its_own_commit(self):
+    def test_the_workflow_runs_the_actions_at_its_own_commit(self):
+        text = WORKFLOW.read_text()
         self.assertIn(
-            "      - uses: $/.github/actions/open-code-review\n", WORKFLOW.read_text()
+            "      - id: review\n        uses: $/.github/actions/open-code-review\n",
+            text,
         )
+        self.assertIn("      - uses: $/.github/actions/open-code-review/status\n", text)
 
     def test_the_condition_of_the_review_is_the_one_of_its_concurrency_group(self):
         """An event that starts no review cancels no review in progress."""
@@ -2682,24 +2801,59 @@ class WorkflowContract(unittest.TestCase):
             author,
         )
 
-    def test_the_workflow_reads_no_association_of_the_author(self):
+    def test_no_workflow_of_peppy_reads_the_association_of_an_author(self):
         """GitHub gives a member whose membership is private as a
-        CONTRIBUTOR in an event."""
-        self.assertNotIn("author_association", WORKFLOW.read_text())
+        CONTRIBUTOR in an event, and each member of Peppy-bot has a private
+        membership: a workflow reads the permission of the author."""
+        for workflow in sorted(WORKFLOWS.glob("*.yml")):
+            with self.subTest(workflow=workflow.name):
+                code = [
+                    line
+                    for line in workflow.read_text().splitlines()
+                    if not line.strip().startswith("#")
+                ]
+                self.assertNotIn("author_association", "\n".join(code))
+
+    def test_the_condition_of_the_status_job_is_the_one_of_its_group(self):
+        """A run that sets no status takes the place of no status job that
+        waits in the group, and no job of the group is cancelled."""
+        status = job_text(WORKFLOW.read_text(), "status")
+        group = condition_of(status, "${{", "&& format('open-code-review-status-{0}'")
+        self.assertEqual(group, "needs.review.outputs.status != ''")
+        self.assertIn(f"    if: always() && {group}\n", status)
+        self.assertIn("    needs: review\n", status)
+        self.assertIn("      cancel-in-progress: false\n", status)
+
+    def test_the_status_job_holds_the_key_and_runs_no_review(self):
+        status = job_text(WORKFLOW.read_text(), "status")
+        self.assertIn("    runs-on: ubuntu-slim\n", status)
+        self.assertIn("    permissions: {}\n", status)
+        self.assertIn(
+            "    environment:\n      name: open-code-review\n      deployment: false\n",
+            status,
+        )
+        review = job_text(WORKFLOW.read_text(), "review")
+        self.assertNotIn("environment:", review)
+        self.assertNotIn("OPEN_CODE_REVIEW_", review)
 
     def test_the_job_outlasts_the_time_limits_of_the_steps_of_the_action(self):
-        """The job at its limit is cancelled, which skips the post step and
-        the status step."""
-        limits = [
-            minutes
-            for minutes in step_limits(ACTION.read_text()).values()
-            if minutes is not None
-        ]
-        # `timeout` kills a command that ignores its signal one minute after
-        # its limit.
-        worst = sum(limits) + KILL_AFTER_MINUTES * len(limits)
+        """The job at its limit is cancelled, which skips the post step: the
+        run then reports a failure."""
         self.assertGreater(
-            job_limit(WORKFLOW.read_text()), worst + UNLIMITED_STEPS_MINUTES
+            job_limit(WORKFLOW.read_text()),
+            worst_minutes(step_limits(ACTION.read_text())) + UNLIMITED_STEPS_MINUTES,
+        )
+
+    def test_the_status_job_outlasts_its_steps_within_its_runner(self):
+        limit = job_limit(WORKFLOW.read_text(), "status")
+        self.assertGreater(
+            limit,
+            worst_minutes(step_limits(STATUS_ACTION.read_text()))
+            + UNLIMITED_STATUS_STEPS_MINUTES,
+        )
+        self.assertLessEqual(limit, SLIM_RUNNER_MINUTES)
+        self.assertLessEqual(
+            job_limit(WORKFLOW.read_text(), "author"), SLIM_RUNNER_MINUTES
         )
 
 
