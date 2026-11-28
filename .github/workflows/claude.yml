@@ -33,29 +33,26 @@ jobs:
   # time rather than hardcoded so that admins added later are covered without
   # editing this file.
   authorize:
-    # Cheap pre-filter so an unrelated comment does not boot a runner just to be
+    # Cheap pre-filter so an unrelated comment does not start a job just to be
     # discarded. The action re-checks the trigger phrase itself afterwards.
     #
-    # `author_association` is read straight from the event payload, so a drive-by
-    # comment from outside the org is rejected without starting a runner at all.
-    # It is deliberately wider than the admin test below (an admin here reports
-    # MEMBER, not OWNER), so it filters noise rather than granting anything; the
-    # `is_admin` lookup remains the actual authorization boundary.
+    # The filter reads no `author_association` of the event: GitHub gives a
+    # member whose membership of the organization is private as a
+    # `CONTRIBUTOR` there, and each member of Peppy-bot has a private
+    # membership. So each mention starts this job, on the smallest hosted
+    # runner, and the `is_admin` lookup below is the only test of its author.
     if: |
       (github.event_name == 'issue_comment'
-        && contains(github.event.comment.body, '@claude')
-        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+        && contains(github.event.comment.body, '@claude'))
       || (github.event_name == 'pull_request_review_comment'
-        && contains(github.event.comment.body, '@claude')
-        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+        && contains(github.event.comment.body, '@claude'))
       || (github.event_name == 'pull_request_review'
-        && contains(github.event.review.body, '@claude')
-        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))
+        && contains(github.event.review.body, '@claude'))
       || (github.event_name == 'issues'
-        && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
-        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+        && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
 
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
