@@ -144,9 +144,11 @@ set workflow of peppy (merge-set.yml) for the branch of the event. The start
 and the end of each CI run, a re-run included, are such events, so the
 dashboard follows the state of the CI. So is the end of each run of the PR
 title check (pr-title), so the dashboard follows that check when a title
-changes, and so are the reviews, so it follows the approvals. So is the end of
-each review run of peppy-superproject, so the dashboard follows a review that
-did not complete. When the event is a box that a user ticked, the relay also
+changes, and the end of each run of the OpenCodeReview review of peppy and of
+platform, so it follows the `open-code-review` status that the review sets.
+So are the reviews, so it follows the approvals. So is the end of each review
+run of peppy-superproject, so the dashboard follows a review that did not
+complete. When the event is a box that a user ticked, the relay also
 answers at once on that pull request, with a link to the run it started. The
 Merge set workflow runs `sync`, one run at a time for each set. `sync` holds
 no state of its own: it reads the whole set from GitHub on every run (the
@@ -558,7 +560,7 @@ def dashboard_edit_subject(payload: Mapping, bot_login: str) -> RelaySubject | N
 
 def workflow_run_subject(payload: Mapping) -> RelaySubject | None:
     """The start or the end of a CI run, the end of a run of the PR title
-    check, or the end of a review run."""
+    check or of the OpenCodeReview review, or the end of a review run."""
     workflow = payload["workflow"]["name"]
     if is_review_repository(payload["repository"]["full_name"]):
         if workflow != REVIEW_WORKFLOW_NAME:
@@ -568,6 +570,8 @@ def workflow_run_subject(payload: Mapping) -> RelaySubject | None:
         return ci_run_subject(payload)
     if workflow == TITLE_CHECK_WORKFLOW:
         return title_check_run_subject(payload)
+    if workflow == OPEN_CODE_REVIEW_WORKFLOW:
+        return open_code_review_run_subject(payload)
     return None
 
 
@@ -592,6 +596,26 @@ def title_check_run_subject(payload: Mapping) -> RelaySubject | None:
     if payload["action"] != "completed" or run["event"] != "pull_request_target":
         return None
     return subject_of_run(run)
+
+
+def open_code_review_run_subject(payload: Mapping) -> RelaySubject | None:
+    """The end of a run of the OpenCodeReview review: the pull request that
+    the name of the run gives, whose branch the relay reads, as for a comment.
+    The relay hands on the end alone: the sync that runs after it reads the
+    status that the review set. A run whose job its condition skips (each
+    comment on a pull request starts a run) changes nothing, so it starts no
+    sync, and nor does a run whose name has another form."""
+    run = payload["workflow_run"]
+    if (
+        payload["action"] != "completed"
+        or run["event"] not in OPEN_CODE_REVIEW_EVENTS
+        or run["conclusion"] == "skipped"
+    ):
+        return None
+    named = OPEN_CODE_REVIEW_RUN_NAME.fullmatch(run["display_title"])
+    if named is None:
+        return None
+    return RelaySubject(int(named["number"]), None, None)
 
 
 def is_review_repository(full_name: str) -> bool:
@@ -979,6 +1003,7 @@ class CommitStatus:
     state: str
     description: str
     target_url: str | None
+    # The login of the user or of the bot user of the App that created it.
     creator: str | None
 
 
@@ -1023,11 +1048,47 @@ def run_state(completed: bool, conclusion: str | None) -> CheckState:
     return CheckState.FAILED
 
 
+# The suffix of the login of the bot user of a GitHub App, after the slug of
+# the App. A login of a user holds no bracket.
+BOT_LOGIN_SUFFIX = "[bot]"
+
+
+def bot_app_slug(login: str) -> str | None:
+    """The slug of the App whose bot user has the login; None for the login
+    of a user."""
+    if not login.endswith(BOT_LOGIN_SUFFIX):
+        return None
+    return login.removesuffix(BOT_LOGIN_SUFFIX) or None
+
+
+def status_answers(
+    check: RequiredCheck, status: CommitStatus, creator_apps: Mapping[str, int]
+) -> bool:
+    """Whether a commit status answers a required check: it has the context of
+    the check, and, when the check names an App, the bot user of that App
+    created it. `creator_apps` gives the App of each bot creator, by login."""
+    if status.context != check.context:
+        return False
+    if check.integration_id is None:
+        return True
+    return (
+        status.creator is not None
+        and creator_apps.get(status.creator) == check.integration_id
+    )
+
+
 def required_check_state(
-    check: RequiredCheck, runs: Sequence[CheckRun], statuses: Sequence[CommitStatus]
+    check: RequiredCheck,
+    runs: Sequence[CheckRun],
+    statuses: Sequence[CommitStatus],
+    creator_apps: Mapping[str, int],
 ) -> CheckState:
     """The state of a required check on a commit: its newest check run, else
-    its newest commit status."""
+    its newest commit status, of the App that the check names. A user with
+    write access can create a status of any context, so a status of another
+    creator does not answer a check that names an App, as GitHub does not
+    count it for the ruleset either. `creator_apps` gives the App of each bot
+    creator of the statuses, by login (creator_apps_of)."""
     matching = [
         run
         for run in runs
@@ -1038,7 +1099,8 @@ def required_check_state(
         newest = max(matching, key=lambda run: run.id)
         return run_state(newest.completed, newest.conclusion)
     status = next(
-        (status for status in statuses if status.context == check.context), None
+        (status for status in statuses if status_answers(check, status, creator_apps)),
+        None,
     )
     if status is None:
         return CheckState.MISSING
@@ -1085,6 +1147,17 @@ CI_WORKFLOW = "Tests"
 # (.github/actions/pr-title), whose ends the relay hands on: a change of a
 # title can pass or fail that check.
 TITLE_CHECK_WORKFLOW = "pr-title"
+# The name of the workflow of the OpenCodeReview review of a pull request
+# (open-code-review.yml in peppy and in platform), whose ends the relay hands
+# on: the review sets the `open-code-review` status of the head that it read.
+# The review runs on `pull_request_target` and on `issue_comment`, and GitHub
+# lists no pull request for either, so its `run-name` names the pull request
+# (OPEN_CODE_REVIEW_RUN_NAME).
+OPEN_CODE_REVIEW_WORKFLOW = "OpenCodeReview"
+OPEN_CODE_REVIEW_EVENTS = frozenset({"pull_request_target", "issue_comment"})
+OPEN_CODE_REVIEW_RUN_NAME = re.compile(
+    rf"\A{re.escape(OPEN_CODE_REVIEW_WORKFLOW)} of #(?P<number>[1-9][0-9]*)\Z"
+)
 
 
 @dataclass(frozen=True)
@@ -3311,6 +3384,7 @@ class GitHubGateway:
         self.held_commits: dict[tuple[str, str, str], bool] = {}
         self.rules: dict[str, BranchRules] = {}
         self.bypasses: dict[tuple[str, int], RulesetBypass] = {}
+        self.app_ids: dict[str, int | None] = {}
         self.permissions: dict[tuple[str, str], str] = {}
         self.ci_workflows: dict[str, frozenset[int]] = {}
         self.developers: dict[str, bool] = {}
@@ -3393,6 +3467,22 @@ class GitHubGateway:
                 )
             )
         return self.bypasses[key]
+
+    def app_id(self, slug: str) -> int | None:
+        """The id of the GitHub App of a slug; None when GitHub has no App of
+        that slug."""
+        if slug not in self.app_ids:
+            try:
+                item = self.api.request(
+                    "GET", f"/apps/{urllib.parse.quote(slug, safe='')}"
+                )
+            except ApiError as error:
+                if error.status != 404:
+                    raise
+                self.app_ids[slug] = None
+            else:
+                self.app_ids[slug] = item["id"]
+        return self.app_ids[slug]
 
     def check_runs(self, repository: Repository, commit: str) -> list[CheckRun]:
         return parse_check_runs(
@@ -3928,8 +4018,9 @@ def read_report(
     statuses = gateway.statuses(repository, pull_request.head_commit)
     mergeable, _ = computed_merge_state(gateway, pull_request, {MERGE_STATE_UNKNOWN})
     review = gateway.review_decision(pull_request)
+    creator_apps = creator_apps_of(gateway, rules, statuses)
     checks = tuple(
-        (check, required_check_state(check, runs, statuses))
+        (check, required_check_state(check, runs, statuses, creator_apps))
         for check in rules.required_checks
     )
     return PullRequestReport(
@@ -3958,6 +4049,30 @@ def read_report(
         ),
         waivable_checks=waivable_checks(gateway, repository, rules, checks),
     )
+
+
+def creator_apps_of(
+    gateway: GitHubGateway, rules: BranchRules, statuses: Sequence[CommitStatus]
+) -> dict[str, int]:
+    """The App of each bot user that created a status of a required check that
+    names an App, by login. The bot asks GitHub only for these creators: the
+    status of any other creator answers no such check. A creator that is a
+    user, or whose App GitHub does not have, is not in it."""
+    contexts = {
+        check.context for check in rules.required_checks if check.integration_id
+    }
+    creators = {
+        status.creator
+        for status in statuses
+        if status.context in contexts and status.creator is not None
+    }
+    apps = {}
+    for creator in sorted(creators):
+        slug = bot_app_slug(creator)
+        app_id = None if slug is None else gateway.app_id(slug)
+        if app_id is not None:
+            apps[creator] = app_id
+    return apps
 
 
 def waivable_checks(

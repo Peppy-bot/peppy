@@ -570,6 +570,74 @@ class Relay(unittest.TestCase):
             "workflow_run", title_check_run_event("completed", event="pull_request")
         )
 
+    def test_the_end_of_an_open_code_review_run_names_its_pull_request(self):
+        for event in ("pull_request_target", "issue_comment"):
+            for conclusion in ("success", "failure", "cancelled"):
+                with self.subTest(event=event, conclusion=conclusion):
+                    self.assert_relayed(
+                        "workflow_run",
+                        open_code_review_run_event(event=event, conclusion=conclusion),
+                        merge_set.RelaySubject(7, None, None),
+                    )
+
+    def test_an_open_code_review_run_whose_job_is_skipped_is_dropped(self):
+        # Each comment on a pull request starts a run, whose job its condition
+        # skips unless the comment asks for a review.
+        for event in ("pull_request_target", "issue_comment"):
+            with self.subTest(event=event):
+                self.assert_dropped(
+                    "workflow_run",
+                    open_code_review_run_event(event=event, conclusion="skipped"),
+                )
+
+    def test_the_start_of_an_open_code_review_run_is_dropped(self):
+        for action in ("requested", "in_progress"):
+            with self.subTest(action=action):
+                self.assert_dropped(
+                    "workflow_run", open_code_review_run_event(action=action)
+                )
+
+    def test_an_open_code_review_run_on_another_event_is_dropped(self):
+        for event in ("pull_request", "workflow_dispatch", "push"):
+            with self.subTest(event=event):
+                self.assert_dropped(
+                    "workflow_run", open_code_review_run_event(event=event)
+                )
+
+    def test_an_open_code_review_run_of_another_name_is_dropped(self):
+        for title in (
+            "OpenCodeReview",
+            "OpenCodeReview of #",
+            "OpenCodeReview of #0",
+            "OpenCodeReview of #07",
+            "OpenCodeReview of #7 again",
+            "OpenCodeReview of #7\n",
+            "Run OpenCodeReview of #7",
+            "OpenCodeReview of #-7",
+        ):
+            with self.subTest(title=title):
+                self.assert_dropped(
+                    "workflow_run", open_code_review_run_event(title=title)
+                )
+
+    def test_the_relay_reads_the_branch_of_the_pull_request_of_a_review_run(self):
+        text, calls = self.relay(
+            "workflow_run", open_code_review_run_event(event="issue_comment")
+        )
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "nodes-hub:pull_requests=write",
+                    "GET",
+                    "/repos/Peppy-bot/nodes-hub/pulls/7",
+                    None,
+                ),
+                self.DISPATCH,
+            ],
+        )
+        self.assertIn(RELAY_RUN_URL, text)
+
     def test_a_ci_run_of_a_fork_names_no_pull_request(self):
         payload = ci_run_event("completed", head_repository="someone/nodes-hub")
         payload["workflow_run"]["pull_requests"] = []
@@ -869,6 +937,30 @@ def title_check_run_event(action, attempt=1, event="pull_request_target"):
     7."""
     return ci_run_event(
         action, attempt=attempt, workflow=merge_set.TITLE_CHECK_WORKFLOW, event=event
+    )
+
+
+def open_code_review_run_event(
+    action="completed",
+    event="pull_request_target",
+    conclusion="success",
+    title="OpenCodeReview of #7",
+):
+    """A `workflow_run` event of a run of the OpenCodeReview review of pull
+    request 7, on a push or on a comment. GitHub lists no pull request for
+    either, and the head branch of a run on a comment is the default branch."""
+    return webhook_event(
+        action=action,
+        workflow={"name": merge_set.OPEN_CODE_REVIEW_WORKFLOW},
+        workflow_run={
+            "event": event,
+            "run_attempt": 1,
+            "head_branch": "main" if event == "issue_comment" else SET_NAME,
+            "head_repository": {"full_name": "Peppy-bot/nodes-hub"},
+            "pull_requests": [],
+            "conclusion": None if action != "completed" else conclusion,
+            "display_title": title,
+        },
     )
 
 
@@ -1360,11 +1452,11 @@ class RequiredChecks(unittest.TestCase):
     def test_the_newest_check_run_of_the_app_decides(self):
         runs = [self.run_of(1, conclusion="failure"), self.run_of(2)]
         self.assertIs(
-            merge_set.required_check_state(TEST_CHECK, runs, []), CheckState.PASSED
+            merge_set.required_check_state(TEST_CHECK, runs, [], {}), CheckState.PASSED
         )
         runs = [self.run_of(2, conclusion="failure"), self.run_of(1)]
         self.assertIs(
-            merge_set.required_check_state(TEST_CHECK, runs, []), CheckState.FAILED
+            merge_set.required_check_state(TEST_CHECK, runs, [], {}), CheckState.FAILED
         )
 
     def test_a_skipped_or_neutral_check_run_passes(self):
@@ -1372,20 +1464,20 @@ class RequiredChecks(unittest.TestCase):
             with self.subTest(conclusion=conclusion):
                 runs = [self.run_of(1, conclusion=conclusion)]
                 self.assertIs(
-                    merge_set.required_check_state(TEST_CHECK, runs, []),
+                    merge_set.required_check_state(TEST_CHECK, runs, [], {}),
                     CheckState.PASSED,
                 )
 
     def test_an_unfinished_check_run_is_running(self):
         runs = [self.run_of(1, status="in_progress", conclusion=None)]
         self.assertIs(
-            merge_set.required_check_state(TEST_CHECK, runs, []), CheckState.RUNNING
+            merge_set.required_check_state(TEST_CHECK, runs, [], {}), CheckState.RUNNING
         )
 
     def test_a_check_run_of_another_app_does_not_count(self):
         runs = [self.run_of(1, app_id=999)]
         self.assertIs(
-            merge_set.required_check_state(TEST_CHECK, runs, []), CheckState.MISSING
+            merge_set.required_check_state(TEST_CHECK, runs, [], {}), CheckState.MISSING
         )
 
     def test_a_commit_status_answers_a_check_no_check_run_reports(self):
@@ -1396,10 +1488,62 @@ class RequiredChecks(unittest.TestCase):
             ("error", CheckState.FAILED),
         ):
             with self.subTest(state=state):
-                statuses = [CommitStatus("legacy", state, "", None, "ci")]
+                statuses = [CommitStatus("legacy", state, "", None, "alice")]
                 self.assertIs(
-                    merge_set.required_check_state(check, [], statuses), expected
+                    merge_set.required_check_state(check, [], statuses, {}), expected
                 )
+
+    def test_a_check_that_names_an_app_counts_the_statuses_of_its_bot_alone(self):
+        apps = {"github-actions[bot]": 15368, "peppy-merge-set[bot]": 5103051}
+        for creator, expected in (
+            ("github-actions[bot]", CheckState.PASSED),
+            ("mallory", CheckState.MISSING),
+            ("peppy-merge-set[bot]", CheckState.MISSING),
+            # A bot whose App GitHub does not have.
+            ("gone[bot]", CheckState.MISSING),
+            (None, CheckState.MISSING),
+        ):
+            with self.subTest(creator=creator):
+                statuses = [
+                    CommitStatus("open-code-review", "success", "", None, creator)
+                ]
+                self.assertIs(
+                    merge_set.required_check_state(OCR_CHECK, [], statuses, apps),
+                    expected,
+                )
+
+    def test_the_newest_status_of_the_app_decides_over_a_newer_forged_one(self):
+        apps = {"github-actions[bot]": 15368}
+        statuses = [
+            CommitStatus("open-code-review", "success", "forged", None, "mallory"),
+            CommitStatus(
+                "open-code-review", "failure", "", None, "github-actions[bot]"
+            ),
+            CommitStatus(
+                "open-code-review", "success", "", None, "github-actions[bot]"
+            ),
+        ]
+        self.assertIs(
+            merge_set.required_check_state(OCR_CHECK, [], statuses, apps),
+            CheckState.FAILED,
+        )
+
+    def test_a_check_that_names_no_app_counts_the_status_of_any_creator(self):
+        check = RequiredCheck("legacy", None)
+        for creator in ("mallory", "github-actions[bot]", None):
+            with self.subTest(creator=creator):
+                statuses = [CommitStatus("legacy", "success", "", None, creator)]
+                self.assertIs(
+                    merge_set.required_check_state(check, [], statuses, {}),
+                    CheckState.PASSED,
+                )
+
+    def test_the_slug_of_an_app_is_read_from_the_login_of_its_bot(self):
+        self.assertEqual(
+            merge_set.bot_app_slug("github-actions[bot]"), "github-actions"
+        )
+        self.assertIsNone(merge_set.bot_app_slug("mallory"))
+        self.assertIsNone(merge_set.bot_app_slug("[bot]"))
 
     def test_the_gate_is_the_newest_merge_set_status_of_the_bot(self):
         statuses = [
@@ -3551,6 +3695,9 @@ class FakeGitHub:
         }
         # The (repository name, ruleset id) of each bypass the bot asked for.
         self.bypasses_asked = []
+        # The id of each GitHub App, by slug, and each slug the bot asked for.
+        self.apps = {"github-actions": 15368, "peppy-merge-set": 5103051}
+        self.apps_asked = []
         self.check_runs_of = {}
         # The CI run of each pull request, by label; None before it starts.
         self.ci_runs = {}
@@ -3719,6 +3866,10 @@ class FakeGitHub:
             f"Ruleset {ruleset_id}",
             (repository.name, ruleset_id) not in self.unbypassed,
         )
+
+    def app_id(self, slug):
+        self.apps_asked.append(slug)
+        return self.apps.get(slug)
 
     def check_runs(self, repository, sha):
         return self.check_runs_of.get((repository.name, sha), [])
@@ -4502,7 +4653,7 @@ class WaivableChecks(unittest.TestCase):
 
     def pass_ocr(self):
         self.github.statuses_of[("platform", self.platform.head_commit)] = [
-            CommitStatus("open-code-review", "success", "", None, "github-actions")
+            CommitStatus("open-code-review", "success", "", None, "github-actions[bot]")
         ]
 
     def read(self):
@@ -4539,6 +4690,21 @@ class WaivableChecks(unittest.TestCase):
         self.assertIn((TEST_CHECK, CheckState.FAILED), report_of.checks)
         self.assertEqual(report_of.waivable_checks, ())
         self.assertEqual(self.github.bypasses_asked, [("platform", CI_RULESET)])
+
+    def test_only_the_bot_creators_of_a_check_that_names_an_app_are_looked_up(self):
+        self.github.statuses_of[("platform", self.platform.head_commit)] = [
+            CommitStatus("open-code-review", "success", "forged", None, "mallory"),
+            CommitStatus("lint", "success", "", None, "linter[bot]"),
+            CommitStatus(
+                "open-code-review", "pending", "", None, "github-actions[bot]"
+            ),
+            CommitStatus(
+                "open-code-review", "pending", "", None, "github-actions[bot]"
+            ),
+        ]
+        report_of = self.read()
+        self.assertIn((OCR_CHECK, CheckState.RUNNING), report_of.checks)
+        self.assertEqual(self.github.apps_asked, ["github-actions"])
 
     def test_a_check_that_no_ruleset_names_is_not_waivable(self):
         self.github.rules["platform"] = replace(
@@ -4617,6 +4783,30 @@ class SyncMergeWithAWaivableCheck(unittest.TestCase):
         )
         for pr in (self.peppy, self.platform):
             self.assertEqual(self.github.gates(pr)[-1].state, "pending")
+
+    def post_ocr(self, creator):
+        self.github.statuses_of[("platform", self.platform.head_commit)] = [
+            CommitStatus("open-code-review", "success", "", None, creator)
+        ]
+        self.github.merge_states[self.platform.label] = [(True, "clean")]
+
+    def test_a_user_who_is_no_admin_does_not_merge_with_a_forged_status(self):
+        self.post_ocr("mallory")
+        self.tick_merge()
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.platform)
+        self.assertIn(
+            "- The required check `open-code-review` of platform#52 has not "
+            "reported yet.",
+            refusal,
+        )
+
+    def test_a_user_who_is_no_admin_merges_once_the_app_reports_the_check(self):
+        self.post_ocr("github-actions[bot]")
+        self.tick_merge()
+        self.assertEqual(
+            [label for label, _ in self.github.merged], ["peppy#512", "platform#52"]
+        )
 
     def test_an_admin_does_not_merge_when_an_unbypassed_ruleset_requires_the_check(
         self,
@@ -6179,6 +6369,24 @@ class Gateway(unittest.TestCase):
         api = FakeApi({("GET", path): ApiError(f"GET {path}", 502, "Bad Gateway")})
         with self.assertRaises(ApiError):
             gateway_of(api).permission(NODES_HUB, "alice")
+
+    def test_the_app_of_a_slug_is_read_once(self):
+        for answer, expected in (
+            ({"id": 15368, "slug": "github-actions"}, 15368),
+            (not_found("/apps/github-actions"), None),
+        ):
+            with self.subTest(answer=answer):
+                api = FakeApi({("GET", "/apps/github-actions"): answer})
+                gateway = gateway_of(api)
+                self.assertEqual(gateway.app_id("github-actions"), expected)
+                self.assertEqual(gateway.app_id("github-actions"), expected)
+                self.assertEqual(len(api.calls), 1)
+
+    def test_an_app_that_github_cannot_read_fails_the_sync(self):
+        failure = ApiError("GET /apps/github-actions", 502, "Bad Gateway")
+        gateway = gateway_of(FakeApi({("GET", "/apps/github-actions"): failure}))
+        with self.assertRaises(ApiError):
+            gateway.app_id("github-actions")
 
     def test_the_app_bypasses_a_ruleset_that_names_it_as_a_bypass_actor(self):
         path = f"/repos/Peppy-bot/nodes-hub/rulesets/{APPROVAL_RULESET}"
